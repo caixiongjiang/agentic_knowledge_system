@@ -212,3 +212,5 @@ __marimo__/
 # Intermediate result files
 tmp_results/
 tmp_files/
+workspace/
+upload/

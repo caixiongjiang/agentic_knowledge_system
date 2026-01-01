@@ -1,2 +1,161 @@
 # Agentic knowledge system configuration file
 
+# ==================== 数据库配置 ====================
+
+# Milvus 向量数据库配置
+[milvus]
+host = "localhost"
+port = 19530
+# 连接超时时间（秒）
+timeout = 30
+# 默认集合名称
+default_collection = "knowledge_vectors"
+# 向量维度
+vector_dim = 1024
+# 索引类型: IVF_FLAT, IVF_SQ8, IVF_PQ, HNSW
+index_type = "HNSW"
+# 距离度量: L2, IP, COSINE
+metric_type = "COSINE"
+# 索引参数
+index_params = { M = 16, efConstruction = 256 }
+# 搜索参数
+search_params = { ef = 128 }
+
+# MongoDB 文档数据库配置
+[mongodb]
+host = "localhost"
+port = 27017
+# 数据库名称
+database = "agentic_knowledge"
+# 连接超时时间（毫秒）
+connect_timeout_ms = 5000
+server_selection_timeout_ms = 5000
+# 连接池配置
+max_pool_size = 50
+min_pool_size = 10
+
+# MySQL 关系数据库配置
+[mysql]
+host = "localhost"
+port = 3306
+database = "agentic_knowledge"
+# 字符集
+charset = "utf8mb4"
+# 连接池配置
+pool_size = 10
+max_overflow = 20
+pool_timeout = 30
+pool_recycle = 3600
+# 是否显示SQL语句
+echo = false
+
+# Neo4j 图数据库配置
+[neo4j]
+uri = "bolt://localhost:7687"
+# 连接池配置
+max_connection_lifetime = 3600
+max_connection_pool_size = 50
+connection_acquisition_timeout = 60
+# 数据库名称（企业版支持多数据库）
+database = "neo4j"
+
+# Redis 缓存配置
+[redis]
+host = "localhost"
+port = 6379
+# 数据库编号（0-15）
+db = 0
+# 连接超时时间（秒）
+socket_timeout = 5
+socket_connect_timeout = 5
+# 连接池配置
+max_connections = 50
+# 键前缀
+key_prefix = "aks:"
+# 默认过期时间（秒）, -1表示不过期
+default_expire = 3600
+
+# MinIO 对象存储配置
+[minio]
+endpoint = "localhost:9000"
+# 是否使用安全连接
+secure = false
+# 默认存储桶
+default_bucket = "knowledge-files"
+# 区域
+region = "us-east-1"
+# 上传分片大小（字节）
+part_size = 10485760  # 10MB
+
+# ==================== 模型配置 ====================
+
+# Embedding 模型配置
+[embedding]
+# 模型提供商: openai, zhipu, qwen, local
+provider = "local"
+# 模型名称
+model_name = "embedding-3"
+# API基础URL
+api_base = "https://open.bigmodel.cn/api/paas/v4"
+# 向量维度
+dimension = 1024
+# 批处理大小
+batch_size = 32
+# 超时时间（秒）
+timeout = 60
+# 最大重试次数
+max_retries = 3
+
+# Reranker 模型配置
+[reranker]
+# 模型提供商: cohere, jina, bge, local
+provider = "local"
+# 模型名称或路径
+model_name = "BAAI/bge-reranker-v2-m3"
+# API基础URL（如果是API服务）
+api_base = ""
+# 批处理大小
+batch_size = 16
+# Top K 返回数量
+top_k = 10
+# 超时时间（秒）
+timeout = 30
+# 最大重试次数
+max_retries = 3
+
+# ==================== 第三方服务配置 ====================
+
+# MinerU 服务配置（PDF解析）
+[mineru]
+# API服务地址
+api_url = "http://localhost:8080"
+# 超时时间（秒）
+timeout = 300
+# 最大重试次数
+max_retries = 3
+
+# ==================== 系统配置 ====================
+
+# 日志配置
+[logging]
+# 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL
+level = "INFO"
+# 日志文件路径
+log_dir = "logs"
+# 日志文件名
+log_file = "dev.log"
+# 日志格式
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# 单个日志文件最大大小（MB）
+max_bytes = 100
+# 保留的日志文件数量
+backup_count = 10
+
+# 文件处理配置
+[file_upload]
+# 支持的文件类型
+supported_formats = ["pdf", "docx", "pptx", "xlsx", "txt", "md", "json"]
+# 最大文件大小（MB）
+max_file_size = 100
+# 文件上传临时目录
+temp_dir = "upload"
