@@ -310,17 +310,13 @@ class ConfigManager:
         return config
     
     def get_embedding_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
-        """获取完整的Embedding配置"""
+        """获取完整的Embedding配置（本地部署模型）"""
         config = self.get_embedding_config()
-        provider = config.get("provider", "").lower()
         
-        # 根据provider获取对应的API Key
-        if provider == "openai":
-            config["api_key"] = env_manager.get_openai_api_key()
-        elif provider == "zhipu":
-            config["api_key"] = env_manager.get_zhipu_api_key()
-        elif provider == "qwen":
-            config["api_key"] = env_manager.get_qwen_api_key()
+        # 获取本地Embedding服务的API Key（如果需要认证）
+        api_key = env_manager.get_embedding_api_key()
+        if api_key:
+            config["api_key"] = api_key
         
         return config
     

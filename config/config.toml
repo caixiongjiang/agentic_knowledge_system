@@ -106,22 +106,29 @@ part_size = 10485760  # 10MB
 
 # ==================== 模型配置 ====================
 
-# Embedding 模型配置
+# Embedding 模型配置（本地部署）
 [embedding]
-# 模型提供商: openai, zhipu, qwen, local
-provider = "local"
-# 模型名称
-model_name = "embedding-3"
-# API基础URL
-api_base = "https://open.bigmodel.cn/api/paas/v4"
-# 向量维度
+# 本地Embedding服务API地址（不要包含 /v1，代码会自动添加 /v1/embeddings）
+# 例如: "http://192.168.201.14:18084" -> 最终请求 "http://192.168.201.14:18084/v1/embeddings"
+api_base = "http://192.168.201.14:18084"
+# 模型名称或路径
+model_name = "qwen3-embedding-0.6b"
+# 向量维度（必须与Milvus配置的vector_dim一致）
 dimension = 1024
 # 批处理大小
 batch_size = 32
-# 超时时间（秒）
-timeout = 60
-# 最大重试次数
+# 请求超时时间（秒，必填）
+timeout = 60.0
+# 是否启用重试机制
+enable_retry = true
+# 最大重试次数（仅在enable_retry=true时生效）
 max_retries = 3
+# 重试延迟时间（秒）
+retry_delay = 0.5
+# 重试策略: fixed（固定延迟）, exponential（指数退避）, linear（线性递增）
+retry_strategy = "exponential"
+# 最大重试延迟上限（秒）
+max_retry_delay = 10.0
 
 # Reranker 模型配置
 [reranker]

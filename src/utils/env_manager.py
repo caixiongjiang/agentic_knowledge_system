@@ -251,6 +251,10 @@ class EnvManager:
     
     # ==================== AI 模型 API Keys ====================
     
+    def get_embedding_api_key(self) -> Optional[str]:
+        """获取本地Embedding服务API Key"""
+        return self.get("EMBEDDING_API_KEY")
+    
     def get_openai_api_key(self) -> Optional[str]:
         """获取OpenAI API Key"""
         return self.get("OPENAI_API_KEY")
