@@ -4,10 +4,27 @@
 
 # Milvus 向量数据库配置
 [milvus]
-host = "localhost"
+# ========== 模式选择 ==========
+# 模式: "server" (标准版，连接远程服务) 或 "lite" (本地版，用于开发测试)
+mode = "server"
+
+# ========== Server版配置（生产环境） ==========
+host = "192.168.201.14"
 port = 19530
+# 数据库名称（Milvus 2.x支持多数据库）
+database = "default"
 # 连接超时时间（秒）
 timeout = 30
+# 连接别名前缀
+alias_prefix = "aks_milvus"
+
+# ========== Lite版配置（开发/测试环境） ==========
+# 本地数据库文件路径
+lite_db_path = "./data/milvus.db"
+# Lite版最大并发连接数
+lite_max_connections = 10
+
+# ========== 公共配置 ==========
 # 默认集合名称
 default_collection = "knowledge_vectors"
 # 向量维度

@@ -214,3 +214,7 @@ tmp_results/
 tmp_files/
 workspace/
 upload/
+cursor_docs/
+
+# local data
+data/

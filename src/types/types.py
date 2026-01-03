@@ -13,14 +13,6 @@
 =================================================="""
 from enum import Enum
 
-class KnowledgeBaseID(Enum):
-    """知识库类型枚举"""
-    COMMON_FILE = "1"  # 通用文件知识
-    PCB_FILE = "2"  # pcb专业知识
-    MEMORY = "3"  # 记忆知识
-    TEXT2SQL = "4"  # 文本转SQL知识
-    WORKSPACE = "5"  # Agent工作空间产物知识
-
 class KnowledgeType(Enum):
     """知识类型枚举"""
     COMMON_FILE = "common_file"      # 通用文件知识类型
@@ -35,4 +27,5 @@ class KnowledgeType(Enum):
 
 
 # 类型别名
-KnowledgeBaseInstanceID = int  # 知识库实例ID
+KnowledgeBaseID = int  # 知识库实例ID
+KnowledgeBaseName = str  # 知识库实例名称

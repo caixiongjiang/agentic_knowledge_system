@@ -95,7 +95,6 @@ class MineruClient:
     def parse_files(self,):
         """
         批量解析多个文件
-        TODO: 暂时没有多个文件解析的需求
         """
         pass
 
