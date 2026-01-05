@@ -290,6 +290,10 @@ class EnvManager:
         """获取Jina AI API Key"""
         return self.get("JINA_API_KEY")
     
+    def get_gemini_api_key(self) -> Optional[str]:
+        """获取Google Gemini API Key"""
+        return self.get("GEMINI_API_KEY")
+    
     # ==================== 第三方服务 ====================
     
     def get_mineru_api_key(self) -> Optional[str]:

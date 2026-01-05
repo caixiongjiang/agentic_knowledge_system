@@ -1,0 +1,57 @@
+{
+  "llm": {
+    "providers": {
+      "openai": {
+        "api_base": "http://192.168.19.21:11010/model-lake/unified/v1",
+        "default_timeout": 60
+      },
+      "deepseek": {
+        "api_base": "https://api.deepseek.com",
+        "default_timeout": 120
+      },
+      "gemini": {
+        "api_base": "https://generativelanguage.googleapis.com/v1beta",
+        "default_timeout": 90
+      },
+      "anthropic": {
+        "api_base": "https://api.anthropic.com/v1",
+        "default_timeout": 60
+      }
+    },
+    
+    "presets": {
+      "fast": {
+        "provider": "deepseek",
+        "model_name": "deepseek-chat",
+        "temperature": 0.0,
+        "max_tokens": 2048,
+        "comment": "DeepSeek-V3.2 非思考模式"
+      },
+      "quality": {
+        "provider": "openai",
+        "model_name": "gpt-4o",
+        "temperature": 0.3,
+        "max_tokens": 4096
+      },
+      "reasoning": {
+        "provider": "deepseek",
+        "model_name": "deepseek-reasoner",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+        "comment": "DeepSeek-V3.2 思考模式（推荐用于复杂推理任务）"
+      },
+      "long_context": {
+        "provider": "gemini",
+        "model_name": "gemini-1.5-pro",
+        "temperature": 0.5,
+        "max_tokens": 8192
+      },
+      "multimodal": {
+        "provider": "gemini",
+        "model_name": "gemini-2.0-flash-thinking-exp-1219",
+        "temperature": 0.7,
+        "max_tokens": 4096
+      }
+    }
+  }
+}
