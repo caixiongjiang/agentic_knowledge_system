@@ -13,7 +13,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 from src.client.llm.adapters.openai import OpenAIAdapter
 from src.client.llm.types import LLMResponse, TokenUsage, ThinkingContent
@@ -147,6 +147,64 @@ class DeepSeekAdapter(OpenAIAdapter):
             finish_reason=finish_reason,
             raw_response=raw_response
         )
+    
+    def parse_stream_chunk(self, chunk_data: Dict[str, Any]) -> Union[Dict[str, Any], None]:
+        """
+        解析 DeepSeek 流式响应块
+        
+        DeepSeek 流式响应格式（与 OpenAI 相似，但支持 reasoning_content）：
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": "回答内容",
+                        "reasoning_content": "推理内容"  # DeepSeek 扩展字段
+                    },
+                    "finish_reason": null
+                }
+            ]
+        }
+        
+        Args:
+            chunk_data: 解析后的 JSON 数据
+        
+        Returns:
+            包含内容和是否为思考的字典 {"content": str, "is_thought": bool}
+            如果没有内容则返回 None
+        
+        注意：
+            - reasoning_content 和 content 会在不同的块中返回
+            - reasoning_content 在前，标记为 is_thought=True
+            - content 在后，标记为 is_thought=False
+        """
+        if "choices" not in chunk_data or not chunk_data["choices"]:
+            return None
+        
+        choice = chunk_data["choices"][0]
+        
+        # 提取 delta
+        if "delta" not in choice:
+            return None
+        
+        delta = choice["delta"]
+        
+        # 检查是否有 reasoning_content（思考内容）
+        if "reasoning_content" in delta and delta["reasoning_content"]:
+            return {
+                "content": delta["reasoning_content"],
+                "is_thought": True
+            }
+        
+        # 检查是否有普通 content（回答内容）
+        if "content" in delta and delta["content"]:
+            return {
+                "content": delta["content"],
+                "is_thought": False
+            }
+        
+        return None
     
     def validate_params(self, params: Dict[str, Any]) -> None:
         """

@@ -418,6 +418,122 @@ class TestGeminiClient:
             self.log_result("上下文管理器", False, str(e))
             print(f"❌ 错误: {e}")
     
+    def test_thinking_mode(self):
+        """测试 10: 思考模式（Gemini 2.5+ 特性）"""
+        print("\n" + "="*60)
+        print("测试 10: 思考模式")
+        print("="*60)
+        
+        try:
+            client = create_llm_client(
+                provider=self.provider,
+                model_name=self.model_name,
+                temperature=0.7,
+                max_tokens=2000,
+                thinking_budget=200,  # 思考预算：最多 200 tokens
+                include_thoughts=True  # 包含思考过程
+            )
+            
+            response = client.generate(
+                messages=[
+                    {"role": "user", "content": "如何设计一个高效的分布式缓存系统？请详细分析关键技术点。"}
+                ]
+            )
+            
+            assert isinstance(response, LLMResponse), "响应类型错误"
+            assert response.content, "响应内容为空"
+            assert response.thinking is not None, "未返回思考内容"
+            assert response.thinking.reasoning, "思考内容为空"
+            assert response.usage.thinking_tokens is not None, "未统计思考 tokens"
+            assert response.usage.thinking_tokens > 0, "思考 tokens 应大于 0"
+            
+            print(f"\n💭 思考过程:")
+            print("─" * 60)
+            print(response.thinking.reasoning)
+            print("─" * 60)
+            
+            print(f"\n📝 最终回答:")
+            print("─" * 60)
+            print(response.content)
+            print("─" * 60)
+            
+            print(f"\n📊 Token 使用统计:")
+            print(f"   - 提示词: {response.usage.prompt_tokens}")
+            print(f"   - 思考: {response.usage.thinking_tokens}")
+            print(f"   - 回答: {response.usage.completion_tokens}")
+            print(f"   - 总计: {response.usage.total_tokens}")
+            print(f"🤖 模型: {response.model}")
+            print(f"💡 Gemini 成功处理思考模式")
+            
+            self.log_result("思考模式", True)
+            
+        except Exception as e:
+            self.log_result("思考模式", False, str(e))
+            print(f"❌ 错误: {e}")
+    
+    def test_thinking_streaming(self):
+        """测试 11: 思考模式 + 流式输出"""
+        print("\n" + "="*60)
+        print("测试 11: 思考模式 + 流式输出")
+        print("="*60)
+        
+        try:
+            client = create_llm_client(
+                provider=self.provider,
+                model_name=self.model_name,
+                temperature=0.7,
+                max_tokens=2000,
+                thinking_budget=150,
+                include_thoughts=True
+            )
+            
+            print(f"\n💭 思考过程（实时流式）:")
+            print("─" * 60)
+            
+            thinking_content = ""
+            answer_content = ""
+            thinking_chunks = 0
+            answer_chunks = 0
+            
+            for chunk in client.generate_stream(
+                messages=[
+                    {"role": "user", "content": "什么是深度学习？"}
+                ]
+            ):
+                if chunk.is_thought:
+                    # 思考内容
+                    print(chunk.delta, end='', flush=True)
+                    thinking_content += chunk.delta
+                    thinking_chunks += 1
+                else:
+                    # 正常回答：如果是第一个回答块，先换行分隔
+                    if answer_chunks == 0:
+                        print("\n" + "─" * 60)
+                        print("\n📝 最终回答（实时流式）:")
+                        print("─" * 60)
+                    print(chunk.delta, end='', flush=True)
+                    answer_content += chunk.delta
+                    answer_chunks += 1
+            
+            print()  # 换行
+            print("─" * 60)
+            
+            assert thinking_content or answer_content, "流式内容为空"
+            assert thinking_chunks + answer_chunks > 0, "未收到任何块"
+            
+            print(f"\n✅ 流式输出成功")
+            print(f"📊 统计信息:")
+            print(f"   - 思考块数: {thinking_chunks}")
+            print(f"   - 回答块数: {answer_chunks}")
+            print(f"   - 总块数: {thinking_chunks + answer_chunks}")
+            print(f"💡 Gemini 支持思考内容的流式输出，思考和回答分开返回")
+            
+            self.log_result("思考模式+流式", True)
+            
+        except Exception as e:
+            self.log_result("思考模式+流式", False, str(e))
+            print(f"\n❌ 错误: {e}")
+    
     def run_all_tests(self):
         """运行所有测试"""
         print("\n" + "="*60)
@@ -428,33 +544,35 @@ class TestGeminiClient:
         print("="*60)
         
         # 运行所有测试
-        # self.test_basic_chat()
-        # self.test_system_instruction()
+        self.test_basic_chat()
+        self.test_system_instruction()
         self.test_streaming()
-        # self.test_async_call()
-        # self.test_async_streaming()
-        # self.test_async_batch()
-        # self.test_multimodal_base64()
-        # self.test_multimodal_image_url()
-        # self.test_context_manager()
+        self.test_async_call()
+        self.test_async_streaming()
+        self.test_async_batch()
+        self.test_multimodal_base64()
+        self.test_multimodal_image_url()
+        self.test_context_manager()
+        self.test_thinking_mode()
+        self.test_thinking_streaming()
         
         # 汇总结果
-        # print("\n" + "="*60)
-        # print("📊 测试结果汇总")
-        # print("="*60)
+        print("\n" + "="*60)
+        print("📊 测试结果汇总")
+        print("="*60)
         
-        # passed = sum(1 for _, p, _ in self.test_results if p)
-        # total = len(self.test_results)
+        passed = sum(1 for _, p, _ in self.test_results if p)
+        total = len(self.test_results)
         
-        # for name, passed_flag, message in self.test_results:
-        #     status = "✅" if passed_flag else "❌"
-        #     print(f"{status} {name}")
-        #     if message and not passed_flag:
-        #         print(f"   {message}")
+        for name, passed_flag, message in self.test_results:
+            status = "✅" if passed_flag else "❌"
+            print(f"{status} {name}")
+            if message and not passed_flag:
+                print(f"   {message}")
         
-        # print("\n" + "="*60)
-        # print(f"总计: {passed}/{total} 通过")
-        # print("="*60)
+        print("\n" + "="*60)
+        print(f"总计: {passed}/{total} 通过")
+        print("="*60)
 
 
 def main():

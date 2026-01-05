@@ -327,6 +327,68 @@ class TestDeepSeekClient:
             self.log_result("上下文管理器", False, str(e))
             print(f"❌ 错误: {e}")
     
+    def test_reasoner_streaming(self):
+        """测试 8: 推理模式 + 流式输出（deepseek-reasoner）"""
+        print("\n" + "="*60)
+        print("测试 8: 推理模式 + 流式输出")
+        print("="*60)
+        
+        try:
+            client = create_llm_client(
+                provider=self.provider,
+                model_name="deepseek-reasoner",
+                max_tokens=2000
+            )
+            
+            print(f"\n💭 推理过程（实时流式）:")
+            print("─" * 60)
+            
+            reasoning_content = ""
+            answer_content = ""
+            reasoning_chunks = 0
+            answer_chunks = 0
+            
+            for chunk in client.generate_stream(
+                messages=[
+                    {"role": "user", "content": "一个数的平方等于144，这个数是多少？请详细说明推理过程。"}
+                ]
+            ):
+                if chunk.is_thought:
+                    # 推理内容
+                    print(chunk.delta, end='', flush=True)
+                    reasoning_content += chunk.delta
+                    reasoning_chunks += 1
+                else:
+                    # 正常回答：如果是第一个回答块，先换行分隔
+                    if answer_chunks == 0:
+                        print("\n" + "─" * 60)
+                        print("\n📝 最终答案（实时流式）:")
+                        print("─" * 60)
+                    print(chunk.delta, end='', flush=True)
+                    answer_content += chunk.delta
+                    answer_chunks += 1
+            
+            print()
+            print("─" * 60)
+            
+            assert reasoning_content or answer_content, "流式内容为空"
+            assert reasoning_chunks + answer_chunks > 0, "未收到任何块"
+            
+            print(f"\n✅ 流式推理输出成功")
+            print(f"📊 统计信息:")
+            print(f"   - 推理块数: {reasoning_chunks}")
+            print(f"   - 回答块数: {answer_chunks}")
+            print(f"   - 总块数: {reasoning_chunks + answer_chunks}")
+            print(f"   - 推理内容长度: {len(reasoning_content)} 字符")
+            print(f"   - 回答内容长度: {len(answer_content)} 字符")
+            print(f"💡 DeepSeek reasoner 支持推理内容的流式输出，推理和回答分开返回")
+            
+            self.log_result("推理模式+流式", True)
+            
+        except Exception as e:
+            self.log_result("推理模式+流式", False, str(e))
+            print(f"\n❌ 错误: {e}")
+    
     def run_all_tests(self):
         """运行所有测试"""
         print("\n" + "="*60)
@@ -344,6 +406,7 @@ class TestDeepSeekClient:
         self.test_async_streaming()
         self.test_async_batch()
         self.test_context_manager()
+        self.test_reasoner_streaming()
         
         # 汇总结果
         print("\n" + "="*60)

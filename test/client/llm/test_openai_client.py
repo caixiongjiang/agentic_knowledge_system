@@ -13,6 +13,8 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
+# TODO: 测试OpenAI客户端的思考能力
+
 import sys
 import asyncio
 from pathlib import Path

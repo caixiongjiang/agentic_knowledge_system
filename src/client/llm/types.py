@@ -297,6 +297,10 @@ class StreamChunk(BaseModel):
         ...,
         description="增量内容"
     )
+    is_thought: bool = Field(
+        False,
+        description="是否为思考内容（Gemini/DeepSeek 等模型支持）"
+    )
     finish_reason: Optional[Literal["stop", "length", "error", "content_filter"]] = Field(
         None,
         description="完成原因（仅在最后一个块中有值）"
@@ -311,6 +315,7 @@ class StreamChunk(BaseModel):
         json_schema_extra = {
             "example": {
                 "delta": "这是",
+                "is_thought": False,
                 "finish_reason": None,
                 "model": "deepseek-chat"
             }

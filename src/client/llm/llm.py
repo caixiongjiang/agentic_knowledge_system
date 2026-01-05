@@ -591,13 +591,25 @@ class LLMClient:
                         
                         # 使用 Adapter 解析流式块（如果支持）
                         if hasattr(self.adapter, 'parse_stream_chunk'):
-                            content = self.adapter.parse_stream_chunk(chunk_data)
-                            if content:
-                                yield StreamChunk(
-                                    delta=content,
-                                    finish_reason=None,
-                                    model=chunk_data.get("modelVersion") or chunk_data.get("model")
-                                )
+                            result = self.adapter.parse_stream_chunk(chunk_data)
+                            if result:
+                                # 检查返回值类型：字符串（旧格式）或字典（新格式）
+                                if isinstance(result, str):
+                                    # 旧格式：直接是字符串
+                                    yield StreamChunk(
+                                        delta=result,
+                                        is_thought=False,
+                                        finish_reason=None,
+                                        model=chunk_data.get("modelVersion") or chunk_data.get("model")
+                                    )
+                                elif isinstance(result, dict):
+                                    # 新格式：包含 content 和 is_thought
+                                    yield StreamChunk(
+                                        delta=result.get("content", ""),
+                                        is_thought=result.get("is_thought", False),
+                                        finish_reason=None,
+                                        model=chunk_data.get("modelVersion") or chunk_data.get("model")
+                                    )
                         else:
                             # 提取增量内容（OpenAI/DeepSeek 格式）
                             choices = chunk_data.get("choices", [])
@@ -612,6 +624,7 @@ class LLMClient:
                                     # 返回流式块
                                     yield StreamChunk(
                                         delta=content,
+                                        is_thought=False,
                                         finish_reason=choice.get("finish_reason"),
                                         model=chunk_data.get("model")
                                     )
@@ -897,13 +910,25 @@ class LLMClient:
                         
                         # 使用 Adapter 解析流式块（如果支持）
                         if hasattr(self.adapter, 'parse_stream_chunk'):
-                            content = self.adapter.parse_stream_chunk(chunk_data)
-                            if content:
-                                yield StreamChunk(
-                                    delta=content,
-                                    finish_reason=None,
-                                    model=chunk_data.get("modelVersion") or chunk_data.get("model")
-                                )
+                            result = self.adapter.parse_stream_chunk(chunk_data)
+                            if result:
+                                # 检查返回值类型：字符串（旧格式）或字典（新格式）
+                                if isinstance(result, str):
+                                    # 旧格式：直接是字符串
+                                    yield StreamChunk(
+                                        delta=result,
+                                        is_thought=False,
+                                        finish_reason=None,
+                                        model=chunk_data.get("modelVersion") or chunk_data.get("model")
+                                    )
+                                elif isinstance(result, dict):
+                                    # 新格式：包含 content 和 is_thought
+                                    yield StreamChunk(
+                                        delta=result.get("content", ""),
+                                        is_thought=result.get("is_thought", False),
+                                        finish_reason=None,
+                                        model=chunk_data.get("modelVersion") or chunk_data.get("model")
+                                    )
                         else:
                             # 提取增量内容（OpenAI/DeepSeek 格式）
                             choices = chunk_data.get("choices", [])
@@ -918,6 +943,7 @@ class LLMClient:
                                     # 返回流式块
                                     yield StreamChunk(
                                         delta=content,
+                                        is_thought=False,
                                         finish_reason=choice.get("finish_reason"),
                                         model=chunk_data.get("model")
                                     )

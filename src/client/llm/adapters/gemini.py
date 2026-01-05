@@ -18,7 +18,7 @@ import base64
 import httpx
 
 from src.client.llm.adapters.base import BaseAdapter
-from src.client.llm.types import LLMResponse, TokenUsage
+from src.client.llm.types import LLMResponse, TokenUsage, ThinkingContent
 
 
 class GeminiAdapter(BaseAdapter):
@@ -100,13 +100,22 @@ class GeminiAdapter(BaseAdapter):
         if "stop_sequences" in params:
             request["generationConfig"]["stopSequences"] = params["stop_sequences"]
         
-        # 5. System instruction（如果有）
+        # 5. Thinking 配置（Gemini 2.5+ 支持）
+        if "thinking_budget" in params or "include_thoughts" in params:
+            thinking_config = {}
+            if "thinking_budget" in params:
+                thinking_config["thinkingBudget"] = params["thinking_budget"]
+            if "include_thoughts" in params:
+                thinking_config["includeThoughts"] = params["include_thoughts"]
+            request["generationConfig"]["thinkingConfig"] = thinking_config
+        
+        # 6. System instruction（如果有）
         if system_messages:
             request["systemInstruction"] = {
                 "parts": [{"text": system_messages[0]["content"]}]
             }
         
-        # 6. Safety settings（如果有）
+        # 7. Safety settings（如果有）
         if "safety_settings" in params:
             request["safetySettings"] = params["safety_settings"]
         
@@ -205,6 +214,7 @@ class GeminiAdapter(BaseAdapter):
                 {
                     "content": {
                         "parts": [
+                            {"text": "思考内容", "thought": true},
                             {"text": "回答内容"}
                         ],
                         "role": "model"
@@ -216,9 +226,10 @@ class GeminiAdapter(BaseAdapter):
             "usageMetadata": {
                 "promptTokenCount": 10,
                 "candidatesTokenCount": 20,
-                "totalTokenCount": 30
+                "totalTokenCount": 30,
+                "thoughtsTokenCount": 5  # 可选，启用 thinking 时才有
             },
-            "modelVersion": "gemini-1.5-pro"
+            "modelVersion": "gemini-2.5-flash"
         }
         
         Args:
@@ -231,8 +242,10 @@ class GeminiAdapter(BaseAdapter):
         candidate = raw_response["candidates"][0]
         content_parts = candidate["content"]["parts"]
         
-        # 提取文本内容（可能有多个 parts）
-        text_parts = [p["text"] for p in content_parts if "text" in p]
+        # 分离思考内容和正常内容
+        thinking_parts = [p["text"] for p in content_parts if "text" in p and p.get("thought", False)]
+        text_parts = [p["text"] for p in content_parts if "text" in p and not p.get("thought", False)]
+        
         content = "\n".join(text_parts)
         
         # 提取 finish_reason，映射到统一格式
@@ -248,17 +261,27 @@ class GeminiAdapter(BaseAdapter):
         
         # 构建 Token 使用统计
         usage_metadata = raw_response.get("usageMetadata", {})
+        thinking_tokens = usage_metadata.get("thoughtsTokenCount", None)
+        
         usage = TokenUsage(
             prompt_tokens=usage_metadata.get("promptTokenCount", 0),
             completion_tokens=usage_metadata.get("candidatesTokenCount", 0),
-            thinking_tokens=None,  # Gemini 当前不单独统计 thinking tokens
+            thinking_tokens=thinking_tokens,
             total_tokens=usage_metadata.get("totalTokenCount", 0)
         )
+        
+        # 构建 Thinking 内容（如果有）
+        thinking = None
+        if thinking_parts:
+            thinking = ThinkingContent(
+                reasoning="\n".join(thinking_parts),
+                tokens_used=thinking_tokens
+            )
         
         # 返回统一响应
         return LLMResponse(
             content=content,
-            thinking=None,  # Gemini 暂不支持 thinking 内容提取
+            thinking=thinking,
             usage=usage,
             model=raw_response.get("modelVersion", "gemini"),
             finish_reason=finish_reason,
@@ -332,7 +355,7 @@ class GeminiAdapter(BaseAdapter):
             "x-goog-api-key": api_key
         }
     
-    def parse_stream_chunk(self, chunk_data: Dict[str, Any]) -> Union[str, None]:
+    def parse_stream_chunk(self, chunk_data: Dict[str, Any]) -> Union[Dict[str, Any], None]:
         """
         解析 Gemini 流式响应块
         
@@ -341,7 +364,10 @@ class GeminiAdapter(BaseAdapter):
             "candidates": [
                 {
                     "content": {
-                        "parts": [{"text": "文本内容"}],
+                        "parts": [
+                            {"text": "思考内容", "thought": true},
+                            {"text": "文本内容"}
+                        ],
                         "role": "model"
                     },
                     "finishReason": "STOP",  # 可能为空
@@ -354,7 +380,12 @@ class GeminiAdapter(BaseAdapter):
             chunk_data: 解析后的 JSON 数据
         
         Returns:
-            文本增量内容，如果没有内容则返回 None
+            包含文本内容和是否为思考的字典 {"content": str, "is_thought": bool}
+            如果没有内容则返回 None
+        
+        注意：
+            在流式场景下，thinking 部分和正常内容会分开以不同的块返回。
+            每个块都会标记 is_thought 来区分是思考还是正常回答。
         """
         if "candidates" not in chunk_data or not chunk_data["candidates"]:
             return None
@@ -369,10 +400,23 @@ class GeminiAdapter(BaseAdapter):
         if "parts" not in content or not content["parts"]:
             return None
         
-        # 提取文本内容
-        text_parts = [p.get("text", "") for p in content["parts"] if "text" in p]
+        # 提取所有文本内容
+        # Gemini 流式响应中，每个块通常只包含一个 part
+        # 但为了安全起见，我们处理多个 parts 的情况
+        result_text = []
+        is_thought = False
         
-        if not text_parts:
+        for part in content["parts"]:
+            if "text" in part:
+                result_text.append(part["text"])
+                # 如果任何一个 part 是 thought，则整个块标记为 thought
+                if part.get("thought", False):
+                    is_thought = True
+        
+        if not result_text:
             return None
         
-        return "".join(text_parts)
+        return {
+            "content": "".join(result_text),
+            "is_thought": is_thought
+        }
