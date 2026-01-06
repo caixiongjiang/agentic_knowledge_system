@@ -113,8 +113,8 @@ class EmbeddingClient:
         self.batch_size = self._config.get("batch_size", 32)
         self.timeout = self._config["timeout"]
         
-        # 构建embeddings端点URL（本地部署固定使用 /v1/embeddings）
-        self.embeddings_url = f"{self.api_base}/v1/embeddings"
+        # 构建embeddings端点URL（本地部署固定使用 /embeddings）
+        self.embeddings_url = f"{self.api_base}/embeddings"
         
         # 重试配置
         self.enable_retry = self._config.get("enable_retry", False)

@@ -17,7 +17,7 @@ from typing import Optional
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src import Mineru2Client
+from src.client.mineru import Mineru2Client
 from loguru import logger
 
 
