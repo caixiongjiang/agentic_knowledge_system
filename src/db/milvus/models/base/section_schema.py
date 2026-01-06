@@ -11,6 +11,7 @@ from src.db.milvus.models.base_schema import (
     MetricType, IndexType
 )
 
+# TODO：建立标量索引
 
 class SectionSchema(BaseSchema):
     """章节表结构
@@ -133,15 +134,3 @@ class SectionSchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class SectionSchemaZh(SectionSchema):
-    """中文章节表"""
-    COLLECTION_NAME = "section_store_zh"
-    DESCRIPTION = "中文章节表 - 存储中文文档章节结构"
-
-
-class SectionSchemaEn(SectionSchema):
-    """英文章节表"""
-    COLLECTION_NAME = "section_store_en"
-    DESCRIPTION = "英文章节表 - 存储英文文档章节结构"

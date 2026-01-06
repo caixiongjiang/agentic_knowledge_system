@@ -11,6 +11,8 @@ from src.db.milvus.models.base_schema import (
     MetricType, IndexType
 )
 
+# TODO：建立标量索引
+# TODO：表结构改造
 
 class TagSchema(BaseSchema):
     """标签表结构
@@ -138,15 +140,3 @@ class TagSchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class TagSchemaZh(TagSchema):
-    """中文标签表"""
-    COLLECTION_NAME = "tag_store_zh"
-    DESCRIPTION = "中文标签表 - 存储中文标签和分类"
-
-
-class TagSchemaEn(TagSchema):
-    """英文标签表"""
-    COLLECTION_NAME = "tag_store_en"
-    DESCRIPTION = "英文标签表 - 存储英文标签和分类"

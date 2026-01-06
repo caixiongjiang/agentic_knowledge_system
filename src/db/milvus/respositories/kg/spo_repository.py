@@ -9,11 +9,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from src.db.milvus.respositories.base_repository import BaseRepository
-from src.db.milvus.models.kg.spo_schema import (
-    SPOSchema,
-    SPOSchemaZh,
-    SPOSchemaEn
-)
+from src.db.milvus.models.kg.spo_schema import SPOSchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 
 
@@ -25,20 +21,13 @@ class SPORepository(BaseRepository):
     注意：SPO表使用INT64自增主键，与其他表（VARCHAR主键）不同
     """
     
-    def __init__(self, manager: Optional[BaseMilvusManager] = None, language: str = "zh"):
+    def __init__(self, manager: Optional[BaseMilvusManager] = None):
         """初始化
         
         Args:
             manager: Milvus连接管理器
-            language: 语言版本 ("zh"/"en")
         """
-        if language == "zh":
-            schema = SPOSchemaZh()
-        elif language == "en":
-            schema = SPOSchemaEn()
-        else:
-            schema = SPOSchema()
-        
+        schema = SPOSchema()
         super().__init__(schema, manager)
     
     # ========== 专用查询方法 ==========

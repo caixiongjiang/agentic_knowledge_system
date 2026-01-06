@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from src.db.milvus.respositories.base_repository import BaseRepository
-from src.db.milvus.models.base.section_schema import SectionSchema, SectionSchemaZh, SectionSchemaEn
+from src.db.milvus.models.base.section_schema import SectionSchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 
 
@@ -19,20 +19,13 @@ class SectionRepository(BaseRepository):
     提供章节表的专用查询方法
     """
     
-    def __init__(self, manager: Optional[BaseMilvusManager] = None, language: str = "zh"):
+    def __init__(self, manager: Optional[BaseMilvusManager] = None):
         """初始化
         
         Args:
             manager: Milvus连接管理器
-            language: 语言版本 ("zh"/"en")
         """
-        if language == "zh":
-            schema = SectionSchemaZh()
-        elif language == "en":
-            schema = SectionSchemaEn()
-        else:
-            schema = SectionSchema()
-        
+        schema = SectionSchema()
         super().__init__(schema, manager)
     
     # ========== 专用查询方法 ==========

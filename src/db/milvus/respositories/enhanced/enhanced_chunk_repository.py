@@ -9,11 +9,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from src.db.milvus.respositories.base_repository import BaseRepository
-from src.db.milvus.models.enhanced.enhanced_chunk_schema import (
-    EnhancedChunkSchema,
-    EnhancedChunkSchemaZh,
-    EnhancedChunkSchemaEn
-)
+from src.db.milvus.models.enhanced.enhanced_chunk_schema import EnhancedChunkSchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 
 
@@ -23,20 +19,13 @@ class EnhancedChunkRepository(BaseRepository):
     提供增强分块表的专用查询方法
     """
     
-    def __init__(self, manager: Optional[BaseMilvusManager] = None, language: str = "zh"):
+    def __init__(self, manager: Optional[BaseMilvusManager] = None):
         """初始化
         
         Args:
             manager: Milvus连接管理器
-            language: 语言版本 ("zh"/"en")
         """
-        if language == "zh":
-            schema = EnhancedChunkSchemaZh()
-        elif language == "en":
-            schema = EnhancedChunkSchemaEn()
-        else:
-            schema = EnhancedChunkSchema()
-        
+        schema = EnhancedChunkSchema()
         super().__init__(schema, manager)
     
     # ========== 专用查询方法 ==========

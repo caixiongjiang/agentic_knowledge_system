@@ -9,11 +9,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from src.db.milvus.respositories.base_repository import BaseRepository
-from src.db.milvus.models.extract.summary_schema import (
-    SummarySchema,
-    SummarySchemaZh,
-    SummarySchemaEn
-)
+from src.db.milvus.models.extract.summary_schema import SummarySchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 
 
@@ -23,20 +19,13 @@ class SummaryRepository(BaseRepository):
     提供摘要表的专用查询方法
     """
     
-    def __init__(self, manager: Optional[BaseMilvusManager] = None, language: str = "zh"):
+    def __init__(self, manager: Optional[BaseMilvusManager] = None):
         """初始化
         
         Args:
             manager: Milvus连接管理器
-            language: 语言版本 ("zh"/"en")
         """
-        if language == "zh":
-            schema = SummarySchemaZh()
-        elif language == "en":
-            schema = SummarySchemaEn()
-        else:
-            schema = SummarySchema()
-        
+        schema = SummarySchema()
         super().__init__(schema, manager)
     
     # ========== 专用查询方法 ==========

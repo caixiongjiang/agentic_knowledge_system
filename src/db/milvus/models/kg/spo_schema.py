@@ -11,6 +11,8 @@ from src.db.milvus.models.base_schema import (
     MetricType, IndexType
 )
 
+# TODO：建立标量索引
+# TODO：表结构改造
 
 class SPOSchema(BaseSchema):
     """SPO三元组表结构
@@ -149,15 +151,3 @@ class SPOSchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class SPOSchemaZh(SPOSchema):
-    """中文SPO三元组表"""
-    COLLECTION_NAME = "spo_store_zh"
-    DESCRIPTION = "中文SPO三元组表 - 存储中文知识图谱关系"
-
-
-class SPOSchemaEn(SPOSchema):
-    """英文SPO三元组表"""
-    COLLECTION_NAME = "spo_store_en"
-    DESCRIPTION = "英文SPO三元组表 - 存储英文知识图谱关系"

@@ -11,6 +11,7 @@ from src.db.milvus.models.base_schema import (
     MetricType, IndexType
 )
 
+# TODO：建立标量索引
 
 class AtomicQASchema(BaseSchema):
     """原子问答对表结构
@@ -134,15 +135,3 @@ class AtomicQASchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class AtomicQASchemaZh(AtomicQASchema):
-    """中文原子问答对表"""
-    COLLECTION_NAME = "atomic_qa_store_zh"
-    DESCRIPTION = "中文原子问答对表 - 存储中文问答知识"
-
-
-class AtomicQASchemaEn(AtomicQASchema):
-    """英文原子问答对表"""
-    COLLECTION_NAME = "atomic_qa_store_en"
-    DESCRIPTION = "英文原子问答对表 - 存储英文问答知识"

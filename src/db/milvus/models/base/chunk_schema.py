@@ -12,6 +12,8 @@ from src.db.milvus.models.base_schema import (
 )
 
 
+# TODO：建立标量索引
+
 class ChunkSchema(BaseSchema):
     """文本分块表结构
     
@@ -20,7 +22,7 @@ class ChunkSchema(BaseSchema):
     特点：
     - 包含向量表示，支持语义搜索
     - 记录完整的上下文信息（会话、任务、Agent等）
-    - 支持分层存储（中文/英文分表）
+    - 混合存储多语言文档
     
     业务场景：
     - RAG检索的基础数据源
@@ -166,15 +168,3 @@ class ChunkSchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class ChunkSchemaZh(ChunkSchema):
-    """中文文本分块表"""
-    COLLECTION_NAME = "chunk_store_zh"
-    DESCRIPTION = "中文文本分块表 - 存储中文文档分块"
-
-
-class ChunkSchemaEn(ChunkSchema):
-    """英文文本分块表"""
-    COLLECTION_NAME = "chunk_store_en"
-    DESCRIPTION = "英文文本分块表 - 存储英文文档分块"

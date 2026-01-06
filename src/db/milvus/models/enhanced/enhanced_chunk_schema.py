@@ -11,6 +11,7 @@ from src.db.milvus.models.base_schema import (
     MetricType, IndexType
 )
 
+# TODO：建立标量索引
 
 class EnhancedChunkSchema(BaseSchema):
     """增强分块表结构
@@ -133,15 +134,3 @@ class EnhancedChunkSchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class EnhancedChunkSchemaZh(EnhancedChunkSchema):
-    """中文增强分块表"""
-    COLLECTION_NAME = "enhanced_chunk_store_zh"
-    DESCRIPTION = "中文增强分块表 - 存储中文增强文本"
-
-
-class EnhancedChunkSchemaEn(EnhancedChunkSchema):
-    """英文增强分块表"""
-    COLLECTION_NAME = "enhanced_chunk_store_en"
-    DESCRIPTION = "英文增强分块表 - 存储英文增强文本"

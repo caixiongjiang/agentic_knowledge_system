@@ -38,6 +38,7 @@ class IndexType(Enum):
     IVF_PQ = "IVF_PQ"          # 乘积量化索引
     HNSW = "HNSW"              # 层次可导航小世界图（高性能）
     ANNOY = "ANNOY"            # Approximate Nearest Neighbors Oh Yeah
+    AUTOINDEX = "AUTOINDEX"    # 自动选择索引（Milvus Lite专用）
 
 
 @dataclass

@@ -14,13 +14,13 @@ Milvus Schema 导出工具
 
 使用示例：
     # 导出单个集合
-    python scripts/export_milvus_schema.py --collection chunk_store_zh
+    python scripts/export_milvus_schema.py --collection chunk_store
     
     # 导出所有集合
     python scripts/export_milvus_schema.py --all
     
     # 导出为JSON格式
-    python scripts/export_milvus_schema.py --collection chunk_store_zh --format json
+    python scripts/export_milvus_schema.py --collection chunk_store --format json
     
     # 导出到文件
     python scripts/export_milvus_schema.py --all --output schemas/
@@ -41,13 +41,6 @@ sys.path.insert(0, str(project_root))
 from src.db.milvus.models import (
     ALL_SCHEMAS,
     SCHEMAS_BY_LAYER,
-    ChunkSchemaZh, ChunkSchemaEn,
-    SectionSchemaZh, SectionSchemaEn,
-    EnhancedChunkSchemaZh, EnhancedChunkSchemaEn,
-    AtomicQASchemaZh, AtomicQASchemaEn,
-    SummarySchemaZh, SummarySchemaEn,
-    SPOSchemaZh, SPOSchemaEn,
-    TagSchemaZh, TagSchemaEn,
 )
 
 
@@ -341,16 +334,16 @@ def main():
   python scripts/export_milvus_schema.py --list
   
   # 导出单个集合（输出到stdout）
-  python scripts/export_milvus_schema.py --collection chunk_store_zh
+  python scripts/export_milvus_schema.py --collection chunk_store
   
   # 导出单个集合到文件
-  python scripts/export_milvus_schema.py --collection chunk_store_zh --output schemas/
+  python scripts/export_milvus_schema.py --collection chunk_store --output schemas/
   
   # 导出所有集合
   python scripts/export_milvus_schema.py --all --output schemas/
   
   # 导出为JSON格式
-  python scripts/export_milvus_schema.py --collection chunk_store_zh --format json
+  python scripts/export_milvus_schema.py --collection chunk_store --format json
         """
     )
     

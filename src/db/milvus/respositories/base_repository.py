@@ -98,6 +98,10 @@ class BaseRepository(ABC):
             if utility.has_collection(self.collection_name, using=alias):
                 # 集合已存在，加载
                 self._collection = Collection(self.collection_name, using=alias)
+                
+                # 检查并确保索引存在（修复旧集合可能没有索引的问题）
+                self._ensure_indexes()
+                
                 self._collection.load()
                 self.logger.debug(f"已加载集合: {self.collection_name}")
             else:
@@ -203,23 +207,95 @@ class BaseRepository(ABC):
         
         return milvus_fields
     
+    def _ensure_indexes(self) -> None:
+        """确保索引存在
+        
+        检查所有向量字段的索引，如果不存在则创建。
+        用于加载已存在的集合时，确保索引完整性。
+        """
+        # 获取集合现有的索引信息
+        existing_indexes = {}
+        try:
+            for index in self._collection.indexes:
+                existing_indexes[index.field_name] = index
+        except Exception as e:
+            self.logger.warning(f"获取索引信息失败: {e}")
+        
+        # 检查所有向量字段是否有索引
+        vector_fields = [
+            field_def for field_def in self.schema.get_fields()
+            if field_def.dtype == FieldType.FLOAT_VECTOR or field_def.dtype == FieldType.BINARY_VECTOR
+        ]
+        
+        for field_def in vector_fields:
+            if field_def.name not in existing_indexes:
+                # 索引不存在，创建索引
+                self.logger.warning(
+                    f"⚠️  字段 {field_def.name} 缺少索引，正在创建..."
+                )
+                self._create_index_for_field(field_def.name)
+            else:
+                self.logger.debug(
+                    f"字段 {field_def.name} 索引已存在: {existing_indexes[field_def.name].params}"
+                )
+    
     def _create_indexes(self) -> None:
-        """创建索引
+        """创建索引（新集合创建时调用）
         
         为所有向量字段创建索引
-        """
-        index_params = self.schema.get_index_params()
         
+        Note:
+            自动处理 Milvus Lite 的索引类型限制：
+            - Lite 只支持: FLAT, IVF_FLAT, AUTOINDEX
+            - Server 支持: 所有索引类型
+            - 如果在 Lite 下使用不支持的索引，自动降级到 AUTOINDEX
+        """
         # 遍历所有字段，为向量字段创建索引
         for field_def in self.schema.get_fields():
             if field_def.dtype == FieldType.FLOAT_VECTOR or field_def.dtype == FieldType.BINARY_VECTOR:
-                self._collection.create_index(
-                    field_name=field_def.name,
-                    index_params=index_params
-                )
-                self.logger.debug(
-                    f"已为字段 {field_def.name} 创建索引: {index_params['index_type']}"
-                )
+                self._create_index_for_field(field_def.name)
+    
+    def _create_index_for_field(self, field_name: str) -> None:
+        """为指定字段创建索引
+        
+        Args:
+            field_name: 字段名称
+        """
+        index_params = self.schema.get_index_params().copy()
+        
+        # 检测是否是 Milvus Lite 模式
+        is_lite_mode = self._is_lite_mode()
+        
+        # Milvus Lite 支持的索引类型
+        LITE_SUPPORTED_INDEXES = {"FLAT", "IVF_FLAT", "AUTOINDEX"}
+        
+        # 如果是 Lite 模式且索引类型不支持，自动降级
+        if is_lite_mode and index_params.get("index_type") not in LITE_SUPPORTED_INDEXES:
+            original_index = index_params["index_type"]
+            index_params["index_type"] = "AUTOINDEX"
+            index_params["params"] = {}  # AUTOINDEX 不需要额外参数
+            self.logger.warning(
+                f"⚠️  Milvus Lite 不支持 {original_index} 索引，"
+                f"自动降级为 AUTOINDEX"
+            )
+        
+        # 创建索引
+        self._collection.create_index(
+            field_name=field_name,
+            index_params=index_params
+        )
+        self.logger.debug(
+            f"已为字段 {field_name} 创建索引: {index_params['index_type']}"
+        )
+    
+    def _is_lite_mode(self) -> bool:
+        """检测是否为 Milvus Lite 模式
+        
+        Returns:
+            bool: True 表示 Lite 模式，False 表示 Server 模式
+        """
+        from src.db.milvus.milvus_lite_manager import MilvusLiteManager
+        return isinstance(self.manager, MilvusLiteManager)
     
     # ========== CRUD操作 ==========
     

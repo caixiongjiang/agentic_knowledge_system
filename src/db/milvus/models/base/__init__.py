@@ -5,14 +5,10 @@ Base Layer Models
 基础层Schema - 原始文档分块和结构化
 """
 
-from src.db.milvus.models.base.chunk_schema import ChunkSchema, ChunkSchemaZh, ChunkSchemaEn
-from src.db.milvus.models.base.section_schema import SectionSchema, SectionSchemaZh, SectionSchemaEn
+from src.db.milvus.models.base.chunk_schema import ChunkSchema
+from src.db.milvus.models.base.section_schema import SectionSchema
 
 __all__ = [
     "ChunkSchema",
-    "ChunkSchemaZh",
-    "ChunkSchemaEn",
     "SectionSchema",
-    "SectionSchemaZh",
-    "SectionSchemaEn",
 ]

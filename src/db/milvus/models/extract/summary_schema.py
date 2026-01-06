@@ -11,6 +11,7 @@ from src.db.milvus.models.base_schema import (
     MetricType, IndexType
 )
 
+# TODO：建立标量索引
 
 class SummarySchema(BaseSchema):
     """摘要表结构
@@ -138,15 +139,3 @@ class SummarySchema(BaseSchema):
             "index_type": self.index_type,
             "params": self.index_params
         }
-
-
-class SummarySchemaZh(SummarySchema):
-    """中文摘要表"""
-    COLLECTION_NAME = "summary_store_zh"
-    DESCRIPTION = "中文摘要表 - 存储中文文档摘要"
-
-
-class SummarySchemaEn(SummarySchema):
-    """英文摘要表"""
-    COLLECTION_NAME = "summary_store_en"
-    DESCRIPTION = "英文摘要表 - 存储英文文档摘要"
