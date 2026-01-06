@@ -43,7 +43,7 @@ search_params = { ef = 128 }
 host = "localhost"
 port = 27017
 # 数据库名称
-database = "agentic_knowledge"
+database = "default"
 # 连接超时时间（毫秒）
 connect_timeout_ms = 5000
 server_selection_timeout_ms = 5000
@@ -53,9 +53,14 @@ min_pool_size = 10
 
 # MySQL 关系数据库配置
 [mysql]
-host = "localhost"
+# ========== 模式选择 ==========
+# 模式: "mysql" (MySQL Server) 或 "sqlite" (SQLite本地数据库)
+mode = "mysql"
+
+# ========== MySQL Server配置 ==========
+host = "192.168.201.14"
 port = 3306
-database = "agentic_knowledge"
+database = "default"
 # 字符集
 charset = "utf8mb4"
 # 连接池配置
@@ -64,7 +69,13 @@ max_overflow = 20
 pool_timeout = 30
 pool_recycle = 3600
 # 是否显示SQL语句
-echo = false
+echo = true
+
+# ========== SQLite配置 ==========
+# SQLite数据库文件路径
+sqlite_db_path = "data/sqlite.db"
+# 是否显示SQL语句
+sqlite_echo = false
 
 # Neo4j 图数据库配置
 [neo4j]
