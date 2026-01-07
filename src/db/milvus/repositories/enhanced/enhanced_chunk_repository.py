@@ -8,7 +8,7 @@ Enhanced Chunk Repository
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from src.db.milvus.respositories.base_repository import BaseRepository
+from src.db.milvus.repositories.base_repository import BaseRepository
 from src.db.milvus.models.enhanced.enhanced_chunk_schema import EnhancedChunkSchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 

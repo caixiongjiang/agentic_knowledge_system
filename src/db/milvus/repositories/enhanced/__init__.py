@@ -5,7 +5,7 @@ Enhanced Layer Repositories
 增强层数据访问
 """
 
-from src.db.milvus.respositories.enhanced.enhanced_chunk_repository import EnhancedChunkRepository
+from src.db.milvus.repositories.enhanced.enhanced_chunk_repository import EnhancedChunkRepository
 
 __all__ = [
     "EnhancedChunkRepository",

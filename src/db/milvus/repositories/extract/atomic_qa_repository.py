@@ -1,24 +1,22 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 """
-SPO Repository
-SPO三元组表的数据访问层
+Atomic QA Repository
+原子问答对表的数据访问层
 """
 
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from src.db.milvus.respositories.base_repository import BaseRepository
-from src.db.milvus.models.kg.spo_schema import SPOSchema
+from src.db.milvus.repositories.base_repository import BaseRepository
+from src.db.milvus.models.extract.atomic_qa_schema import AtomicQASchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 
 
-class SPORepository(BaseRepository):
-    """SPO三元组表Repository
+class AtomicQARepository(BaseRepository):
+    """Atomic QA表Repository
     
-    提供SPO三元组表的专用查询方法
-    
-    注意：SPO表使用INT64自增主键，与其他表（VARCHAR主键）不同
+    提供原子问答对表的专用查询方法
     """
     
     def __init__(self, manager: Optional[BaseMilvusManager] = None):
@@ -27,23 +25,23 @@ class SPORepository(BaseRepository):
         Args:
             manager: Milvus连接管理器
         """
-        schema = SPOSchema()
+        schema = AtomicQASchema()
         super().__init__(schema, manager)
     
     # ========== 专用查询方法 ==========
     
-    def search_by_relation(
+    def search_by_question(
         self,
-        relation_vector: List[float],
+        question_vector: List[float],
         top_k: int = 10,
         user_id: Optional[str] = None,
         document_id: Optional[str] = None,
         knowledge_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """根据关系向量搜索相似的三元组
+        """根据问题向量搜索相似的QA对
         
         Args:
-            relation_vector: 关系的向量表示
+            question_vector: 问题的向量表示
             top_k: 返回Top-K结果
             user_id: 限定用户ID
             document_id: 限定文档ID
@@ -65,7 +63,7 @@ class SPORepository(BaseRepository):
         
         # 执行搜索
         results = self.search(
-            vectors=[relation_vector],
+            vectors=[question_vector],
             vector_field="vector",
             top_k=top_k,
             filter_expr=filter_expr
@@ -73,96 +71,69 @@ class SPORepository(BaseRepository):
         
         return results[0] if results else []
     
-    def get_triples_by_document(
+    def get_qa_by_document(
         self,
         document_id: str,
         limit: int = 1000
     ) -> List[Dict[str, Any]]:
-        """获取指定文档的所有三元组
+        """获取指定文档的所有QA对
         
         Args:
             document_id: 文档ID
             limit: 返回数量限制
             
         Returns:
-            三元组列表
+            QA对列表
         """
         expr = f"document_id == '{document_id}'"
         return self.query(expr, limit=limit)
     
-    def get_triples_by_tag(
+    def get_qa_by_type(
         self,
-        tag_id: str,
-        limit: int = 1000
-    ) -> List[Dict[str, Any]]:
-        """根据标签查询三元组
-        
-        Args:
-            tag_id: 标签ID
-            limit: 返回数量限制
-            
-        Returns:
-            三元组列表
-        """
-        expr = f"tag_id == '{tag_id}'"
-        return self.query(expr, limit=limit)
-    
-    def get_triples_by_type(
-        self,
-        triple_type: str,
+        qa_type: str,
         user_id: Optional[str] = None,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
-        """根据三元组类型查询
+        """根据QA类型查询
         
         Args:
-            triple_type: 三元组类型（如：entity-relation/event-relation/attribute）
+            qa_type: QA类型（如：factoid/definition/how-to/why等）
             user_id: 限定用户ID（可选）
             limit: 返回数量限制
             
         Returns:
-            三元组列表
+            QA对列表
         """
-        filter_parts = [f"type == '{triple_type}'"]
+        filter_parts = [f"type == '{qa_type}'"]
         if user_id:
             filter_parts.append(f"user_id == '{user_id}'")
         
         expr = " and ".join(filter_parts)
         return self.query(expr, limit=limit)
     
-    def get_triples_by_knowledge_base(
+    def get_qa_by_knowledge_base(
         self,
         knowledge_base_id: str,
         limit: int = 1000
     ) -> List[Dict[str, Any]]:
-        """获取指定知识库的所有三元组
+        """获取指定知识库的所有QA对
         
         Args:
             knowledge_base_id: 知识库ID
             limit: 返回数量限制
             
         Returns:
-            三元组列表
+            QA对列表
         """
         expr = f"knowledge_base_id == '{knowledge_base_id}'"
         return self.query(expr, limit=limit)
     
     def delete_by_document(self, document_id: str) -> None:
-        """删除指定文档的所有三元组
+        """删除指定文档的所有QA对
         
         Args:
             document_id: 文档ID
         """
         expr = f"document_id == '{document_id}'"
         self.delete(expr)
-        self.logger.info(f"已删除文档 {document_id} 的所有SPO三元组")
-    
-    def delete_by_tag(self, tag_id: str) -> None:
-        """删除指定标签关联的所有三元组
-        
-        Args:
-            tag_id: 标签ID
-        """
-        expr = f"tag_id == '{tag_id}'"
-        self.delete(expr)
-        self.logger.info(f"已删除标签 {tag_id} 关联的所有SPO三元组")
+        self.logger.info(f"已删除文档 {document_id} 的所有QA对")

@@ -8,7 +8,7 @@ Section Repository
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from src.db.milvus.respositories.base_repository import BaseRepository
+from src.db.milvus.repositories.base_repository import BaseRepository
 from src.db.milvus.models.base.section_schema import SectionSchema
 from src.db.milvus.milvus_base import BaseMilvusManager
 

@@ -6,19 +6,19 @@ Milvus Repositories (数据访问层)
 """
 
 # 基类
-from src.db.milvus.respositories.base_repository import BaseRepository
+from src.db.milvus.repositories.base_repository import BaseRepository
 
 # Base层 Repositories
-from src.db.milvus.respositories.base import ChunkRepository, SectionRepository
+from src.db.milvus.repositories.base import ChunkRepository, SectionRepository
 
 # Enhanced层 Repositories
-from src.db.milvus.respositories.enhanced import EnhancedChunkRepository
+from src.db.milvus.repositories.enhanced import EnhancedChunkRepository
 
 # Extract层 Repositories
-from src.db.milvus.respositories.extract import AtomicQARepository, SummaryRepository
+from src.db.milvus.repositories.extract import AtomicQARepository, SummaryRepository
 
 # KG层 Repositories
-from src.db.milvus.respositories.kg import SPORepository, TagRepository
+from src.db.milvus.repositories.kg import SPORepository, TagRepository
 
 
 __all__ = [

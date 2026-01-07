@@ -138,7 +138,7 @@ def setup_test_repository(mode: str = "lite", temp_dir: str = None):
         TestConfig.setup_server_config()
     
     from src.db.milvus import get_milvus_manager, reset_manager
-    from src.db.milvus.respositories import ChunkRepository
+    from src.db.milvus.repositories import ChunkRepository
     
     # 重置管理器
     reset_manager()

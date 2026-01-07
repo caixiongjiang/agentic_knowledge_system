@@ -230,7 +230,7 @@ def test_auto_create_collection_lite():
         print(f"\n✓ 使用Lite数据库: {TestConfig.LITE_CONFIG['lite_db_path']}")
         
         from src.db.milvus import get_milvus_manager, reset_manager
-        from src.db.milvus.respositories import ChunkRepository
+        from src.db.milvus.repositories import ChunkRepository
         from src.db.milvus.models import ChunkSchema
         
         # 重置管理器
@@ -306,7 +306,7 @@ def test_auto_create_collection_server():
         print(f"\n✓ 使用Server配置: {TestConfig.SERVER_CONFIG['host']}:{TestConfig.SERVER_CONFIG['port']}")
         
         from src.db.milvus import get_milvus_manager, reset_manager
-        from src.db.milvus.respositories import ChunkRepository
+        from src.db.milvus.repositories import ChunkRepository
         from src.db.milvus.models import ChunkSchema
         
         # 重置管理器
