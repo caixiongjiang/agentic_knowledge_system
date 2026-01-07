@@ -95,17 +95,35 @@ class KnowledgeMixin:
     知识库相关字段 Mixin
     
     提供知识库相关的通用字段：
-    - role: 角色标识
+    - knowledge_base_id: 知识库ID
+    - knowledge_base_name: 知识库名称
+    - parent_knowledge_base_id: 父知识库ID
+    - parent_knowledge_base_name: 父知识库名称
     - knowledge_type: 知识库类型
-    - knowledge_id: 知识库ID
-    - parent_knowledge_id: 父知识库ID
     """
     
-    role = Column(
+    knowledge_base_id = Column(
         String(64), 
-        default="",
-        nullable=False,
-        comment="角色标识"
+        nullable=True,
+        comment="知识库ID，标识数据所属的知识库"
+    )
+    
+    knowledge_base_name = Column(
+        String(255), 
+        nullable=True,
+        comment="知识库名称，便于查询和展示"
+    )
+    
+    parent_knowledge_base_id = Column(
+        String(64), 
+        nullable=True,
+        comment="父知识库ID，用于表示知识库之间的层次关系"
+    )
+    
+    parent_knowledge_base_name = Column(
+        String(255), 
+        nullable=True,
+        comment="父知识库名称，便于查询和展示"
     )
     
     knowledge_type = Column(
@@ -113,18 +131,6 @@ class KnowledgeMixin:
         default="common_file",
         nullable=False,
         comment="知识库类型：common_file=普通文件"
-    )
-    
-    knowledge_id = Column(
-        String(255), 
-        nullable=True,
-        comment="知识库ID"
-    )
-    
-    parent_knowledge_id = Column(
-        String(255), 
-        nullable=True,
-        comment="父知识库ID"
     )
 
 

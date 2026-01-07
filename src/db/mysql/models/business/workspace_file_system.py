@@ -132,6 +132,6 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin, AgentMixin):
     )
     
     # BaseModel、KnowledgeMixin 和 AgentMixin 字段会自动继承：
-    # - role, knowledge_type, knowledge_id, parent_knowledge_id
+    # - knowledge_base_id, knowledge_base_name, parent_knowledge_base_id, parent_knowledge_base_name, knowledge_type
     # - user_id, session_id, task_id, agent_id, agent_instance_id, etc.
     # - status, creator, create_time, updater, update_time, deleted

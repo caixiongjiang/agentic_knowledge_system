@@ -43,5 +43,5 @@ class DocumentSummary(BaseModel, KnowledgeMixin):
     )
     
     # BaseModel 和 KnowledgeMixin 字段会自动继承：
-    # - role, knowledge_type, knowledge_id, parent_knowledge_id
+    # - knowledge_base_id, knowledge_base_name, parent_knowledge_base_id, parent_knowledge_base_name, knowledge_type
     # - status, creator, create_time, updater, update_time, deleted
