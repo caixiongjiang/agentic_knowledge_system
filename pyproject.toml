@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "beanie>=2.0.1",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
+    "motor>=3.7.1",
     "pydantic>=2.12.5",
     "pymilvus[milvus-lite]>=2.6.6",
     "pymysql>=1.1.2",

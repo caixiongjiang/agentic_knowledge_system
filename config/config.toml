@@ -40,7 +40,7 @@ search_params = { ef = 128 }
 
 # MongoDB 文档数据库配置
 [mongodb]
-host = "localhost"
+host = "192.168.201.14"
 port = 27017
 # 数据库名称
 database = "default"
