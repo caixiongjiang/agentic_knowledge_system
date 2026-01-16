@@ -16,7 +16,7 @@ from typing import List, Optional
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from src.db.mysql.models.extract.document_meta_info import DocumentMetaInfo
+from src.db.mysql.models.base.document_meta_info import DocumentMetaInfo
 from src.db.mysql.repositories.base_repository import BaseRepository
 
 
