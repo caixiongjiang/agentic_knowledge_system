@@ -17,6 +17,7 @@ from src.db.mysql.models.base.section_document import SectionDocument
 from src.db.mysql.models.base.chunk_meta_info import ChunkMetaInfo
 from src.db.mysql.models.base.section_meta_info import SectionMetaInfo
 from src.db.mysql.models.base.document_meta_info import DocumentMetaInfo
+from src.db.mysql.models.base.element_meta_info import ElementMetaInfo
 
 __all__ = [
     "ChunkSectionDocument",
@@ -24,4 +25,5 @@ __all__ = [
     "ChunkMetaInfo",
     "SectionMetaInfo",
     "DocumentMetaInfo",
+    "ElementMetaInfo",
 ]

@@ -28,6 +28,10 @@ from src.db.mysql.repositories.base.section_meta_info_repo import (
     SectionMetaInfoRepository,
     section_meta_info_repo
 )
+from src.db.mysql.repositories.base.element_meta_info_repo import (
+    ElementMetaInfoRepository,
+    element_meta_info_repo
+)
 
 __all__ = [
     "ChunkSectionDocumentRepository",
@@ -38,4 +42,6 @@ __all__ = [
     "chunk_meta_info_repo",
     "SectionMetaInfoRepository",
     "section_meta_info_repo",
+    "ElementMetaInfoRepository",
+    "element_meta_info_repo",
 ]
