@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 """=================================================
 @PROJECT_NAME: agentic_knowledge_system
-@File    : milvus_factory.py
+@File    : factory.py
 @Author  : caixiongjiang
 @Date    : 2026/01/03
 @Function: 
@@ -19,9 +19,9 @@ from typing import Union, Optional
 from loguru import logger
 
 from src.utils.config_manager import get_config_manager
-from src.db.milvus.milvus_base import BaseMilvusManager
-from src.db.milvus.milvus_manager import MilvusManager
-from src.db.milvus.milvus_lite_manager import MilvusLiteManager
+from src.db.milvus.connection.base import BaseMilvusManager
+from src.db.milvus.connection.milvus_manager import MilvusManager
+from src.db.milvus.connection.milvus_lite_manager import MilvusLiteManager
 
 
 # 缓存已创建的实例

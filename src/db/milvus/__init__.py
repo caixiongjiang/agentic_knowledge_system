@@ -11,20 +11,21 @@
     - 提供简洁的导入接口
 @Modify History:
     2026/01/03: 重构连接层，添加工厂模式和Lite版支持
+    2026/01/17: 调整为与MySQL相同的连接池代码结构
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
 # ========== 连接层导出 ==========
 
 # 抽象基类
-from src.db.milvus.milvus_base import BaseMilvusManager
+from src.db.milvus.connection.base import BaseMilvusManager
 
 # 具体实现
-from src.db.milvus.milvus_manager import MilvusManager
-from src.db.milvus.milvus_lite_manager import MilvusLiteManager
+from src.db.milvus.connection.milvus_manager import MilvusManager
+from src.db.milvus.connection.milvus_lite_manager import MilvusLiteManager
 
 # 工厂函数（推荐使用）
-from src.db.milvus.milvus_factory import (
+from src.db.milvus.connection.factory import (
     get_milvus_manager,           # 主要接口：自动选择Server/Lite
     get_milvus_server_manager,    # 强制获取Server版
     get_milvus_lite_manager,      # 强制获取Lite版

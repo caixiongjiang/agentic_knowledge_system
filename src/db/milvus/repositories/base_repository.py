@@ -13,8 +13,7 @@ from loguru import logger
 from pymilvus import Collection, FieldSchema, CollectionSchema, DataType, utility
 from pymilvus.exceptions import MilvusException
 
-from src.db.milvus.milvus_factory import get_milvus_manager
-from src.db.milvus.milvus_base import BaseMilvusManager
+from src.db.milvus import get_milvus_manager, BaseMilvusManager
 from src.db.milvus.models.base_schema import BaseSchema, FieldType
 
 
@@ -33,7 +32,7 @@ class BaseRepository(ABC):
     
     使用示例：
         >>> from src.db.milvus.models import ChunkSchemaZh
-        >>> from src.db.milvus.milvus_factory import get_milvus_manager
+        >>> from src.db.milvus import get_milvus_manager
         >>> 
         >>> # 自动使用工厂函数获取Manager
         >>> repo = ChunkRepository()
@@ -294,7 +293,7 @@ class BaseRepository(ABC):
         Returns:
             bool: True 表示 Lite 模式，False 表示 Server 模式
         """
-        from src.db.milvus.milvus_lite_manager import MilvusLiteManager
+        from src.db.milvus import MilvusLiteManager
         return isinstance(self.manager, MilvusLiteManager)
     
     # ========== CRUD操作 ==========

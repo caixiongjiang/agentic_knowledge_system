@@ -10,7 +10,7 @@ from loguru import logger
 
 from src.db.milvus.repositories.base_repository import BaseRepository
 from src.db.milvus.models.enhanced.enhanced_chunk_schema import EnhancedChunkSchema
-from src.db.milvus.milvus_base import BaseMilvusManager
+from src.db.milvus import BaseMilvusManager
 
 
 class EnhancedChunkRepository(BaseRepository):

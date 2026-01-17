@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 """=================================================
 @PROJECT_NAME: agentic_knowledge_system
-@File    : milvus_base.py
+@File    : base.py
 @Author  : caixiongjiang
 @Date    : 2026/01/03
 @Function: 

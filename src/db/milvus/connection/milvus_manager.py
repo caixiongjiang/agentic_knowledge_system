@@ -23,7 +23,7 @@ from loguru import logger
 from pymilvus import connections, utility
 from pymilvus.exceptions import MilvusException
 
-from src.db.milvus.milvus_base import BaseMilvusManager
+from src.db.milvus.connection.base import BaseMilvusManager
 from src.utils.env_manager import get_env_manager
 from src.utils.config_manager import get_config_manager
 
