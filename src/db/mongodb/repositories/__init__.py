@@ -16,6 +16,10 @@ from src.db.mongodb.repositories.base_repository import BaseRepository
 from src.db.mongodb.repositories.chunk_data_repository import ChunkDataRepository, chunk_data_repository
 from src.db.mongodb.repositories.section_data_repository import SectionDataRepository, section_data_repository
 from src.db.mongodb.repositories.document_data_repository import DocumentDataRepository, document_data_repository
+from src.db.mongodb.repositories.element_data_repository import (
+    ElementDataRepository,
+    element_data_repository
+)
 
 __all__ = [
     "BaseRepository",
@@ -25,4 +29,6 @@ __all__ = [
     "section_data_repository",
     "DocumentDataRepository",
     "document_data_repository",
+    "ElementDataRepository",
+    "element_data_repository",
 ]
