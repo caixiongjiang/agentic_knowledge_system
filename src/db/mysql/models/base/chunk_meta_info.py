@@ -12,7 +12,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from sqlalchemy import Column, String, Integer
+from sqlalchemy import Column, String, Integer, JSON
 from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 
 # TODO: 建立索引
@@ -95,6 +95,13 @@ class ChunkMetaInfo(BaseModel, KnowledgeMixin):
         String(20), 
         nullable=True,
         comment="图片文件后缀名（含.）"
+    )
+    
+    # 关联 Elements 信息（用于文件修改 pipeline）
+    element_ids = Column(
+        JSON,
+        nullable=True,
+        comment="关联的Element ID列表（JSON数组格式，用于追踪Chunk包含的元素）"
     )
     
     # BaseModel 和 KnowledgeMixin 字段会自动继承：

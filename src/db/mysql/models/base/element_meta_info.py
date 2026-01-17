@@ -15,6 +15,7 @@
 from sqlalchemy import Column, String, Integer
 from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 
+# TODO: 建立索引
 
 class ElementMetaInfo(BaseModel, KnowledgeMixin):
     """

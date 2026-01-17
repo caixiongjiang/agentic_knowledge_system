@@ -87,6 +87,70 @@ class SectionMetaInfoRepository(BaseRepository[SectionMetaInfo]):
         except SQLAlchemyError as e:
             logger.error(f"根据页面范围查询失败: {e}")
             return []
+    
+    def get_by_element_id(
+        self,
+        session: Session,
+        element_id: str
+    ) -> Optional[SectionMetaInfo]:
+        """
+        根据 element_id 查询 SectionMetaInfo（用于 pipeline）
+        
+        Args:
+            session: 数据库会话
+            element_id: 关联的 Element ID
+        
+        Returns:
+            SectionMetaInfo 实例，未找到返回 None
+        """
+        try:
+            result = session.query(self.model).filter(
+                self.model.element_id == element_id,
+                self.model.deleted == 0
+            ).first()
+            
+            if result:
+                logger.debug(f"找到SectionMetaInfo: element_id={element_id}")
+            else:
+                logger.debug(f"未找到SectionMetaInfo: element_id={element_id}")
+            
+            return result
+        except SQLAlchemyError as e:
+            logger.error(f"根据element_id查询失败: {e}")
+            return None
+    
+    def update_element_id(
+        self,
+        session: Session,
+        section_id: str,
+        element_id: str
+    ) -> bool:
+        """
+        更新 Section 的 element_id（用于 pipeline）
+        
+        Args:
+            session: 数据库会话
+            section_id: Section ID
+            element_id: 要关联的 Element ID
+        
+        Returns:
+            更新成功返回 True，失败返回 False
+        """
+        try:
+            section = self.get_by_id(session, section_id)
+            if not section:
+                logger.warning(f"Section 不存在: {section_id}")
+                return False
+            
+            section.element_id = element_id
+            session.commit()
+            
+            logger.debug(f"更新SectionMetaInfo element_id: {section_id} -> {element_id}")
+            return True
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"更新element_id失败: {e}")
+            return False
 
 
 # 全局实例

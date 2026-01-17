@@ -73,6 +73,13 @@ class SectionMetaInfo(BaseModel, KnowledgeMixin):
         comment="Section标题"
     )
     
+    # 关联 Element 信息（用于文件修改 pipeline）
+    element_id = Column(
+        String(255),
+        nullable=True,
+        comment="关联的Element ID（用于追踪Section对应的元素）"
+    )
+    
     # BaseModel 和 KnowledgeMixin 字段会自动继承：
     # - knowledge_base_id, knowledge_base_name, parent_knowledge_base_id, parent_knowledge_base_name, knowledge_type
     # - status, creator, create_time, updater, update_time, deleted
