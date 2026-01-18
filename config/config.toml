@@ -163,7 +163,7 @@ max_retries = 3
 # MinerU 服务配置（PDF解析）
 [mineru]
 # API服务地址
-api_url = "http://localhost:8080"
+api_url = "http://192.168.201.14:18000"
 # 超时时间（秒）
 timeout = 300
 # 最大重试次数

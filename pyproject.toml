@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.12.5",
     "pymilvus[milvus-lite]>=2.6.6",
     "pymysql>=1.1.2",
+    "pypdf>=6.6.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
     "sqlalchemy>=2.0.45",
