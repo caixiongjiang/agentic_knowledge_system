@@ -386,7 +386,7 @@ class Mineru2Client:
     新版本特性：
     - 异步任务提交，立即返回 task_id
     - 轮询等待任务完成
-    - 不支持分页请求（整个文件一次性处理）
+    - 支持分页请求（可指定页码范围）
     - 支持获取完整结构化数据
     """
     
@@ -412,31 +412,54 @@ class Mineru2Client:
         self, 
         file_bytes: bytes, 
         file_name: str, 
-        pages_number: Optional[int] = None
+        start_page_id: Optional[int] = None,
+        end_page_id: Optional[int] = None
     ) -> Dict:
         """
         解析单个文件（新版本：异步任务模式）
         
-        注意：新版本不支持分页请求，pages_number 参数保留但不使用
+        支持分页请求：
+        - 不传参数：处理整个文件
+        - 传 start_page_id 和 end_page_id：处理指定页码范围
+        - 只传 start_page_id：从指定页码处理到最后一页
         
         :param file_bytes: 文件字节内容
         :param file_name: 文件名
-        :param pages_number: 文件的页数（新版本忽略此参数）
+        :param start_page_id: 起始页码（从0开始），None 表示从第0页开始
+        :param end_page_id: 结束页码（包含），None 表示处理到最后一页
         
         :return: 解析结果（与旧版本格式兼容）
         
         :raises Exception: 请求失败时抛出异常
-        """
-        self.logger.info(f"📤 提交文档解析任务: {file_name}")
         
-        if pages_number is not None:
-            self.logger.warning(
-                f"⚠️  新版本不支持分页请求，pages_number={pages_number} 参数将被忽略"
-            )
+        示例：
+            # 处理整个文件
+            parse_file(file_bytes, "doc.pdf")
+            
+            # 处理前10页（0-9）
+            parse_file(file_bytes, "doc.pdf", start_page_id=0, end_page_id=9)
+            
+            # 处理第5-10页
+            parse_file(file_bytes, "doc.pdf", start_page_id=5, end_page_id=10)
+            
+            # 从第20页到最后
+            parse_file(file_bytes, "doc.pdf", start_page_id=20)
+        """
+        # 构建日志信息
+        if start_page_id is not None or end_page_id is not None:
+            page_range = f"{start_page_id or 0}-{end_page_id or 'end'}"
+            self.logger.info(f"📤 提交文档解析任务: {file_name}，页码范围: {page_range}")
+        else:
+            self.logger.info(f"📤 提交文档解析任务: {file_name}（完整文件）")
         
         try:
             # 步骤1: 提交任务
-            task_id = self._submit_task(file_bytes, file_name)
+            task_id = self._submit_task(
+                file_bytes, 
+                file_name,
+                start_page_id=start_page_id,
+                end_page_id=end_page_id
+            )
             
             # 步骤2: 等待任务完成
             self._wait_for_completion(task_id)
@@ -568,12 +591,20 @@ class Mineru2Client:
         
         return results
 
-    def _submit_task(self, file_bytes: bytes, file_name: str) -> str:
+    def _submit_task(
+        self, 
+        file_bytes: bytes, 
+        file_name: str,
+        start_page_id: Optional[int] = None,
+        end_page_id: Optional[int] = None
+    ) -> str:
         """
         提交任务到新版本 API
         
         :param file_bytes: 文件字节内容
         :param file_name: 文件名
+        :param start_page_id: 起始页码（可选）
+        :param end_page_id: 结束页码（可选）
         
         :return: task_id
         
@@ -591,6 +622,12 @@ class Mineru2Client:
                 'priority': str(self._params.get('priority', 0))
             }
             
+            # 添加分页参数（如果提供）
+            if start_page_id is not None:
+                data['start_page_id'] = str(start_page_id)
+            if end_page_id is not None:
+                data['end_page_id'] = str(end_page_id)
+            
             # 提交任务
             response = requests.post(
                 f'{self._api_base_url}/api/v1/tasks/submit',
@@ -602,7 +639,10 @@ class Mineru2Client:
             if response.status_code == 200:
                 result = response.json()
                 task_id = result['task_id']
-                self.logger.info(f"✅ 任务已提交: {task_id}")
+                page_info = ""
+                if start_page_id is not None or end_page_id is not None:
+                    page_info = f"（页码: {start_page_id or 0}-{end_page_id or 'end'}）"
+                self.logger.info(f"✅ 任务已提交: {task_id} {page_info}")
                 return task_id
             else:
                 raise Exception(f"提交任务失败: {response.text}")
