@@ -188,6 +188,7 @@ class MongoDBManager:
             self.logger.debug("开始导入 Document 模型...")
             
             # 导入所有 Document 模型
+            from src.db.mongodb.models.element_data import ElementData
             from src.db.mongodb.models.chunk_data import ChunkData
             from src.db.mongodb.models.section_data import SectionData
             from src.db.mongodb.models.document_data import DocumentData
@@ -201,6 +202,7 @@ class MongoDBManager:
                 init_beanie(
                     database=self.database,
                     document_models=[
+                        ElementData,
                         ChunkData,
                         SectionData,
                         DocumentData,
@@ -212,7 +214,7 @@ class MongoDBManager:
             )
             
             self.logger.info("Beanie ODM 初始化成功")
-            self.logger.debug("已注册的模型: ChunkData, SectionData, DocumentData")
+            self.logger.debug("已注册的模型: ElementData, ChunkData, SectionData, DocumentData")
         
         except asyncio.TimeoutError:
             self.logger.error("Beanie 初始化超时（30秒）")

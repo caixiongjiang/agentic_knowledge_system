@@ -84,10 +84,9 @@ class BaseRepository(Generic[DocumentType]):
             ... )
         """
         try:
-            # 设置审计字段
+            # 设置审计字段（create_time 和 update_time 由 Field 的 default_factory 自动设置）
             kwargs["creator"] = creator
-            kwargs["create_time"] = datetime.now()
-            kwargs["update_time"] = datetime.now()
+            kwargs["updater"] = creator
             
             # 创建文档实例
             doc = self.model(**kwargs)
@@ -125,13 +124,10 @@ class BaseRepository(Generic[DocumentType]):
             ... ], creator="user1")
         """
         try:
-            current_time = datetime.now()
-            
-            # 为每条数据添加审计字段
+            # 为每条数据添加审计字段（create_time 和 update_time 由 Field 的 default_factory 自动设置）
             for data in data_list:
                 data["creator"] = creator
-                data["create_time"] = current_time
-                data["update_time"] = current_time
+                data["updater"] = creator
                 data.setdefault("deleted", 0)
                 data.setdefault("status", 0)
             
@@ -166,6 +162,8 @@ class BaseRepository(Generic[DocumentType]):
         """
         根据ID查询单条记录
         
+        支持字符串 ID（如 UUID）和 ObjectId 两种格式
+        
         Args:
             doc_id: 文档ID（字符串、ObjectId 或 PydanticObjectId）
             include_deleted: 是否包含已删除记录，默认False
@@ -175,24 +173,29 @@ class BaseRepository(Generic[DocumentType]):
             
         Examples:
             >>> repo = ChunkDataRepository()
-            >>> chunk = await repo.get_by_id("64abc123...")
+            >>> chunk = await repo.get_by_id("chunk_a1b2c3d4-...")
+            >>> chunk = await repo.get_by_id("64abc123...")  # ObjectId 格式
         """
         try:
-            # 类型转换：确保 doc_id 是 ObjectId 类型
+            # 直接使用 doc_id，支持字符串（UUID）或 ObjectId
+            query_id = doc_id
             if isinstance(doc_id, str):
-                try:
-                    object_id = PydanticObjectId(doc_id)
-                except Exception:
-                    self.logger.warning(f"无效的ObjectId格式: {doc_id}")
-                    return None
+                # 尝试判断是否为 ObjectId 格式（24字符十六进制）
+                if len(doc_id) == 24 and all(c in '0123456789abcdef' for c in doc_id.lower()):
+                    try:
+                        query_id = PydanticObjectId(doc_id)
+                    except Exception:
+                        # 如果转换失败，保持为字符串
+                        query_id = doc_id
+                # 否则直接使用字符串（支持 UUID 等自定义格式）
             elif isinstance(doc_id, (ObjectId, PydanticObjectId)):
-                object_id = doc_id
+                query_id = doc_id
             else:
                 self.logger.warning(f"不支持的ID类型: {type(doc_id)}")
                 return None
             
             # 构建查询
-            query = {"_id": object_id}
+            query = {"_id": query_id}
             if not include_deleted:
                 query["deleted"] = 0
             

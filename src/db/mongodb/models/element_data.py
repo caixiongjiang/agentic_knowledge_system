@@ -24,7 +24,7 @@ class ElementData(BaseDocument):
     ElementData - PDF 解析元素内容数据
     
     设计原则：
-    - _id: 与 MySQL 的 element_id 一致
+    - _id: 与 MySQL 的 element_id 一致（使用字符串 UUID）
     - type: 外置类型字段，便于查询过滤
     - content: 存储具体内容，根据 type 不同而不同
     
@@ -36,6 +36,13 @@ class ElementData(BaseDocument):
     1. 通过 MySQL 查询得到 element_id 列表
     2. 使用 element_id 到 MongoDB 批量获取内容
     """
+    
+    # 主键字段（覆盖 BaseDocument 的 id，使用 str 类型支持 UUID）
+    id: str = Field(
+        ...,
+        alias="_id",
+        description="元素唯一标识，与 MySQL 的 element_id 一致（格式：element_<uuid>）"
+    )
     
     # 类型字段（外置）
     type: str = Field(
@@ -66,17 +73,18 @@ class ElementData(BaseDocument):
     
     class Config:
         """Pydantic 配置"""
+        populate_by_name = True  # 允许使用字段名和别名
         json_schema_extra = {
             "examples": [
                 {
-                    "_id": "elem_uuid_001",
+                    "_id": "element_a1b2c3d4-e5f6-4789-0abc-def123456789",
                     "type": "text",
                     "content": {
                         "text": "Thick Film Surface Mount Chip Resistors..."
                     }
                 },
                 {
-                    "_id": "elem_uuid_002",
+                    "_id": "element_b2c3d4e5-f6a7-4890-1bcd-ef0234567890",
                     "type": "image",
                     "content": {
                         "image_caption": ["图1: 示例图片"],
@@ -84,7 +92,7 @@ class ElementData(BaseDocument):
                     }
                 },
                 {
-                    "_id": "elem_uuid_003",
+                    "_id": "element_c3d4e5f6-a7b8-4901-2cde-f12345678901",
                     "type": "table",
                     "content": {
                         "table_caption": ["表1: 规格参数"],

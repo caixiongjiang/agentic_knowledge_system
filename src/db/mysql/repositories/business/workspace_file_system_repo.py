@@ -143,7 +143,7 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
             if obj:
                 obj.deleted = 1
                 obj.updater = updater
-                obj.update_time = datetime.now()
+                # update_time 由数据库 onupdate 自动处理
                 session.commit()
                 logger.debug(
                     f"成功删除WorkspaceFileSystem: user_id={user_id}, file_id={file_id}"

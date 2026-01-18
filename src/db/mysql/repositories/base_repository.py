@@ -219,9 +219,8 @@ class BaseRepository(Generic[ModelType]):
                 if hasattr(obj, key):
                     setattr(obj, key, value)
             
-            # 更新审计字段
+            # 更新审计字段（update_time 由数据库 onupdate 自动处理）
             obj.updater = updater
-            obj.update_time = datetime.now()
             
             session.commit()
             session.refresh(obj)
@@ -255,7 +254,7 @@ class BaseRepository(Generic[ModelType]):
             if obj:
                 obj.deleted = 1
                 obj.updater = updater
-                obj.update_time = datetime.now()
+                # update_time 由数据库 onupdate 自动处理
                 session.commit()
                 logger.debug(f"成功删除{self.model_name}记录: {id_value}")
                 return True
@@ -301,9 +300,9 @@ class BaseRepository(Generic[ModelType]):
                 self.model.deleted == 0
             ).update({
                 'deleted': 1,
-                'updater': updater,
-                'update_time': datetime.now()
-            }, synchronize_session=False)
+                'updater': updater
+                # update_time 由数据库 onupdate 自动处理
+            }, synchronize_session='fetch')
             
             session.commit()
             logger.debug(f"批量删除{self.model_name}记录: {updated_count}条")
@@ -346,7 +345,7 @@ class BaseRepository(Generic[ModelType]):
                         setattr(existing_obj, key, value)
                 
                 existing_obj.updater = updater
-                existing_obj.update_time = datetime.now()
+                # update_time 由数据库 onupdate 自动处理
                 
                 session.commit()
                 session.refresh(existing_obj)

@@ -27,6 +27,13 @@ class SectionData(BaseDocument):
     存储文档的章节数据，用于组织文档的层级结构。
     """
     
+    # ========== 主键字段 ==========
+    id: str = Field(
+        ...,
+        alias="_id",
+        description="章节唯一标识（格式：section_<uuid>）"
+    )
+    
     # ========== 基础字段 ==========
     message_id: Optional[int] = Field(
         None,
@@ -48,6 +55,11 @@ class SectionData(BaseDocument):
         default_factory=dict,
         description="section元数据（JSON格式，存储额外信息）"
     )
+    
+    # ========== Pydantic 配置 ==========
+    class Config:
+        """Pydantic 配置"""
+        populate_by_name = True  # 允许使用字段名和别名
     
     # ========== Beanie 配置 ==========
     class Settings:

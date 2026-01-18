@@ -32,6 +32,13 @@ class ChunkData(BaseDocument):
     支持多语言翻译、增强处理、摘要和问答提取。
     """
     
+    # ========== 主键字段 ==========
+    id: str = Field(
+        ...,
+        alias="_id",
+        description="chunk唯一标识（格式：chunk_<uuid>）"
+    )
+    
     # ========== 基础字段 ==========
     message_id: Optional[int] = Field(
         None,
@@ -102,6 +109,11 @@ class ChunkData(BaseDocument):
         default_factory=list,
         description="chunk英文问答对列表（原子级问答）"
     )
+    
+    # ========== Pydantic 配置 ==========
+    class Config:
+        """Pydantic 配置"""
+        populate_by_name = True  # 允许使用字段名和别名
     
     # ========== Beanie 配置 ==========
     class Settings:

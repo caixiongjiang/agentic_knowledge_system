@@ -47,10 +47,10 @@ class SectionMetaInfo(BaseModel, KnowledgeMixin):
         comment="Section在Document中的序号（从0开始）"
     )
     
-    level = Column(
+    text_level = Column(
         Integer, 
         nullable=True,
-        comment="Section的层级深度（1=一级标题，2=二级标题）"
+        comment="Section的文本层级深度（1=一级标题，2=二级标题）"
     )
     
     # 页面范围信息

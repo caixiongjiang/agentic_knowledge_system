@@ -26,33 +26,33 @@ class SectionMetaInfoRepository(BaseRepository[SectionMetaInfo]):
     def __init__(self):
         super().__init__(SectionMetaInfo)
     
-    def get_by_level(
+    def get_by_text_level(
         self, 
         session: Session,
-        level: int
+        text_level: int
     ) -> List[SectionMetaInfo]:
         """
-        根据 level 查询所有 SectionMetaInfo
+        根据 text_level 查询所有 SectionMetaInfo
         
         Args:
             session: 数据库会话
-            level: 层级深度
+            text_level: 文本层级深度
         
         Returns:
             SectionMetaInfo 列表
         """
         try:
             results = session.query(self.model).filter(
-                self.model.level == level,
+                self.model.text_level == text_level,
                 self.model.deleted == 0
             ).all()
             
             logger.debug(
-                f"查询到{len(results)}个SectionMetaInfo: level={level}"
+                f"查询到{len(results)}个SectionMetaInfo: text_level={text_level}"
             )
             return results
         except SQLAlchemyError as e:
-            logger.error(f"根据level查询失败: {e}")
+            logger.error(f"根据text_level查询失败: {e}")
             return []
     
     def get_by_page_range(

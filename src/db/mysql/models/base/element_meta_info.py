@@ -50,14 +50,14 @@ class ElementMetaInfo(BaseModel, KnowledgeMixin):
     page_position = Column(
         String(255), 
         nullable=True,
-        comment="在页面中的位置（JSON格式：{x, y, width, height}）"
+        comment="在页面中的位置（JSON数组格式：[x, y, width, height]）"
     )
     
     # 辅助元数据
-    level = Column(
+    text_level = Column(
         Integer, 
         nullable=True,
-        comment="元素层级深度（1=一级，2=二级，仅text类型有效）"
+        comment="文本元素层级深度（1=一级，2=二级，仅text类型有效）"
     )
     
     # MinIO 存储相关（仅图片类型使用）
