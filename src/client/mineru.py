@@ -398,13 +398,11 @@ class Mineru2Client:
             mineru_config: 配置字典，需包含以下字段：
                 - endpoint: API 基础地址，如 "http://localhost:18000"
                 - timeout: 超时时间（秒），默认 600
-                - poll_interval: 轮询间隔（秒），默认 2
                 - params: 任务参数，如 backend, lang, method 等
         """
         self._mineru_config = mineru_config
         self._api_base_url = mineru_config.get("endpoint")
         self._timeout = mineru_config.get("timeout", 600)
-        self._poll_interval = mineru_config.get("poll_interval", 2)
         self._params = mineru_config.get("params", {})
         self.logger = logger
     
@@ -689,9 +687,6 @@ class Mineru2Client:
                 elapsed_time = time.time() - start_time
                 if elapsed_time > self._timeout:
                     raise Exception(f"任务超时（{self._timeout}秒）")
-                
-                # 等待后继续轮询
-                time.sleep(self._poll_interval)
                 
             except requests.exceptions.RequestException as e:
                 raise Exception(f"网络请求错误: {e}")
