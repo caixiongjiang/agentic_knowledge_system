@@ -427,7 +427,6 @@ async def main():
         mineru_config = {
             "endpoint": mineru_raw_config.get("api_url", "http://localhost:8000"),
             "timeout": mineru_raw_config.get("timeout", 600),
-            "poll_interval": mineru_raw_config.get("poll_interval", 1),
             "params": {
                 "backend": "pipeline",
                 "lang": "ch",

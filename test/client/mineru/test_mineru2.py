@@ -25,7 +25,7 @@ def load_config() -> dict:
     加载配置，返回 Mineru 客户端配置字典
     """
     return {
-        "endpoint": "http://192.168.201.14:18000",  # Mineru API 地址
+        "api_url": "http://192.168.201.14:18000",  # Mineru API 地址
         "timeout": 600,  # 超时时间（秒）
     }
 
@@ -63,7 +63,7 @@ def test_parse_full_file(pdf_path: str, output_dir: Optional[str] = None):
     # 创建客户端
     try:
         config = load_config()
-        logger.info(f"📡 API 地址: {config['endpoint']}")
+        logger.info(f"📡 API 地址: {config['api_url']}")
         client = Mineru2Client(config)
         logger.info(f"✅ 客户端初始化成功")
     except Exception as e:
@@ -329,7 +329,7 @@ def main():
     )
     
     # 测试文件路径
-    pdf_path = "tmp_files/pdf/demo1.pdf"
+    pdf_path = "tmp_files/pdf/FastSegFormer.pdf"
     output_dir = "tmp_results/parser/pdf"
     
     logger.info(f"\n{'#' * 80}")
