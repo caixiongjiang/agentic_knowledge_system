@@ -398,12 +398,10 @@ class Mineru2Client:
             mineru_config: 配置字典，需包含以下字段：
                 - endpoint: API 基础地址，如 "http://localhost:18000"
                 - timeout: 超时时间（秒），默认 600
-                - params: 任务参数，如 backend, lang, method 等
         """
         self._mineru_config = mineru_config
         self._api_base_url = mineru_config.get("endpoint")
         self._timeout = mineru_config.get("timeout", 600)
-        self._params = mineru_config.get("params", {})
         self.logger = logger
     
     def parse_file(
@@ -411,7 +409,13 @@ class Mineru2Client:
         file_bytes: bytes, 
         file_name: str, 
         start_page_id: Optional[int] = None,
-        end_page_id: Optional[int] = None
+        end_page_id: Optional[int] = None,
+        backend: str = 'pipeline',
+        lang: str = 'ch',
+        method: str = 'auto',
+        formula_enable: bool = True,
+        table_enable: bool = True,
+        priority: int = 0
     ) -> Dict:
         """
         解析单个文件（新版本：异步任务模式）
@@ -425,6 +429,12 @@ class Mineru2Client:
         :param file_name: 文件名
         :param start_page_id: 起始页码（从0开始），None 表示从第0页开始
         :param end_page_id: 结束页码（包含），None 表示处理到最后一页
+        :param backend: 处理后端，'pipeline' 或 'magic-pdf'，默认 'pipeline'
+        :param lang: 文档语言，'ch'（中文）或 'en'（英文），默认 'ch'
+        :param method: 解析方法，'auto'、'ocr'、'txt'，默认 'auto'
+        :param formula_enable: 是否启用公式识别，默认 True
+        :param table_enable: 是否启用表格识别，默认 True
+        :param priority: 任务优先级，0-9，数字越大优先级越高，默认 0
         
         :return: 解析结果（与旧版本格式兼容）
         
@@ -437,11 +447,11 @@ class Mineru2Client:
             # 处理前10页（0-9）
             parse_file(file_bytes, "doc.pdf", start_page_id=0, end_page_id=9)
             
-            # 处理第5-10页
-            parse_file(file_bytes, "doc.pdf", start_page_id=5, end_page_id=10)
+            # 处理第5-10页，启用 OCR
+            parse_file(file_bytes, "doc.pdf", start_page_id=5, end_page_id=10, method='ocr')
             
-            # 从第20页到最后
-            parse_file(file_bytes, "doc.pdf", start_page_id=20)
+            # 从第20页到最后，禁用公式识别
+            parse_file(file_bytes, "doc.pdf", start_page_id=20, formula_enable=False)
         """
         # 构建日志信息
         if start_page_id is not None or end_page_id is not None:
@@ -456,7 +466,13 @@ class Mineru2Client:
                 file_bytes, 
                 file_name,
                 start_page_id=start_page_id,
-                end_page_id=end_page_id
+                end_page_id=end_page_id,
+                backend=backend,
+                lang=lang,
+                method=method,
+                formula_enable=formula_enable,
+                table_enable=table_enable,
+                priority=priority
             )
             
             # 步骤2: 等待任务完成
@@ -479,12 +495,28 @@ class Mineru2Client:
             self.logger.error(f"❌ 文档解析失败: {file_name}, 错误: {e}")
             raise
 
-    def parse_files(self, file_list: List[tuple], max_concurrent: int = 5) -> List[Dict]:
+    def parse_files(
+        self, 
+        file_list: List[tuple], 
+        max_concurrent: int = 5,
+        backend: str = 'pipeline',
+        lang: str = 'ch',
+        method: str = 'auto',
+        formula_enable: bool = True,
+        table_enable: bool = True,
+        priority: int = 0
+    ) -> List[Dict]:
         """
         批量解析多个文件（并发提交，顺序等待）
         
         :param file_list: 文件列表，每个元素为 (file_bytes, file_name) 元组
         :param max_concurrent: 最大并发提交数，默认5（避免服务器过载）
+        :param backend: 处理后端，'pipeline' 或 'magic-pdf'，默认 'pipeline'
+        :param lang: 文档语言，'ch'（中文）或 'en'（英文），默认 'ch'
+        :param method: 解析方法，'auto'、'ocr'、'txt'，默认 'auto'
+        :param formula_enable: 是否启用公式识别，默认 True
+        :param table_enable: 是否启用表格识别，默认 True
+        :param priority: 任务优先级，0-9，数字越大优先级越高，默认 0
         
         :return: 解析结果列表
         
@@ -509,7 +541,16 @@ class Mineru2Client:
             
             for file_bytes, file_name in batch:
                 try:
-                    task_id = self._submit_task(file_bytes, file_name)
+                    task_id = self._submit_task(
+                        file_bytes, 
+                        file_name,
+                        backend=backend,
+                        lang=lang,
+                        method=method,
+                        formula_enable=formula_enable,
+                        table_enable=table_enable,
+                        priority=priority
+                    )
                     task_ids.append({
                         "task_id": task_id,
                         "file_name": file_name,
@@ -594,7 +635,13 @@ class Mineru2Client:
         file_bytes: bytes, 
         file_name: str,
         start_page_id: Optional[int] = None,
-        end_page_id: Optional[int] = None
+        end_page_id: Optional[int] = None,
+        backend: str = 'pipeline',
+        lang: str = 'ch',
+        method: str = 'auto',
+        formula_enable: bool = True,
+        table_enable: bool = True,
+        priority: int = 0
     ) -> str:
         """
         提交任务到新版本 API
@@ -603,6 +650,12 @@ class Mineru2Client:
         :param file_name: 文件名
         :param start_page_id: 起始页码（可选）
         :param end_page_id: 结束页码（可选）
+        :param backend: 处理后端，'pipeline' 或 'magic-pdf'
+        :param lang: 文档语言，'ch'（中文）或 'en'（英文）
+        :param method: 解析方法，'auto'、'ocr'、'txt'
+        :param formula_enable: 是否启用公式识别
+        :param table_enable: 是否启用表格识别
+        :param priority: 任务优先级，0-9
         
         :return: task_id
         
@@ -612,12 +665,12 @@ class Mineru2Client:
             # 准备文件和参数
             files = {'file': (file_name, file_bytes)}
             data = {
-                'backend': self._params.get('backend', 'pipeline'),
-                'lang': self._params.get('lang', 'ch'),
-                'method': self._params.get('method', 'auto'),
-                'formula_enable': str(self._params.get('formula_enable', True)).lower(),
-                'table_enable': str(self._params.get('table_enable', True)).lower(),
-                'priority': str(self._params.get('priority', 0))
+                'backend': backend,
+                'lang': lang,
+                'method': method,
+                'formula_enable': str(formula_enable).lower(),
+                'table_enable': str(table_enable).lower(),
+                'priority': str(priority)
             }
             
             # 添加分页参数（如果提供）

@@ -27,15 +27,6 @@ def load_config() -> dict:
     return {
         "endpoint": "http://192.168.201.14:18000",  # Mineru API 地址
         "timeout": 600,  # 超时时间（秒）
-        "poll_interval": 1,  # 轮询间隔（秒）
-        "params": {
-            "backend": "pipeline",  # 处理后端：pipeline 或 magic-pdf
-            "lang": "ch",  # 语言：ch（中文）或 en（英文）
-            "method": "auto",  # 解析方法：auto、ocr、txt
-            "formula_enable": True,  # 是否启用公式识别
-            "table_enable": True,  # 是否启用表格识别
-            "priority": 0  # 任务优先级：0-9，数字越大优先级越高
-        }
     }
 
 
@@ -85,7 +76,13 @@ def test_parse_full_file(pdf_path: str, output_dir: Optional[str] = None):
         
         result = client.parse_file(
             file_bytes=file_bytes,
-            file_name=pdf_file.name
+            file_name=pdf_file.name,
+            backend="pipeline",  # 处理后端：pipeline 或 magic-pdf
+            lang="ch",  # 语言：ch（中文）或 en（英文）
+            method="auto",  # 解析方法：auto、ocr、txt
+            formula_enable=True,  # 是否启用公式识别
+            table_enable=True,  # 是否启用表格识别
+            priority=0  # 任务优先级：0-9，数字越大优先级越高
         )
         
         logger.info(f"\n解析结果统计:")
@@ -175,7 +172,13 @@ def test_parse_with_pagination(pdf_path: str, output_dir: Optional[str] = None):
             file_bytes=file_bytes,
             file_name=pdf_file.name,
             start_page_id=0,
-            end_page_id=9
+            end_page_id=9,
+            backend="pipeline",
+            lang="ch",
+            method="auto",
+            formula_enable=True,
+            table_enable=True,
+            priority=0
         )
         
         logger.info(f"\n解析结果统计:")
@@ -266,7 +269,13 @@ def test_parse_multiple_ranges(pdf_path: str, output_dir: Optional[str] = None):
                 file_bytes=file_bytes,
                 file_name=pdf_file.name,
                 start_page_id=start,
-                end_page_id=end
+                end_page_id=end,
+                backend="pipeline",
+                lang="ch",
+                method="auto",
+                formula_enable=True,
+                table_enable=True,
+                priority=0
             )
             
             results.append({
