@@ -383,6 +383,9 @@ class Mineru2Client:
                 if elapsed_time > self._timeout:
                     raise Exception(f"任务超时（{self._timeout}秒）")
 
+                # 添加轮询间隔，避免频繁请求
+                time.sleep(1)  # 每秒查询一次
+
             except requests.exceptions.RequestException as e:
                 raise Exception(f"网络请求错误: {e}")
 
