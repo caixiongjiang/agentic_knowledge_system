@@ -2,11 +2,11 @@
 # -*- coding: UTF-8 -*-
 """=================================================
 @PROJECT_NAME: agentic_knowledge_system
-@File    : redis_manager.py
+@File    : __init__.py
 @Author  : caixiongjiang
-@Date    : 2025/12/31 14:47
+@Date    : 2026/01/22
 @Function: 
-    函数功能名称
+    Redis 测试模块
 @Modify History:
          
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved

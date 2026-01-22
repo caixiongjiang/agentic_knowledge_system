@@ -89,19 +89,22 @@ database = "neo4j"
 
 # Redis 缓存配置
 [redis]
-host = "localhost"
+# 模式选择：standalone（单机）或 cluster（集群）
+mode = "standalone"
+
+host = "192.168.201.14"
 port = 6379
 # 数据库编号（0-15）
-db = 0
-# 连接超时时间（秒）
-socket_timeout = 5
-socket_connect_timeout = 5
-# 连接池配置
-max_connections = 50
-# 键前缀
-key_prefix = "aks:"
-# 默认过期时间（秒）, -1表示不过期
-default_expire = 3600
+db = 2
+max_connections = 50        # 连接池最大连接数
+socket_timeout = 5.0        # Socket 超时时间（秒）
+socket_connect_timeout = 5.0  # Socket 连接超时时间（秒）
+decode_responses = true     # 是否自动解码为字符串
+encoding = "utf-8"          # 字符编码
+
+# 业务配置（可选）
+key_prefix = "aks:"        # 全局键前缀
+default_expire = 3600      # 默认过期时间（秒）
 
 # MinIO 对象存储配置
 [minio]
