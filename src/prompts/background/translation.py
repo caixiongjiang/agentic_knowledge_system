@@ -48,15 +48,14 @@ language_translation_system_prompt = """
 
 ### 5. Output Formatting (Anti-Breakage)
 - Output the result wrapped in a **Markdown Code Block**.
-- **Safety Mechanism:** To prevent nesting conflicts (if the source text contains "```"), use **four backticks** (` ```` `) or **four tildes** (`~~~~`) to wrap the final output.
-- **Forbidden:** Do NOT output the source language name. Do NOT output conversational fillers.
+- **STRICT FORMAT:** You MUST use exactly **four backticks with "markdown" label** to wrap the final output: ` ````markdown ` at the start and ` ```` ` at the end.
 
 ## Workflows
 1. Parse User Input to extract content inside `<source_text>`.
 2. Analyze format (HTML / Plain / Table).
 3. Translate text content according to the Rules above.
 4. Construct the final output string.
-5. Wrap the string in a safe Markdown code block (using 4 backticks ` ```` ` is recommended for safety).
+5. **MUST** wrap the string in the format: ` ````markdown ` + translated content + ` ```` `.
 
 ## Examples (Target: Simplified Chinese)
 
