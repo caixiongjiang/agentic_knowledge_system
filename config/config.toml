@@ -1,5 +1,10 @@
 # Agentic knowledge system configuration file
 
+# ==================== Kafka Topic 命名规范 ====================
+# 格式: {业务模块}.{处理阶段}.{事件类型}
+# 示例: knowledge_base.index.start, db_write.embedding.start
+# 注意: 使用点号分隔（Kafka 不允许使用冒号）
+
 # ==================== 数据库配置 ====================
 
 # Milvus 向量数据库配置
@@ -117,6 +122,134 @@ default_bucket = "knowledge-files"
 region = "us-east-1"
 # 上传分片大小（字节）
 part_size = 10485760  # 10MB
+
+# Kafka 消息队列配置
+[kafka]
+# ========== Broker配置 ==========
+# Kafka集群地址（多个地址用逗号分隔）
+bootstrap_servers = ["192.168.201.14:9092"]
+# 安全协议: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL
+security_protocol = "PLAINTEXT"
+# SASL机制: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
+sasl_mechanism = "PLAIN"
+
+# ========== Producer配置 ==========
+[kafka.producer]
+# 消息确认模式: 0(无确认), 1(leader确认), all(所有副本确认)
+# 注意: 配置中使用 "all"，代码会自动转换为 -1（aiokafka 要求）
+acks = "all"
+# 批处理大小（字节，映射到 aiokafka 的 max_batch_size）
+batch_size = 65536
+# 批处理延迟时间（毫秒）
+linger_ms = 5
+# 压缩类型: none, gzip, snappy, lz4, zstd
+compression_type = "lz4"
+# 请求超时时间（毫秒）
+request_timeout_ms = 30000
+# 最大请求大小（字节）
+max_request_size = 1048576  # 1MB
+
+# ========== Consumer配置 ==========
+[kafka.consumer]
+# Consumer Group ID前缀（实际使用时会加上组件名称）
+group_id_prefix = "aks"
+# 自动提交offset
+enable_auto_commit = false
+# 自动提交间隔（毫秒）
+auto_commit_interval_ms = 5000
+# 消费位置策略: earliest（从头开始）, latest（从最新开始）
+auto_offset_reset = "earliest"
+# 单次拉取最大记录数
+max_poll_records = 500
+# 单次拉取最小字节数
+fetch_min_bytes = 1024
+# 单次拉取最大等待时间（毫秒）
+fetch_max_wait_ms = 500
+# Session超时时间（毫秒）
+session_timeout_ms = 30000
+# 心跳间隔（毫秒）
+heartbeat_interval_ms = 3000
+# 最大拉取间隔（毫秒）
+max_poll_interval_ms = 300000
+
+# ========== Topic配置 ==========
+[kafka.topics]
+# Topic副本因子
+replication_factor = 1
+# 最小同步副本数
+min_insync_replicas = 1
+# 消息保留时间（毫秒）
+retention_ms = 604800000  # 7天
+# 消息保留大小（字节，-1表示无限制）
+retention_bytes = -1
+# 日志清理策略: delete, compact
+cleanup_policy = "delete"
+
+# ========== 前台阶段Topic分区数 ==========
+# 高并发入口，需快速分发
+index_start_partitions = 32
+# 承接上游，保持一致
+parse_end_partitions = 32
+# 触发多个Consumer
+split_end_partitions = 32
+
+# ========== 后台阶段Topic分区数 ==========
+# 后台任务，并行度要求较低
+summary_end_partitions = 16
+graph_end_partitions = 16
+image_end_partitions = 16
+
+# ========== 数据库写入Topic分区数 ==========
+# 向量写入量最大，核心瓶颈
+embedding_start_partitions = 32
+# 图谱写入量中等
+graph_start_partitions = 16
+# 元数据写入频繁
+meta_start_partitions = 32
+# 文档写入量大
+mongo_start_partitions = 32
+
+# ========== 批处理配置 ==========
+[kafka.batch]
+# EmbeddingMilvusWriter批处理配置
+embedding_batch_size = 100
+embedding_flush_interval_ms = 500
+embedding_api_batch_size = 64  # 单次Embedding API请求的batch size
+milvus_insert_batch_size = 100
+
+# Neo4jWriter批处理配置
+neo4j_batch_size = 500
+neo4j_flush_interval_ms = 2000
+
+# MySQLWriter批处理配置
+mysql_batch_size = 200
+mysql_flush_interval_ms = 1000
+
+# MongoWriter批处理配置
+mongo_batch_size = 100
+mongo_flush_interval_ms = 500
+
+# ========== 重试和DLQ配置 ==========
+[kafka.retry]
+# 最大重试次数
+max_retries = 3
+# 重试延迟（秒）
+retry_delays = [1, 5, 30]
+# 是否启用DLQ（死信队列）
+enable_dlq = true
+# DLQ Topic后缀
+dlq_suffix = ".dlq"
+# 重试Topic后缀
+retry_suffix = ".retry"
+
+# ========== 幂等性配置 ==========
+[kafka.idempotency]
+# 是否启用幂等性检查
+enable = true
+# 去重缓存过期时间（秒）
+dedup_cache_ttl = 86400  # 24小时
+# 使用Redis作为去重缓存
+use_redis = true
 
 # ==================== 模型配置 ====================
 

@@ -249,6 +249,24 @@ class EnvManager:
             "secret_key": self.get("MINIO_SECRET_KEY", ""),
         }
     
+    def get_kafka_auth(self) -> Dict[str, Optional[str]]:
+        """
+        获取Kafka认证信息
+        
+        Returns:
+            包含SASL和SSL认证信息的字典
+        """
+        return {
+            # SASL 认证
+            "sasl_username": self.get("KAFKA_SASL_USERNAME"),
+            "sasl_password": self.get("KAFKA_SASL_PASSWORD"),
+            # SSL 证书
+            "ssl_cafile": self.get("KAFKA_SSL_CAFILE"),
+            "ssl_certfile": self.get("KAFKA_SSL_CERTFILE"),
+            "ssl_keyfile": self.get("KAFKA_SSL_KEYFILE"),
+            "ssl_password": self.get("KAFKA_SSL_PASSWORD"),
+        }
+    
     # ==================== AI 模型 API Keys ====================
     
     def get_embedding_api_key(self) -> Optional[str]:

@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiokafka[lz4]>=0.13.0",
     "beanie>=2.0.1",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
+    "lz4>=4.4.5",
     "motor>=3.7.1",
     "pydantic>=2.12.5",
     "pymilvus[milvus-lite]>=2.6.6",

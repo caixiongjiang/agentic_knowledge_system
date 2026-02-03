@@ -158,6 +158,10 @@ class ConfigManager:
         """获取MinIO配置"""
         return self.get_section("minio")
     
+    def get_kafka_config(self) -> Dict[str, Any]:
+        """获取Kafka配置"""
+        return self.get_section("kafka")
+    
     # ==================== 模型配置获取 ====================
     
     def get_embedding_config(self) -> Dict[str, Any]:
@@ -203,7 +207,8 @@ class ConfigManager:
             "neo4j": ["uri", "database"],
             "redis": ["host", "port"],
             "minio": ["endpoint", "default_bucket"],
-            "embedding": ["provider", "model_name", "dimension"],
+            "kafka": ["bootstrap_servers"],
+            "embedding": ["api_base", "model_name", "dimension"],
             "reranker": ["provider", "model_name"],
             "mineru": ["api_url"],
             "logging": ["level", "log_dir", "log_file"],
@@ -340,6 +345,26 @@ class ConfigManager:
         
         if api_key:
             config["api_key"] = api_key
+        
+        return config
+    
+    def get_kafka_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
+        """
+        获取完整的Kafka配置（配置文件 + 环境变量）
+        
+        Args:
+            env_manager: 环境变量管理器实例
+            
+        Returns:
+            完整配置，包含认证信息
+        """
+        config = self.get_kafka_config()
+        auth = env_manager.get_kafka_auth()
+        
+        # 将认证信息添加到配置中
+        # 注意：这里不直接合并，因为 kafka_manager 需要从环境变量中单独获取
+        # 这个方法主要用于统一的配置获取接口
+        config["auth"] = auth
         
         return config
 

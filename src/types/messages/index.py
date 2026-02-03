@@ -1,0 +1,184 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+"""
+索引相关消息模型
+
+定义文件索引流程的各阶段消息：
+- IndexStartMessage: 索引开始
+- ParseEndMessage: 解析完成
+- SplitEndMessage: 分割完成
+"""
+
+from typing import Dict, List, Optional, Any
+from pydantic import Field
+
+from src.types.messages.base import BaseMessage
+
+
+class IndexStartMessage(BaseMessage):
+    """
+    索引开始消息
+    
+    用户上传文件后，S3 存储完成，触发索引构建流程。
+    发送到: knowledge_base.index.start
+    消费者: FileParser
+    """
+    
+    # S3 存储路径
+    s3_path: str = Field(
+        ...,
+        description="文件在 S3 中的存储路径"
+    )
+    
+    # 文件名
+    filename: str = Field(
+        ...,
+        description="原始文件名"
+    )
+    
+    # 文件大小（字节）
+    file_size: int = Field(
+        ...,
+        gt=0,
+        description="文件大小（字节）"
+    )
+    
+    # MIME 类型
+    mime_type: str = Field(
+        ...,
+        description="文件 MIME 类型"
+    )
+    
+    # 文件扩展名
+    file_extension: str = Field(
+        ...,
+        description="文件扩展名（如 .pdf, .docx）"
+    )
+    
+    # 用户指定的解析选项（可选）
+    parse_options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="用户指定的解析选项"
+    )
+
+
+class ParseEndMessage(BaseMessage):
+    """
+    解析完成消息
+    
+    文件解析完成，提取出文本内容和元数据。
+    发送到: knowledge_base.parse.end
+    消费者: TextSplitter
+    """
+    
+    # 解析后的文本内容
+    text_content: str = Field(
+        ...,
+        description="解析提取的文本内容"
+    )
+    
+    # 文档元数据
+    document_metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="文档元数据（作者、创建时间、页数等）"
+    )
+    
+    # 解析使用的工具
+    parser_name: str = Field(
+        ...,
+        description="使用的解析工具名称（如 mineru, pypdf）"
+    )
+    
+    # 解析质量评分（0-1）
+    parse_quality: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="解析质量评分"
+    )
+    
+    # 是否包含图片
+    has_images: bool = Field(
+        default=False,
+        description="文档是否包含图片"
+    )
+    
+    # 图片信息（如果有）
+    images: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="文档中的图片信息列表"
+    )
+    
+    # 文档语言
+    language: str = Field(
+        default="unknown",
+        description="检测到的文档语言"
+    )
+    
+    # 是否包含表格
+    has_tables: bool = Field(
+        default=False,
+        description="文档是否包含表格"
+    )
+    
+    # 表格信息（如果有）
+    tables: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="文档中的表格信息列表"
+    )
+
+
+class SplitEndMessage(BaseMessage):
+    """
+    分割完成消息
+    
+    文本分割完成，生成多个 Chunk。
+    发送到: knowledge_base.split.end
+    消费者: 
+    - FileSummary（后台串行）
+    - EmbeddingMilvusWriter（数据库写入）
+    """
+    
+    # 文本 Chunks
+    chunks: List[Dict[str, Any]] = Field(
+        ...,
+        min_length=1,
+        description="分割后的文本 Chunks"
+    )
+    
+    # 分割策略
+    split_strategy: str = Field(
+        ...,
+        description="使用的分割策略（如 semantic, fixed_size）"
+    )
+    
+    # Chunk 统计信息
+    chunk_stats: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Chunk 统计信息（总数、平均长度等）"
+    )
+    
+    # 文档总长度（字符数）
+    total_length: int = Field(
+        ...,
+        ge=0,
+        description="文档总长度（字符数）"
+    )
+    
+    # 文档语言
+    language: str = Field(
+        default="unknown",
+        description="检测到的文档语言"
+    )
+    
+    # 前台进度完成标志（用户可见进度到此为 100%）
+    frontend_complete: bool = Field(
+        default=True,
+        description="前台进度是否完成"
+    )
+    
+    # 文档摘要（简短）
+    brief_summary: Optional[str] = Field(
+        default=None,
+        description="文档简短摘要（前台显示用）"
+    )
