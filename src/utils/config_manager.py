@@ -154,8 +154,12 @@ class ConfigManager:
         """获取Redis配置"""
         return self.get_section("redis")
     
-    def get_minio_config(self) -> Dict[str, Any]:
-        """获取MinIO配置"""
+    def get_storage_config(self) -> Dict[str, Any]:
+        """获取Storage配置"""
+        return self.get_section("storage")
+    
+    def _get_minio_config(self) -> Dict[str, Any]:
+        """获取MinIO配置（内部方法）"""
         return self.get_section("minio")
     
     def get_kafka_config(self) -> Dict[str, Any]:
@@ -206,6 +210,7 @@ class ConfigManager:
             "mysql": ["host", "port", "database"],
             "neo4j": ["uri", "database"],
             "redis": ["host", "port"],
+            "storage": ["type"],
             "minio": ["endpoint", "default_bucket"],
             "kafka": ["bootstrap_servers"],
             "embedding": ["api_base", "model_name", "dimension"],
@@ -307,12 +312,41 @@ class ConfigManager:
         config.update(auth)
         return config
     
-    def get_minio_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
-        """获取完整的MinIO配置"""
-        config = self.get_minio_config()
-        auth = env_manager.get_minio_auth()
-        config.update(auth)
-        return config
+    def get_storage_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
+        """
+        获取完整的存储配置（根据 storage.type 自动获取对应配置）
+        
+        Args:
+            env_manager: 环境变量管理器实例
+            
+        Returns:
+            完整配置，包含存储类型和对应的认证信息
+        """
+        storage_config = self.get_storage_config()
+        storage_type = storage_config.get("type", "minio")
+        
+        # 根据存储类型获取对应的完整配置
+        if storage_type == "minio":
+            minio_config = self._get_minio_config()
+            auth = env_manager.get_minio_auth()
+            storage_specific_config = {**minio_config, **auth}
+        elif storage_type == "oss":
+            # 未来实现 OSS 配置
+            storage_specific_config = {}
+        elif storage_type == "gcs":
+            # 未来实现 GCS 配置
+            storage_specific_config = {}
+        elif storage_type == "s3":
+            # 未来实现 S3 配置
+            storage_specific_config = {}
+        else:
+            storage_specific_config = {}
+        
+        # 合并存储配置
+        result = {"type": storage_type}
+        result.update(storage_specific_config)
+        
+        return result
     
     def get_embedding_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的Embedding配置（本地部署模型）"""

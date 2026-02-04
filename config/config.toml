@@ -111,13 +111,19 @@ encoding = "utf-8"          # 字符编码
 key_prefix = "aks:"        # 全局键前缀
 default_expire = 3600      # 默认过期时间（秒）
 
+# ==================== 对象存储配置 ====================
+
+[storage]
+# 存储类型: minio, oss, gcs, s3
+type = "minio"
+
 # MinIO 对象存储配置
 [minio]
-endpoint = "localhost:9000"
+endpoint = "192.168.201.14:9000"
 # 是否使用安全连接
 secure = false
 # 默认存储桶
-default_bucket = "knowledge-files"
+default_bucket = "default"
 # 区域
 region = "us-east-1"
 # 上传分片大小（字节）

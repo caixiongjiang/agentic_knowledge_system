@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.28.1",
     "loguru>=0.7.3",
     "lz4>=4.4.5",
+    "minio>=7.2.20",
     "motor>=3.7.1",
     "pydantic>=2.12.5",
     "pymilvus[milvus-lite]>=2.6.6",

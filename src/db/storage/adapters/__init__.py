@@ -4,10 +4,14 @@
 @PROJECT_NAME: agentic_knowledge_system
 @File    : __init__.py
 @Author  : caixiongjiang
-@Date    : 2025/12/31 14:49
+@Date    : 2026/2/4 15:00
 @Function: 
-    函数功能名称
+    存储适配器模块
 @Modify History:
          
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
+
+from src.db.storage.adapters.minio_adapter import MinIOAdapter
+
+__all__ = ["MinIOAdapter"]

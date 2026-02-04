@@ -2,9 +2,9 @@
 # -*- coding: UTF-8 -*-
 """=================================================
 @PROJECT_NAME: agentic_knowledge_system
-@File    : minio_manager.py
+@File    : oss_adapter.py
 @Author  : caixiongjiang
-@Date    : 2025/12/31 14:50
+@Date    : 2026/2/4 15:14
 @Function: 
     函数功能名称
 @Modify History:
