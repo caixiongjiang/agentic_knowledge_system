@@ -123,7 +123,7 @@ class PDFParser:
                 ]
             },
             "content": "markdown 内容",
-            "pages": 10
+            "total_pages": 10
         }
         
         :raises Exception: 解析失败时抛出异常
@@ -162,7 +162,11 @@ class PDFParser:
                     total_pages
                 )
             
-            self.logger.info(f"✅ PDF 解析完成: {file_name}, {result.get('pages', 0)} 页")
+            # 4. 统一字段名：将 MinerU 返回的 "pages" 转换为 "total_pages"
+            if "pages" in result and "total_pages" not in result:
+                result["total_pages"] = result.pop("pages")
+            
+            self.logger.info(f"✅ PDF 解析完成: {file_name}, {result.get('total_pages', 0)} 页")
             
             return result
             
@@ -278,7 +282,7 @@ class PDFParser:
             "status": "success",
             "struct_content": {"root": []},
             "content": "",
-            "pages": 0
+            "total_pages": 0
         }
         
         # 合并 struct_content
@@ -291,6 +295,6 @@ class PDFParser:
         merged["content"] = "\n\n".join(filter(None, md_contents))
         
         # 计算总页数
-        merged["pages"] = len(merged["struct_content"]["root"])
+        merged["total_pages"] = len(merged["struct_content"]["root"])
         
         return merged

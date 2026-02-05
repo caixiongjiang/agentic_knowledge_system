@@ -62,8 +62,8 @@ class KafkaTopics:
     
     DB_WRITE_EMBEDDING = "db_write.embedding.start"  # 向量数据写入（原始文本）
     DB_WRITE_GRAPH = "db_write.graph.start"          # 图谱数据写入
-    DB_WRITE_META = "db_write.meta.start"            # 元数据写入
-    DB_WRITE_MONGO = "db_write.mongo.start"          # 文档数据写入
+    DB_WRITE_META = "db_write.meta.start"            # MySQL 元数据写入
+    DB_WRITE_MONGO = "db_write.mongo.start"          # MongoDB 文档数据写入
     
     # ==================== DLQ 和重试 Topics ====================
     

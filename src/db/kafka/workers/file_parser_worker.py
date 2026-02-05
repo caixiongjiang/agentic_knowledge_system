@@ -4,18 +4,22 @@
 FileParser Worker
 
 监听: knowledge_base:index:start
-功能: 调用 Mineru 解析 PDF 文件,提取结构化信息和图片
-输出: knowledge_base:parse:end, db_write:meta:start
+功能: 调用 FileParserService 解析文件,提取结构化信息
+输出: 
+  - db_write.meta.start (MySQL 元数据写入)
+  - db_write.mongo.start (MongoDB 文档数据写入)
+  - knowledge_base.parse.end (解析完成消息)
 """
 
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from loguru import logger
 
 from src.db.kafka.workers.base_worker import BaseWorker
 from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
 from src.types.messages.index import IndexStartMessage, ParseEndMessage
-from src.types.messages.db_write import MetaWriteMessage
+from src.db.storage.manager import StorageManager
+from src.service.knowledge.components.file_parser_service import FileParserService
 
 
 class FileParserWorker(BaseWorker):
@@ -23,47 +27,98 @@ class FileParserWorker(BaseWorker):
     FileParser Worker
     
     职责:
-    - 从 S3 下载 PDF 文件
-    - 调用 Mineru API 进行 PDF 解析
-    - 分页并发处理提高效率
-    - 提取 PDF 结构化信息和图片
-    - 存储 PDF 结构化信息到 MySQL
-    - 上传图片到 S3
-    - 发送解析完成事件
+    - 消费 Kafka 消息 (knowledge_base:index:start)
+    - 调用 FileParserService 解析文件
+    - 发送 MySQL 写入消息到 Kafka
+    - 发送 MongoDB 写入消息到 Kafka
+    - 发送解析完成消息到 Kafka
+    
+    架构说明:
+    Worker 层 (本类):
+      - 负责所有 Kafka 操作 (消费和生产)
+      - 调用 Service 层处理业务逻辑
+      - 不涉及具体业务逻辑
+    
+    Service 层 (FileParserService):
+      - 负责文件解析业务逻辑
+      - 不依赖 Kafka
+      - 返回构建好的消息
     
     输入消息: IndexStartMessage
-    输出消息: ParseEndMessage, MetaWriteMessage
+    输出消息: 
+      - MySQL 写入消息 (db_write.meta.start)
+      - MongoDB 写入消息 (db_write.mongo.start)
+      - ParseEndMessage (knowledge_base.parse.end)
     
     配置要求:
-    - 资源: 4 CPU, 16GB RAM, 1 GPU
+    - 资源: 4 CPU, 16GB RAM, 1 GPU (如果使用 Mineru)
     - 扩容触发: Kafka lag > 50
     """
     
     def __init__(
         self,
         *args,
-        file_parser_service=None,  # 文件解析服务
+        storage_manager: Optional[StorageManager] = None,
         **kwargs
     ):
         """
         初始化 FileParser Worker
         
         Args:
-            file_parser_service: 文件解析服务实例（封装所有业务逻辑）
+            storage_manager: 对象存储管理器（可选，如果不提供会自动创建）
         """
         super().__init__(*args, **kwargs)
-        self._parser_service = file_parser_service
+        self._storage_manager = storage_manager
+        self._parser_service = None  # 延迟创建
     
     def get_original_topic(self) -> str:
         """返回监听的 Topic"""
         return KafkaTopics.INDEX_START
     
+    async def _get_parser_service(self) -> FileParserService:
+        """
+        获取 FileParserService 实例（懒加载）
+        
+        Returns:
+            FileParserService 实例
+        """
+        if self._parser_service is None:
+            # 如果没有提供 storage_manager，创建一个
+            if self._storage_manager is None:
+                self._storage_manager = StorageManager()
+                await self._storage_manager.__aenter__()  # 手动进入上下文
+            
+            # 创建 FileParserService
+            self._parser_service = FileParserService(
+                storage_manager=self._storage_manager
+            )
+            logger.info("FileParserService 已创建")
+        
+        return self._parser_service
+    
     async def process_message_impl(self, message: IndexStartMessage) -> bool:
         """
-        处理索引开始消息,解析文件
+        处理索引开始消息，解析文件
+        
+        流程:
+        1. 调用 FileParserService.parse_file()
+        2. 获取返回值：(ParseResult, MySQL消息列表, MongoDB消息列表)
+        3. 发送 MySQL 消息到 Kafka
+        4. 发送 MongoDB 消息到 Kafka
+        5. 发送解析完成消息到 Kafka
         
         Args:
             message: IndexStartMessage
+            {
+                "user_id": "user_123",
+                "file_id": "file_456",
+                "filename": "document.pdf",
+                "storage_path": "bucket/path/to/file.pdf",
+                "knowledge_base_id": "kb_001",
+                "knowledge_base_name": "我的知识库",
+                "session_id": "session_789",
+                ...
+            }
             
         Returns:
             bool: 是否处理成功
@@ -74,71 +129,162 @@ class FileParserWorker(BaseWorker):
         )
         
         try:
-            # TODO: 调用 FileParserService 处理业务逻辑
-            # parse_result = await self._parser_service.parse_file(
-            #     file_id=message.file_id,
-            #     s3_path=message.s3_path,
-            #     filename=message.filename,
-            #     user_id=message.user_id
-            # )
+            # 1. 获取 FileParserService 实例
+            parser_service = await self._get_parser_service()
             
-            # 临时模拟数据（等待 Service 实现）
-            parse_result = {
-                "text_content": "解析后的文本内容",
-                "document_metadata": {
-                    "author": "Author Name",
-                    "creation_date": "2024-01-01",
-                    "title": message.filename
-                },
-                "parse_tool": "mineru",
-                "parse_quality": 0.95,
-                "images": [],
-                "tables": [],
-                "document_language": "zh",
-                "total_pages": 10
-            }
+            # 2. 调用 Service 解析文件
+            logger.info("调用 FileParserService.parse_file()...")
+            parse_result, mysql_messages, mongodb_messages = await parser_service.parse_file(
+                user_id=message.user_id,
+                file_id=message.file_id,
+                filename=message.filename,
+                storage_path=message.storage_path,
+                knowledge_base_id=message.knowledge_base_id,
+                knowledge_base_name=message.knowledge_base_name,
+                session_id=getattr(message, 'session_id', None),
+                parent_knowledge_base_id=getattr(message, 'parent_knowledge_base_id', None),
+                parent_knowledge_base_name=getattr(message, 'parent_knowledge_base_name', None),
+                knowledge_type=getattr(message, 'knowledge_type', None),
+                creator=message.user_id,
+                store_images=True  # 上传图片到 MinIO
+            )
             
-            # 发送 ParseEndMessage
+            # 检查解析是否成功
+            if not parse_result.is_success():
+                logger.error(
+                    f"文件解析失败: file_id={message.file_id}, "
+                    f"error={parse_result.error_message}"
+                )
+                return False
+            
+            logger.info(
+                f"文件解析成功: file_id={message.file_id}, "
+                f"mysql_messages={len(mysql_messages)}, "
+                f"mongodb_messages={len(mongodb_messages)}"
+            )
+            
+            # 3. 发送 MySQL 写入消息到 Kafka
+            if mysql_messages:
+                await self._send_mysql_messages(mysql_messages)
+            
+            # 4. 发送 MongoDB 写入消息到 Kafka
+            if mongodb_messages:
+                await self._send_mongodb_messages(mongodb_messages)
+            
+            # 5. 发送解析完成消息
             await self._send_parse_end_message(message, parse_result)
             
-            # 发送 MetaWriteMessage
-            await self._send_meta_write_message(message, parse_result)
-            
-            logger.info(f"文件解析完成: file_id={message.file_id}")
-            
+            logger.info(f"文件解析处理完成: file_id={message.file_id}")
             return True
             
         except Exception as e:
-            logger.error(f"文件解析失败: file_id={message.file_id}, error={e}", exc_info=True)
+            logger.error(
+                f"文件解析失败: file_id={message.file_id}, error={e}",
+                exc_info=True
+            )
             return False
+    
+    async def _send_mysql_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """
+        发送 MySQL 写入消息到 Kafka
+        
+        Args:
+            messages: MySQL 消息列表
+        """
+        if not self._producer:
+            logger.warning("Producer 未配置，无法发送 MySQL 消息")
+            return
+        
+        logger.info(f"发送 {len(messages)} 条 MySQL 消息到 Kafka")
+        
+        # 获取底层的 aiokafka producer
+        raw_producer = self._producer.get_raw_producer()
+        
+        # 批量发送消息到 meta topic (MySQL 数据)
+        import json
+        for msg in messages:
+            # 生成消息 key（使用 element_id）
+            key = msg.get("element_id", "unknown")
+            
+            # 序列化为 JSON
+            value = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+            key_bytes = key.encode("utf-8")
+            
+            # 直接使用 aiokafka producer 发送
+            await raw_producer.send(
+                topic=KafkaTopics.DB_WRITE_META,
+                value=value,
+                key=key_bytes
+            )
+        
+        logger.debug(f"MySQL 消息发送完成: {len(messages)} 条")
+    
+    async def _send_mongodb_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """
+        发送 MongoDB 写入消息到 Kafka
+        
+        Args:
+            messages: MongoDB 消息列表
+        """
+        if not self._producer:
+            logger.warning("Producer 未配置，无法发送 MongoDB 消息")
+            return
+        
+        logger.info(f"发送 {len(messages)} 条 MongoDB 消息到 Kafka")
+        
+        # 获取底层的 aiokafka producer
+        raw_producer = self._producer.get_raw_producer()
+        
+        # 批量发送消息到 mongo topic (MongoDB 数据)
+        import json
+        for msg in messages:
+            # 生成消息 key（使用 _id）
+            key = msg.get("_id", "unknown")
+            
+            # 序列化为 JSON
+            value = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+            key_bytes = key.encode("utf-8")
+            
+            # 直接使用 aiokafka producer 发送
+            await raw_producer.send(
+                topic=KafkaTopics.DB_WRITE_MONGO,
+                value=value,
+                key=key_bytes
+            )
+        
+        logger.debug(f"MongoDB 消息发送完成: {len(messages)} 条")
     
     async def _send_parse_end_message(
         self,
         message: IndexStartMessage,
-        parse_result: dict
+        parse_result
     ) -> None:
         """
         发送解析完成消息
         
         Args:
             message: 原始消息
-            parse_result: 解析结果
-            image_paths: 图片路径列表
+            parse_result: ParseResult 对象
         """
         if not self._producer:
-            logger.warning("Producer 未配置,无法发送消息")
+            logger.warning("Producer 未配置，无法发送解析完成消息")
             return
+        
+        # 构建 ParseEndMessage
+        # 处理 status：如果是枚举则取值，如果已经是字符串则直接使用
+        status_value = parse_result.status.value if hasattr(parse_result.status, 'value') else str(parse_result.status)
         
         parse_end_msg = ParseEndMessage(
             user_id=message.user_id,
             file_id=message.file_id,
-            text_content=parse_result.get("text_content", ""),
-            document_metadata=parse_result.get("document_metadata", {}),
-            parse_tool=parse_result.get("parse_tool", "mineru"),
-            parse_quality=parse_result.get("parse_quality", 0.9),
-            images=parse_result.get("images", []),
-            tables=parse_result.get("tables", []),
-            document_language=parse_result.get("document_language", "zh")
+            filename=parse_result.filename,
+            status=status_value,
+            total_pages=parse_result.total_pages,
+            total_chars=parse_result.total_chars,
+            parse_tool=parse_result.parse_tool,
+            parse_quality=parse_result.parse_quality,
+            document_language=parse_result.document_language,
+            error_message=parse_result.error_message
         )
         
         await self._producer.send_message(
@@ -148,44 +294,15 @@ class FileParserWorker(BaseWorker):
         
         logger.debug(f"发送 ParseEndMessage: file_id={message.file_id}")
     
-    async def _send_meta_write_message(
-        self,
-        message: IndexStartMessage,
-        parse_result: dict
-    ) -> None:
-        """
-        发送元数据写入消息
+    async def cleanup(self):
+        """清理资源"""
+        # 清理 StorageManager
+        if self._storage_manager is not None:
+            try:
+                await self._storage_manager.close()
+                logger.info("StorageManager 已关闭")
+            except Exception as e:
+                logger.error(f"关闭 StorageManager 失败: {e}")
         
-        Args:
-            message: 原始消息
-            parse_result: 解析结果
-        """
-        if not self._producer:
-            logger.warning("Producer 未配置,无法发送消息")
-            return
-        
-        meta_write_msg = MetaWriteMessage(
-            user_id=message.user_id,
-            file_id=message.file_id,
-            file_metadata={
-                "filename": message.filename,
-                "file_size": message.file_size,
-                "mime_type": message.mime_type,
-                "s3_path": message.s3_path
-            },
-            processing_metadata={
-                "total_pages": parse_result.get("total_pages", 0),
-                "parse_quality": parse_result.get("parse_quality", 0.9),
-                "images_count": len(parse_result.get("images", [])),
-                "tables_count": len(parse_result.get("tables", []))
-            },
-            update_fields=["file_metadata", "processing_metadata"],
-            operation="upsert"
-        )
-        
-        await self._producer.send_message(
-            topic=KafkaTopics.DB_WRITE_META,
-            message=meta_write_msg
-        )
-        
-        logger.debug(f"发送 MetaWriteMessage: file_id={message.file_id}")
+        # 调用父类清理
+        await super().cleanup()

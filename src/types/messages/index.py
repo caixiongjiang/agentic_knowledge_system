@@ -19,15 +19,15 @@ class IndexStartMessage(BaseMessage):
     """
     索引开始消息
     
-    用户上传文件后，S3 存储完成，触发索引构建流程。
+    用户上传文件后，存储完成，触发索引构建流程。
     发送到: knowledge_base.index.start
     消费者: FileParser
     """
     
-    # S3 存储路径
-    s3_path: str = Field(
+    # 存储路径（MinIO/S3 路径）
+    storage_path: str = Field(
         ...,
-        description="文件在 S3 中的存储路径"
+        description="文件在对象存储中的路径"
     )
     
     # 文件名
@@ -36,22 +36,64 @@ class IndexStartMessage(BaseMessage):
         description="原始文件名"
     )
     
-    # 文件大小（字节）
-    file_size: int = Field(
+    # 知识库ID
+    knowledge_base_id: str = Field(
         ...,
+        description="知识库ID"
+    )
+    
+    # 知识库名称
+    knowledge_base_name: str = Field(
+        ...,
+        description="知识库名称"
+    )
+    
+    # 会话ID（可选）
+    session_id: Optional[str] = Field(
+        default=None,
+        description="会话ID"
+    )
+    
+    # 父知识库ID（可选）
+    parent_knowledge_base_id: Optional[str] = Field(
+        default=None,
+        description="父知识库ID"
+    )
+    
+    # 父知识库名称（可选）
+    parent_knowledge_base_name: Optional[str] = Field(
+        default=None,
+        description="父知识库名称"
+    )
+    
+    # 知识类型（可选）
+    knowledge_type: Optional[str] = Field(
+        default=None,
+        description="知识类型"
+    )
+    
+    # 上传时间（可选）
+    upload_time: Optional[str] = Field(
+        default=None,
+        description="文件上传时间"
+    )
+    
+    # 文件大小（字节，可选）
+    file_size: Optional[int] = Field(
+        default=None,
         gt=0,
         description="文件大小（字节）"
     )
     
-    # MIME 类型
-    mime_type: str = Field(
-        ...,
+    # MIME 类型（可选）
+    mime_type: Optional[str] = Field(
+        default=None,
         description="文件 MIME 类型"
     )
     
-    # 文件扩展名
-    file_extension: str = Field(
-        ...,
+    # 文件扩展名（可选）
+    file_extension: Optional[str] = Field(
+        default=None,
         description="文件扩展名（如 .pdf, .docx）"
     )
     
@@ -66,38 +108,64 @@ class ParseEndMessage(BaseMessage):
     """
     解析完成消息
     
-    文件解析完成，提取出文本内容和元数据。
+    文件解析完成，提取出结构化信息。
     发送到: knowledge_base.parse.end
-    消费者: TextSplitter
+    消费者: 下游处理组件
     """
     
-    # 解析后的文本内容
-    text_content: str = Field(
+    # 文件名
+    filename: str = Field(
         ...,
-        description="解析提取的文本内容"
+        description="文件名"
     )
     
-    # 文档元数据
-    document_metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="文档元数据（作者、创建时间、页数等）"
+    # 解析状态
+    status: str = Field(
+        ...,
+        description="解析状态（success, partial_success, failed）"
+    )
+    
+    # 总页数
+    total_pages: int = Field(
+        default=0,
+        ge=0,
+        description="文档总页数"
+    )
+    
+    # 总字符数
+    total_chars: int = Field(
+        default=0,
+        ge=0,
+        description="文档总字符数"
     )
     
     # 解析使用的工具
-    parser_name: str = Field(
-        ...,
+    parse_tool: Optional[str] = Field(
+        default="mineru",
         description="使用的解析工具名称（如 mineru, pypdf）"
     )
     
     # 解析质量评分（0-1）
-    parse_quality: float = Field(
+    parse_quality: Optional[float] = Field(
         default=1.0,
         ge=0.0,
         le=1.0,
         description="解析质量评分"
     )
     
-    # 是否包含图片
+    # 文档语言
+    document_language: Optional[str] = Field(
+        default=None,
+        description="文档语言（如 zh, en）"
+    )
+    
+    # 错误信息（如果失败）
+    error_message: Optional[str] = Field(
+        default=None,
+        description="错误信息（解析失败时）"
+    )
+    
+    # 是否包含图片（保留兼容性）
     has_images: bool = Field(
         default=False,
         description="文档是否包含图片"

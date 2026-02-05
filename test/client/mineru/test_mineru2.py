@@ -329,7 +329,7 @@ def main():
     )
     
     # 测试文件路径
-    pdf_path = "tmp_files/pdf/FastSegFormer.pdf"
+    pdf_path = "tmp_files/pdf/TP-LoRA.pdf"
     output_dir = "tmp_results/parser/pdf"
     
     logger.info(f"\n{'#' * 80}")
