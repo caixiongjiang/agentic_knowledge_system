@@ -26,10 +26,12 @@ def load_config() -> dict:
     """从配置文件加载 MinerU 配置"""
     config_manager = get_config_manager()
     mineru_raw_config = config_manager.get_mineru_config()
+
+    print("mineru_raw_config", mineru_raw_config)
     
-    # 适配配置格式（将 api_url 转换为 endpoint）
+    # 直接返回原始配置，保持键名一致
     return {
-        "endpoint": mineru_raw_config.get("api_url", "http://localhost:8000"),
+        "api_url": mineru_raw_config.get("api_url", "http://localhost:8000"),
         "timeout": mineru_raw_config.get("timeout", 600),
         "params": {
             "backend": "pipeline",
