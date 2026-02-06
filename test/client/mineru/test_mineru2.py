@@ -25,7 +25,7 @@ def load_config() -> dict:
     加载配置，返回 Mineru 客户端配置字典
     """
     return {
-        "api_url": "http://192.168.201.14:18000",  # Mineru API 地址
+        "api_url": "http://192.168.19.232:18000",  # Mineru API 地址
         "timeout": 600,  # 超时时间（秒）
     }
 
