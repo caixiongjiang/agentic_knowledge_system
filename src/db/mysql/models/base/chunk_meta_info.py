@@ -22,7 +22,7 @@ class ChunkMetaInfo(BaseModel, KnowledgeMixin):
     Chunk 元信息表
     
     存储 Chunk 在 Document 中的位置、类型、关联文件等信息。
-    包含 Chunk 的页面位置、序号、图片文件信息等元数据。
+    包含 Chunk 的页面索引、图片文件信息等元数据。
     """
     __tablename__ = "chunk_meta_info"
     
@@ -41,23 +41,11 @@ class ChunkMetaInfo(BaseModel, KnowledgeMixin):
         comment="Chunk类型：text=文本，image=图片，table=表格"
     )
     
-    index = Column(
-        Integer, 
-        nullable=True,
-        comment="Chunk在Document中的序号（从0开始）"
-    )
-    
     # 页面位置信息
     page_index = Column(
         Integer, 
         nullable=True,
         comment="所在页码（从0开始）"
-    )
-    
-    page_position = Column(
-        String(255), 
-        nullable=True,
-        comment="在页面中的位置（JSON格式：{x, y, width, height}）"
     )
     
     # 关联文件信息（如果 Chunk 对应图片）

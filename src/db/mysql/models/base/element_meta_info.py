@@ -37,7 +37,7 @@ class ElementMetaInfo(BaseModel, KnowledgeMixin):
     element_index = Column(
         Integer,
         nullable=False,
-        comment="元素在文档中的顺序（从0开始计数）"
+        comment="元素在当前页码的文档中的顺序（从0开始计数）"
     )
     
     page_index = Column(

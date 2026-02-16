@@ -41,12 +41,6 @@ class SectionMetaInfo(BaseModel, KnowledgeMixin):
         comment="Section类型：chapter=章节，heading=标题"
     )
     
-    index = Column(
-        Integer, 
-        nullable=True,
-        comment="Section在Document中的序号（从0开始）"
-    )
-    
     text_level = Column(
         Integer, 
         nullable=True,

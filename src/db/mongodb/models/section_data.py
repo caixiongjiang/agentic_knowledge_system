@@ -24,7 +24,9 @@ class SectionData(BaseDocument):
     """
     Section数据表
     
-    存储文档的章节数据，用于组织文档的层级结构。
+    存储文档的章节核心内容数据：
+    - text: section文本内容（标题）
+    - translation: 翻译列表
     """
     
     # ========== 主键字段 ==========
@@ -34,26 +36,15 @@ class SectionData(BaseDocument):
         description="章节唯一标识（格式：section_<uuid>）"
     )
     
-    # ========== 基础字段 ==========
-    message_id: Optional[int] = Field(
-        None,
-        description="消息ID：消息唯一标识符，来自global_id_generator"
-    )
-    
-    # ========== 文本内容 ==========
+    # ========== 核心字段 ==========
     text: Optional[str] = Field(
         None,
-        description="section文本内容"
+        description="section文本内容（标题）"
     )
     
     translation: List[Any] = Field(
         default_factory=list,
         description="section翻译内容列表（支持多语言）"
-    )
-    
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="section元数据（JSON格式，存储额外信息）"
     )
     
     # ========== Pydantic 配置 ==========
@@ -69,12 +60,6 @@ class SectionData(BaseDocument):
         
         # 索引定义
         indexes = [
-            # message_id 索引（用于关联查询）
-            IndexModel(
-                [("message_id", ASCENDING)],
-                name="idx_message_id"
-            ),
-            
             # 软删除 + 创建时间复合索引（常用查询）
             IndexModel(
                 [("deleted", ASCENDING), ("create_time", DESCENDING)],
@@ -87,7 +72,3 @@ class SectionData(BaseDocument):
     def has_text(self) -> bool:
         """检查是否包含文本"""
         return bool(self.text)
-    
-    def has_translation(self) -> bool:
-        """检查是否有翻译内容"""
-        return bool(self.translation)
