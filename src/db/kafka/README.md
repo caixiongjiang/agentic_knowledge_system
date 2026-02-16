@@ -117,11 +117,23 @@ user_id, file_id = MessageKey.parse("user_123:file_456")
 
 ### 4. ConsumerGroup - Consumer Group 定义
 
+系统使用 7 个 Consumer Group：
+- Pipeline Worker: 6 个独立 Group（保证独立消费和扩缩容）
+- DB Writer: 1 个共享 Group（各自消费不同 Topic，互不干扰）
+
 ```python
 from src.db.kafka.types import ConsumerGroup
 
-# 使用预定义的 Group ID
-group_id = ConsumerGroup.FILE_PARSER  # "group-file-parser"
+# Pipeline Worker Groups（各自独立）
+group_id = ConsumerGroup.FILE_PARSER       # "group-file-parser"
+group_id = ConsumerGroup.TEXT_SPLITTER     # "group-text-splitter"
+group_id = ConsumerGroup.FILE_SUMMARY      # "group-file-summary"
+group_id = ConsumerGroup.KG_EXTRACTOR      # "group-kg-extractor"
+group_id = ConsumerGroup.IMAGE_UNDERSTAND  # "group-image-understand"
+group_id = ConsumerGroup.TEXT_ANALYZER     # "group-text-analyzer"
+
+# DB Writer Group（4 个 Writer 共享）
+group_id = ConsumerGroup.DB_WRITER  # "group-db-writer"
 
 # 添加配置的前缀
 full_group_id = ConsumerGroup.with_prefix("file-parser")

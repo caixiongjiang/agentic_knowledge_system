@@ -67,29 +67,21 @@ class ConsumerGroup:
     """
     Consumer Group ID 定义
     
-    命名格式：{group_id_prefix}-{组件名称}
+    分组策略：
+    - Pipeline Worker: 每个 Worker 独立 Group，保证独立消费和扩缩容
+    - DB Writer: 4 个 Writer 共享一个 Group（各自消费不同 Topic，互不干扰）
     """
     
-    # 前台阶段 Consumer Groups
+    # Pipeline Worker Groups（各自独立）
     FILE_PARSER = "group-file-parser"
     TEXT_SPLITTER = "group-text-splitter"
-    
-    # 后台串行阶段 Consumer Groups
     FILE_SUMMARY = "group-file-summary"
-    TEXT_ANALYZER = "group-text-analyzer"
-    
-    # 后台并行阶段 Consumer Groups
     KG_EXTRACTOR = "group-kg-extractor"
     IMAGE_UNDERSTAND = "group-image-understand"
+    TEXT_ANALYZER = "group-text-analyzer"
     
-    # 数据库 Writer Consumer Groups
-    EMBEDDING_MILVUS_WRITER = "group-embedding-milvus-writer"
-    NEO4J_WRITER = "group-neo4j-writer"
-    MYSQL_WRITER = "group-mysql-writer"
-    MONGO_WRITER = "group-mongo-writer"
-    
-    # 状态管理 Consumer Group
-    STATUS_MANAGER = "group-status-manager"
+    # DB Writer Group（4 个 Writer 共享，各自消费不同 Topic）
+    DB_WRITER = "group-db-writer"
     
     @staticmethod
     def with_prefix(group_name: str) -> str:

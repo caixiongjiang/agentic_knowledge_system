@@ -231,7 +231,15 @@ class BaseKafkaConsumer(ABC):
             logger.error(f"提交 offset 失败: {e}")
     
     async def _cleanup(self) -> None:
-        """清理资源"""
+        """内部清理资源（由 start() 的 finally 调用）"""
+        await self.cleanup()
+    
+    async def cleanup(self) -> None:
+        """
+        清理资源
+        
+        子类可以覆盖此方法来清理自己的资源，但必须调用 super().cleanup()。
+        """
         try:
             # 最后一次提交 offset
             if not self._auto_commit:

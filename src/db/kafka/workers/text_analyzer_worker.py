@@ -15,7 +15,7 @@ from src.db.kafka.workers.base_worker import BaseWorker
 from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
 from src.types.messages.extract import ImageEndMessage
-from src.types.messages.db_write import EmbeddingWriteMessage
+from src.types.messages.db_write import EmbeddingWriteMessage, MilvusCollection
 
 
 class TextAnalyzerWorker(BaseWorker):
@@ -128,14 +128,14 @@ class TextAnalyzerWorker(BaseWorker):
             summary_msg = EmbeddingWriteMessage(
                 user_id=message.user_id,
                 file_id=message.file_id,
-                collection_type="summary",
-                data_items=[{
+                collection_type=MilvusCollection.SUMMARY,
+                items=[{
                     "id": f"{result['chunk_id']}_summary",
                     "text": result["summary"],
                     "metadata": {"chunk_id": result["chunk_id"]}
                 }],
                 source_stage="text_analyzer",
-                document_language="zh"
+                language="zh"
             )
             
             await self._producer.send_message(
@@ -149,8 +149,8 @@ class TextAnalyzerWorker(BaseWorker):
                 qa_msg = EmbeddingWriteMessage(
                     user_id=message.user_id,
                     file_id=message.file_id,
-                    collection_type="atomic_qa",
-                    data_items=[{
+                    collection_type=MilvusCollection.ATOMIC_QA,
+                    items=[{
                         "id": f"{result['chunk_id']}_qa_{qa['question'][:20]}",
                         "text": qa_text,
                         "metadata": {
@@ -160,7 +160,7 @@ class TextAnalyzerWorker(BaseWorker):
                         }
                     }],
                     source_stage="text_analyzer",
-                    document_language="zh"
+                    language="zh"
                 )
                 
                 await self._producer.send_message(

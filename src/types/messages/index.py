@@ -159,6 +159,17 @@ class ParseEndMessage(BaseMessage):
         description="文档语言（如 zh, en）"
     )
     
+    # 知识库信息（从 IndexStartMessage 透传，供下游 Worker 使用）
+    knowledge_base_id: Optional[str] = Field(
+        default=None,
+        description="知识库ID"
+    )
+    
+    knowledge_base_name: Optional[str] = Field(
+        default=None,
+        description="知识库名称"
+    )
+    
     # 错误信息（如果失败）
     error_message: Optional[str] = Field(
         default=None,

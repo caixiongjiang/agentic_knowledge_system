@@ -12,6 +12,7 @@ from aiokafka import AIOKafkaConsumer
 from loguru import logger
 
 from src.db.kafka.consumer import BatchKafkaConsumer
+from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.deduplication import DeduplicationManager
 from src.db.kafka.retry_manager import RetryManager
 from src.db.kafka.dlq_manager import DLQManager
@@ -39,6 +40,7 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         self,
         aiokafka_consumer: AIOKafkaConsumer,
         message_class: Type[BaseMessage],
+        producer: Optional[KafkaProducer] = None,
         dedup_manager: Optional[DeduplicationManager] = None,
         retry_manager: Optional[RetryManager] = None,
         dlq_manager: Optional[DLQManager] = None,
@@ -52,6 +54,7 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         Args:
             aiokafka_consumer: aiokafka Consumer 实例
             message_class: 消息类型
+            producer: Kafka Producer 实例
             dedup_manager: 去重管理器
             retry_manager: 重试管理器
             dlq_manager: DLQ 管理器
@@ -62,10 +65,11 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         super().__init__(
             aiokafka_consumer=aiokafka_consumer,
             message_class=message_class,
-            batch_size=batch_size,
-            flush_interval_ms=flush_interval_ms
+            batch_size=batch_size
         )
         
+        self._flush_interval_ms = flush_interval_ms
+        self._producer = producer
         self._dedup_manager = dedup_manager
         self._retry_manager = retry_manager
         self._dlq_manager = dlq_manager

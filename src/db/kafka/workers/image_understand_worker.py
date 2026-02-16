@@ -15,7 +15,7 @@ from src.db.kafka.workers.base_worker import BaseWorker
 from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
 from src.types.messages.extract import SummaryEndMessage, ImageEndMessage
-from src.types.messages.db_write import EmbeddingWriteMessage
+from src.types.messages.db_write import EmbeddingWriteMessage, MilvusCollection
 
 
 class ImageUnderstandWorker(BaseWorker):
@@ -135,8 +135,8 @@ class ImageUnderstandWorker(BaseWorker):
             emb_msg = EmbeddingWriteMessage(
                 user_id=message.user_id,
                 file_id=message.file_id,
-                collection_type="chunk",  # 图片描述也作为 chunk 存储
-                data_items=[{
+                collection_type=MilvusCollection.CHUNK,
+                items=[{
                     "id": result["chunk_id"],
                     "text": result["description"],
                     "metadata": {
@@ -145,7 +145,7 @@ class ImageUnderstandWorker(BaseWorker):
                     }
                 }],
                 source_stage="image_understand",
-                document_language=message.document_type or "zh"
+                language=message.document_type or "zh"
             )
             
             await self._producer.send_message(

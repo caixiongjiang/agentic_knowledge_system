@@ -284,6 +284,8 @@ class FileParserWorker(BaseWorker):
             parse_tool=parse_result.parse_tool,
             parse_quality=parse_result.parse_quality,
             document_language=parse_result.document_language,
+            knowledge_base_id=getattr(parse_result, 'knowledge_base_id', None) or message.knowledge_base_id,
+            knowledge_base_name=getattr(parse_result, 'knowledge_base_name', None) or message.knowledge_base_name,
             error_message=parse_result.error_message
         )
         

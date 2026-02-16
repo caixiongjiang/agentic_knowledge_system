@@ -22,6 +22,10 @@ from src.types.messages.db_write import (
     GraphWriteMessage,
     MetaWriteMessage,
     MongoWriteMessage,
+    MySQLTable,
+    MongoCollection,
+    MilvusCollection,
+    WriteOperation,
 )
 
 __all__ = [
@@ -41,4 +45,9 @@ __all__ = [
     "GraphWriteMessage",
     "MetaWriteMessage",
     "MongoWriteMessage",
+    # 路由枚举
+    "MySQLTable",
+    "MongoCollection",
+    "MilvusCollection",
+    "WriteOperation",
 ]
