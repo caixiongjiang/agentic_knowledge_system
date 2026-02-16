@@ -520,7 +520,16 @@ class FileParserService:
                 "table_footnote": element.get("table_footnote", []),
                 "table_body": element.get("table_body", "")
             }
+        elif element_type == "equation":
+            content = {
+                "text": element.get("text", ""),
+                "text_format": element.get("text_format", "")
+            }
         elif element_type == "discarded":
+            content = {
+                "text": element.get("text", "")
+            }
+        else:
             content = {
                 "text": element.get("text", "")
             }
