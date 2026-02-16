@@ -1,0 +1,93 @@
+{
+  "file_parser": {
+    "enabled": true,
+    "max_pages": 1000,
+    "timeout": 300,
+    "comment": "文件解析组件（Mineru）"
+  },
+  
+  "text_splitter": {
+    "enabled": true,
+    "split_method": "structure_first",
+    "chunk_size": 1000,
+    "chunk_overlap": 0,
+    "separators": ["\n", "。", "，", " "],
+    "enable_table_split": true,
+    "table_max_size": 2000,
+    "preserve_table_header": true,
+    "code_block_max_size": 1500,
+    "enable_text_clean": true,
+    "remove_extra_whitespace": true,
+    "remove_control_chars": true,
+    "enable_language_detection": true,
+    "language_detection_threshold": 0.8,
+    "min_chunk_size": 50,
+    "max_chunk_size": 5000,
+    "comment": "文本切分组件（TextSplitter）"
+  },
+  
+  "file_summary": {
+    "enabled": true,
+    "llm_preset": "fast",
+    "max_retries": 3,
+    "comment": "文件摘要组件（FileSummary）"
+  },
+  
+  "kg_extractor": {
+    "enabled": true,
+    "llm_preset": "quality",
+    "max_entities": 100,
+    "max_relations": 200,
+    "comment": "知识图谱提取组件（KGExtractor）"
+  },
+  
+  "image_understand": {
+    "enabled": true,
+    "llm_preset": "multimodal",
+    "max_retries": 3,
+    "comment": "图片理解组件（ImageUnderstand）"
+  },
+  
+  "text_analyzer": {
+    "enabled": true,
+    "llm_preset": "quality",
+    "generate_summary": true,
+    "generate_qa": true,
+    "max_qa_pairs": 5,
+    "comment": "文本分析组件（TextAnalyzer）"
+  },
+  
+  "mysql_writer": {
+    "enabled": true,
+    "batch_size": 100,
+    "flush_interval": 5,
+    "max_retries": 3,
+    "comment": "MySQL批量写入器"
+  },
+  
+  "mongo_writer": {
+    "enabled": true,
+    "batch_size": 50,
+    "flush_interval": 5,
+    "max_retries": 3,
+    "comment": "MongoDB批量写入器"
+  },
+  
+  "neo4j_writer": {
+    "enabled": true,
+    "batch_size": 200,
+    "flush_interval": 10,
+    "max_retries": 3,
+    "comment": "Neo4j批量写入器"
+  },
+  
+  "embedding_milvus_writer": {
+    "enabled": true,
+    "batch_size": 32,
+    "flush_interval": 3,
+    "max_retries": 3,
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dim": 1536,
+    "comment": "Embedding + Milvus批量写入器（合并组件）"
+  }
+}

@@ -78,7 +78,7 @@ async def main():
         # 3. 创建 Consumer
         logger.info("正在创建 Kafka Consumer...")
         aiokafka_consumer = await kafka_manager.get_consumer(
-            group_id="file_parser_worker_group",
+            group_id="group-file-parser",
             topics=[KafkaTopics.INDEX_START]
         )
         logger.success("✓ Kafka Consumer 创建成功")
