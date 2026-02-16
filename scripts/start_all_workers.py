@@ -64,6 +64,7 @@ sys.path.insert(0, str(project_root))
 from src.db.kafka import get_kafka_manager
 from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
+from src.db.kafka.types import ConsumerGroup
 from src.types.messages.index import IndexStartMessage, ParseEndMessage, SplitEndMessage
 from src.types.messages.extract import SummaryEndMessage, GraphEndMessage, ImageEndMessage
 from src.types.messages.db_write import EmbeddingWriteMessage, GraphWriteMessage, MetaWriteMessage, MongoWriteMessage
@@ -85,6 +86,9 @@ class WorkerConfig:
 # ==================== Worker 配置定义 ====================
 
 WORKER_CONFIGS: Dict[str, WorkerConfig] = {
+    # ==================== 第一层：Pipeline Workers ====================
+    # 每个 Worker 独立 Group，保证独立消费和扩缩容
+    
     "file_parser": WorkerConfig(
         name="file_parser",
         class_name="FileParserWorker",
@@ -92,7 +96,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.INDEX_START,
         output_topics=[KafkaTopics.PARSE_END, KafkaTopics.DB_WRITE_META, KafkaTopics.DB_WRITE_MONGO],
         message_class=IndexStartMessage,
-        group_id="file_parser_worker_group",
+        group_id=ConsumerGroup.FILE_PARSER,
         description="文件解析 Worker (解析 PDF/Word/Excel/PPT 等)"
     ),
     "text_splitter": WorkerConfig(
@@ -102,7 +106,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.PARSE_END,
         output_topics=[KafkaTopics.SPLIT_END, KafkaTopics.DB_WRITE_EMBEDDING, KafkaTopics.DB_WRITE_MONGO],
         message_class=ParseEndMessage,
-        group_id="text_splitter_worker_group",
+        group_id=ConsumerGroup.TEXT_SPLITTER,
         description="文本分割 Worker (递归分割、语言检测、生成 Chunk)"
     ),
     "file_summary": WorkerConfig(
@@ -112,7 +116,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.SPLIT_END,
         output_topics=[KafkaTopics.SUMMARY_END],
         message_class=SplitEndMessage,
-        group_id="file_summary_worker_group",
+        group_id=ConsumerGroup.FILE_SUMMARY,
         description="文件摘要 Worker (生成文件级摘要)"
     ),
     "kg_extractor": WorkerConfig(
@@ -122,7 +126,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.SUMMARY_END,
         output_topics=[KafkaTopics.GRAPH_END, KafkaTopics.DB_WRITE_GRAPH],
         message_class=SummaryEndMessage,
-        group_id="kg_extractor_worker_group",
+        group_id=ConsumerGroup.KG_EXTRACTOR,
         description="知识图谱抽取 Worker (抽取实体关系、事件)"
     ),
     "image_understand": WorkerConfig(
@@ -132,7 +136,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.SUMMARY_END,
         output_topics=[KafkaTopics.IMAGE_END, KafkaTopics.DB_WRITE_EMBEDDING],
         message_class=SummaryEndMessage,
-        group_id="image_understand_worker_group",
+        group_id=ConsumerGroup.IMAGE_UNDERSTAND,
         description="图片理解 Worker (VLM 生成图片描述)"
     ),
     "text_analyzer": WorkerConfig(
@@ -142,20 +146,21 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.IMAGE_END,
         output_topics=[KafkaTopics.DB_WRITE_EMBEDDING],
         message_class=ImageEndMessage,
-        group_id="text_analyzer_worker_group",
+        group_id=ConsumerGroup.TEXT_ANALYZER,
         description="文本分析 Worker (生成 summary 和 atomic_qa)"
     ),
     
-    # ==================== 第二层：数据库写入 Writers ====================
+    # ==================== 第二层：DB Writers ====================
+    # 4 个 Writer 共享 DB_WRITER Group（各自消费不同 Topic，互不干扰）
     
     "embedding_milvus_writer": WorkerConfig(
         name="embedding_milvus_writer",
         class_name="EmbeddingMilvusWriter",
         module_path="src.db.kafka.writers.embedding_milvus_writer",
         input_topic=KafkaTopics.DB_WRITE_EMBEDDING,
-        output_topics=[],  # Writer 不再发送消息
+        output_topics=[],
         message_class=EmbeddingWriteMessage,
-        group_id="embedding_milvus_writer_group",
+        group_id=ConsumerGroup.DB_WRITER,
         description="向量写入 Writer (批量 Embedding + 批量写入 Milvus)"
     ),
     "neo4j_writer": WorkerConfig(
@@ -165,7 +170,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.DB_WRITE_GRAPH,
         output_topics=[],
         message_class=GraphWriteMessage,
-        group_id="neo4j_writer_group",
+        group_id=ConsumerGroup.DB_WRITER,
         description="图谱写入 Writer (批量写入 Neo4j)"
     ),
     "mysql_writer": WorkerConfig(
@@ -175,7 +180,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.DB_WRITE_META,
         output_topics=[],
         message_class=MetaWriteMessage,
-        group_id="mysql_writer_group",
+        group_id=ConsumerGroup.DB_WRITER,
         description="元数据写入 Writer (批量写入 MySQL)"
     ),
     "mongo_writer": WorkerConfig(
@@ -185,7 +190,7 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         input_topic=KafkaTopics.DB_WRITE_MONGO,
         output_topics=[],
         message_class=MongoWriteMessage,
-        group_id="mongo_writer_group",
+        group_id=ConsumerGroup.DB_WRITER,
         description="文档写入 Writer (批量写入 MongoDB)"
     ),
 }
@@ -354,43 +359,24 @@ def print_worker_list():
     print("可用的 Workers:")
     print("=" * 80)
     
-    # 第一层：任务流转 Workers
-    print("\n【第一层：任务流转 Workers】")
-    print("\n  前台阶段（用户等待）")
-    for name in ["file_parser", "text_splitter"]:
+    # 第一层：Pipeline Workers（每个独立 Group）
+    print("\n【第一层：Pipeline Workers】（每个 Worker 独立 Group）")
+    for name in ["file_parser", "text_splitter", "file_summary", "kg_extractor", "image_understand", "text_analyzer"]:
         if name in WORKER_CONFIGS:
             config = WORKER_CONFIGS[name]
-            print(f"    {name:25} - {config.description}")
+            print(f"    {name:25} - {config.description}  [{config.group_id}]")
     
-    print("\n  后台串行阶段1")
-    for name in ["file_summary"]:
-        if name in WORKER_CONFIGS:
-            config = WORKER_CONFIGS[name]
-            print(f"    {name:25} - {config.description}")
-    
-    print("\n  后台并行阶段")
-    for name in ["kg_extractor", "image_understand"]:
-        if name in WORKER_CONFIGS:
-            config = WORKER_CONFIGS[name]
-            print(f"    {name:25} - {config.description}")
-    
-    print("\n  后台串行阶段2")
-    for name in ["text_analyzer"]:
-        if name in WORKER_CONFIGS:
-            config = WORKER_CONFIGS[name]
-            print(f"    {name:25} - {config.description}")
-    
-    # 第二层：数据库写入 Writers
-    print("\n【第二层：数据库写入 Writers】")
+    # 第二层：DB Writers（共享 Group）
+    print(f"\n【第二层：DB Writers】（共享 {ConsumerGroup.DB_WRITER}）")
     for name in ["embedding_milvus_writer", "neo4j_writer", "mysql_writer", "mongo_writer"]:
         if name in WORKER_CONFIGS:
             config = WORKER_CONFIGS[name]
-            print(f"  {name:25} - {config.description}")
+            print(f"    {name:25} - {config.description}")
     
     print("\n" + "=" * 80)
     print("用法:")
     print("  启动所有 Workers:        uv run python scripts/start_all_workers.py")
-    print("  启动所有任务流转 Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,file_summary,kg_extractor,image_understand,text_analyzer")
+    print("  启动所有 Pipeline Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,file_summary,kg_extractor,image_understand,text_analyzer")
     print("  启动所有 DB Writers:     uv run python scripts/start_all_workers.py --workers embedding_milvus_writer,neo4j_writer,mysql_writer,mongo_writer")
     print("  启动指定 Workers:        uv run python scripts/start_all_workers.py --workers file_parser,text_splitter")
     print("  查看可用 Workers:        uv run python scripts/start_all_workers.py --list")
