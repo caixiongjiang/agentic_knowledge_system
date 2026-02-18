@@ -12,7 +12,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from sqlalchemy import Column, String, Integer, Text, Index
+from sqlalchemy import Column, String, Integer, SmallInteger, Text, Index
 from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 
 
@@ -25,6 +25,7 @@ class WorkspaceFolder(BaseModel, KnowledgeMixin):
     - 文件夹重命名（仅改一条记录）
     - 文件夹移动（仅改 parent_folder_id）
     - 多知识库下的文件夹树
+    - 每个 (user_id, knowledge_base_id) 下至多一个默认文件夹（应用层保证）
     
     通过 parent_folder_id 自关联实现文件夹嵌套。
     """
@@ -33,6 +34,7 @@ class WorkspaceFolder(BaseModel, KnowledgeMixin):
     __table_args__ = (
         Index("idx_user_kb", "user_id", "knowledge_base_id"),
         Index("idx_user_parent", "user_id", "parent_folder_id"),
+        Index("idx_user_kb_default", "user_id", "knowledge_base_id", "is_default"),
     )
     
     # 主键
@@ -81,6 +83,13 @@ class WorkspaceFolder(BaseModel, KnowledgeMixin):
         default=0,
         nullable=False,
         comment="同级文件夹排序权重"
+    )
+    
+    is_default = Column(
+        SmallInteger,
+        default=0,
+        nullable=False,
+        comment="是否为默认文件夹（0-否，1-是）。每个 (user_id, knowledge_base_id) 下至多一个"
     )
     
     description = Column(

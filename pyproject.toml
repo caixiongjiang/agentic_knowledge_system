@@ -9,6 +9,7 @@ dependencies = [
     "aiokafka[lz4]>=0.13.0",
     "beanie>=2.0.1",
     "cryptography",
+    "fastapi>=0.129.0",
     "httpx>=0.28.1",
     "langchain-text-splitters>=1.1.0",
     "loguru>=0.7.3",
@@ -20,10 +21,12 @@ dependencies = [
     "pymysql>=1.1.2",
     "pypdf>=6.6.0",
     "python-dotenv>=1.2.1",
+    "python-multipart>=0.0.22",
     "redis[hiredis]>=7.1.0",
     "requests>=2.32.5",
     "sqlalchemy>=2.0.45",
     "toml>=0.10.2",
+    "uvicorn>=0.41.0",
 ]
 
 [[tool.uv.index]]

@@ -6,39 +6,53 @@
 @Author  : caixiongjiang
 @Date    : 2025/12/29 11:40
 @Function: 
-    主程序入口
+    FastAPI 应用入口
+    启动方式: uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 @Modify History:
-         
+    2026/02/18 - 重写为 FastAPI 应用，集成 Knowledge API 路由
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
-import logging
-from src.utils.log_config import setup_dev_logging, get_logger
 
-# 在程序启动时初始化日志配置
-# 这一步会拦截所有标准 logging 到 loguru
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI
+from loguru import logger
+
+from src.utils.log_config import setup_dev_logging
+
 setup_dev_logging()
 
-# 获取 logger 实例
-logger = get_logger()
+from api.routers import knowledge_router
+from src.db.kafka.connection.factory import close_kafka_manager
+from src.db.mysql.connection.factory import get_mysql_manager
+from src.db.redis.connection.factory import RedisManagerFactory
 
 
-def main():
-    """主函数"""
-    logger.info("程序启动")
-    
-    # 测试日志功能
-    logger.debug("这是 DEBUG 级别的日志")
-    logger.info("这是 INFO 级别的日志")
-    logger.success("这是 SUCCESS 级别的日志（loguru 特有）")
-    logger.warning("这是 WARNING 级别的日志")
-    logger.error("这是 ERROR 级别的日志")
-    
-    # 测试标准 logging（会被拦截到 loguru）
-    std_logger = logging.getLogger(__name__)
-    std_logger.info("这是标准 logging 的日志，但会被路由到 loguru")
-    
-    logger.info("程序结束")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """应用生命周期管理：启动时初始化资源，关闭时释放连接"""
+    logger.info("应用启动中...")
+    get_mysql_manager().init_db()
+    yield
+    logger.info("应用关闭中，释放资源...")
+    get_mysql_manager().close()
+    await close_kafka_manager()
+    await RedisManagerFactory.close_all()
+    logger.info("所有资源已释放")
+
+
+app = FastAPI(
+    title="Agentic Knowledge System",
+    description="智能知识管理系统 API",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(knowledge_router)
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

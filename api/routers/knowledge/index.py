@@ -8,10 +8,633 @@
 @Function: 
     Knowledge 索引路由
     提供 Knowledge 索引相关的 API 端点：
-    POST /api/knowledge/index - 索引单个文档
-    POST /api/knowledge/index/batch - 批量索引文档
-    POST /api/knowledge/index/file - 上传文件并索引
+    
+    文件上传（独立操作，文件直接上传到 MinIO/S3）：
+      POST /upload        - 上传单个文件
+      POST /upload/batch  - 批量上传文件
+    
+    索引构建（独立操作，向 Kafka 发送索引消息）：
+      POST /build         - 触发索引构建
+    
+    进度查询：
+      GET /progress/{file_id}  - 查询单个文件索引进度
+      POST /progress/batch     - 批量查询文件索引进度
 @Modify History:
-         
+    2026/02/18 - 实现文件上传、索引构建、进度查询 API
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
+
+import uuid
+import mimetypes
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from loguru import logger
+from sqlalchemy.orm import Session
+
+from api.dependencies.auth import get_current_user_id
+from api.dependencies.database import (
+    get_db_session,
+    get_file_progress_manager,
+    get_kafka_producer,
+    get_storage_manager,
+)
+from src.states.state_manager import FileProgressManager
+from api.schemas.common import ApiResponse
+from api.schemas.knowledge.index import (
+    BatchFileUploadResponse,
+    BatchProgressResponse,
+    FileProgressResponse,
+    FileUploadResponse,
+    IndexBuildFileResult,
+    IndexBuildRequest,
+    IndexBuildResponse,
+)
+from src.db.kafka.producer import KafkaProducer
+from src.db.kafka.topics import KafkaTopics
+from src.db.mysql.models.business.workspace_file_system import WorkspaceFileSystem
+from src.db.mysql.repositories.business.workspace_file_system_repo import (
+    workspace_file_system_repo,
+)
+from src.db.mysql.repositories.business.workspace_folder_repo import (
+    workspace_folder_repo,
+)
+from src.db.storage.manager import StorageManager
+from src.types.messages.index import IndexStartMessage
+from src.utils.config_manager import get_config_manager
+
+router = APIRouter(tags=["Knowledge Index"])
+
+_config = get_config_manager()
+_SUPPORTED_FORMATS: list[str] = _config.get(
+    "file_upload.supported_formats",
+    ["pdf", "docx", "pptx", "xlsx", "txt", "md", "json"],
+)
+_MAX_FILE_SIZE_MB: int = _config.get("file_upload.max_file_size", 100)
+_MAX_FILE_SIZE_BYTES: int = _MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+# ==================== 辅助函数 ====================
+
+
+def _generate_file_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _generate_session_id() -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    short_id = uuid.uuid4().hex[:8]
+    return f"session_{ts}_{short_id}"
+
+
+def _guess_mime_type(filename: str) -> str:
+    mime, _ = mimetypes.guess_type(filename)
+    return mime or "application/octet-stream"
+
+
+def _validate_file_extension(filename: str) -> str:
+    """校验并返回文件扩展名（不含点号），不合法则抛出异常"""
+    ext = PurePosixPath(filename).suffix.lstrip(".").lower()
+    if not ext or ext not in _SUPPORTED_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"不支持的文件类型: .{ext}，"
+                f"支持的类型: {', '.join('.' + f for f in _SUPPORTED_FORMATS)}"
+            ),
+        )
+    return ext
+
+
+_MYSQL_STATUS_MAP: dict[int, tuple[float, str, Optional[str]]] = {
+    0: (0.0, "pending", None),
+    1: (0.1, "processing", "index_start"),
+    2: (1.0, "success", "split_end"),
+    3: (0.0, "failed", None),
+}
+
+
+def _resolve_folder(
+    session: Session,
+    folder_id: Optional[str],
+    user_id: str,
+    knowledge_base_id: str,
+    knowledge_base_name: str,
+) -> tuple[str, str]:
+    """
+    解析 folder_id 和 folder_path。
+
+    传入 folder_id 时查询对应文件夹；为空时自动获取/创建默认文件夹。
+
+    Returns:
+        (folder_id, full_path) 元组
+    """
+    if folder_id:
+        from src.db.mysql.models.business.workspace_folder import WorkspaceFolder
+        folder = session.query(WorkspaceFolder).filter(
+            WorkspaceFolder.folder_id == folder_id,
+            WorkspaceFolder.user_id == user_id,
+            WorkspaceFolder.deleted == 0,
+        ).first()
+        if folder:
+            return folder.folder_id, folder.full_path
+        return folder_id, "/"
+
+    default_folder = workspace_folder_repo.get_or_create_default(
+        session,
+        user_id=user_id,
+        knowledge_base_id=knowledge_base_id,
+        knowledge_base_name=knowledge_base_name,
+    )
+    return default_folder.folder_id, default_folder.full_path
+
+
+def _fallback_progress_from_mysql(
+    file_record: WorkspaceFileSystem,
+) -> FileProgressResponse:
+    """MySQL fallback：当 Redis 中无数据时，从 MySQL status 字段生成粗粒度进度"""
+    progress, status_str, stage = _MYSQL_STATUS_MAP.get(
+        file_record.status, (0.0, "pending", None)
+    )
+    return FileProgressResponse(
+        file_id=file_record.file_id,
+        file_name=file_record.file_name,
+        progress=progress,
+        status=status_str,
+        stage=stage,
+        message=file_record.message,
+    )
+
+
+# ==================== 文件上传 API ====================
+
+
+@router.post(
+    "/upload",
+    response_model=ApiResponse[FileUploadResponse],
+    summary="上传单个文件",
+    description="上传文件到 MinIO/S3 对象存储，创建文件元数据记录。上传与索引构建解耦，可先批量上传再统一触发索引。",
+)
+async def upload_file(
+    file: UploadFile = File(..., description="待上传的文件"),
+    knowledge_base_id: str = Form(..., description="目标知识库ID"),
+    knowledge_base_name: str = Form(..., description="目标知识库名称"),
+    folder_id: Optional[str] = Form(default=None, description="目标文件夹ID"),
+    description: Optional[str] = Form(default=None, description="文件描述"),
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+    storage: StorageManager = Depends(get_storage_manager),
+) -> ApiResponse[FileUploadResponse]:
+    """上传单个文件到对象存储并创建 MySQL 元数据记录"""
+
+    filename = file.filename or "unknown"
+    ext = _validate_file_extension(filename)
+    mime_type = file.content_type or _guess_mime_type(filename)
+
+    # 读取文件内容并校验大小
+    file_bytes = await file.read()
+    file_size = len(file_bytes)
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if file_size > _MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件大小 {file_size / 1024 / 1024:.1f}MB 超过限制 {_MAX_FILE_SIZE_MB}MB",
+        )
+
+    file_id = _generate_file_id()
+    session_id = _generate_session_id()
+
+    resolved_folder_id, folder_path = _resolve_folder(
+        session, folder_id, user_id, knowledge_base_id, knowledge_base_name,
+    )
+
+    # 上传到 MinIO/S3
+    try:
+        storage_path = await storage.upload_raw_file(
+            file_bytes=file_bytes,
+            user_id=user_id,
+            session_id=session_id,
+            file_id=file_id,
+            filename=filename,
+            folder_path=folder_path,
+        )
+    except Exception as e:
+        logger.error(f"文件上传到对象存储失败: user_id={user_id}, filename={filename}, error={e}")
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}") from e
+
+    # 创建 MySQL 元数据记录
+    file_record = workspace_file_system_repo.create(
+        session,
+        user_id=user_id,
+        file_id=file_id,
+        file_name=filename,
+        folder_id=resolved_folder_id,
+        file_size=file_size,
+        mime_type=mime_type,
+        knowledge_base_id=knowledge_base_id,
+        knowledge_base_name=knowledge_base_name,
+        description=description,
+        status=0,
+        creator=user_id,
+        ext_attributes=f'{{"session_id":"{session_id}","storage_path":"{storage_path}","file_extension":".{ext}"}}',
+    )
+
+    if not file_record:
+        logger.error(f"创建文件元数据失败: user_id={user_id}, file_id={file_id}")
+        raise HTTPException(status_code=500, detail="创建文件元数据失败")
+
+    logger.info(
+        f"文件上传成功: user_id={user_id}, file_id={file_id}, "
+        f"filename={filename}, size={file_size}, path={storage_path}"
+    )
+
+    return ApiResponse.success(
+        data=FileUploadResponse(
+            file_id=file_id,
+            file_name=filename,
+            storage_path=storage_path,
+            session_id=session_id,
+            file_size=file_size,
+            mime_type=mime_type,
+        ),
+        message="文件上传成功",
+    )
+
+
+@router.post(
+    "/upload/batch",
+    response_model=ApiResponse[BatchFileUploadResponse],
+    summary="批量上传文件",
+    description="批量上传多个文件到 MinIO/S3 对象存储，同一批次共享 session_id。",
+)
+async def upload_files_batch(
+    files: List[UploadFile] = File(..., description="待上传的文件列表"),
+    knowledge_base_id: str = Form(..., description="目标知识库ID"),
+    knowledge_base_name: str = Form(..., description="目标知识库名称"),
+    folder_id: Optional[str] = Form(default=None, description="目标文件夹ID"),
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+    storage: StorageManager = Depends(get_storage_manager),
+) -> ApiResponse[BatchFileUploadResponse]:
+    """批量上传文件，共享同一 session_id"""
+
+    if not files:
+        raise HTTPException(status_code=400, detail="文件列表不能为空")
+
+    resolved_folder_id, folder_path = _resolve_folder(
+        session, folder_id, user_id, knowledge_base_id, knowledge_base_name,
+    )
+
+    session_id = _generate_session_id()
+    uploaded: list[FileUploadResponse] = []
+    failed: list[dict[str, str]] = []
+
+    for upload_file_item in files:
+        filename = upload_file_item.filename or "unknown"
+        try:
+            ext = _validate_file_extension(filename)
+            mime_type = upload_file_item.content_type or _guess_mime_type(filename)
+
+            file_bytes = await upload_file_item.read()
+            file_size = len(file_bytes)
+            if file_size == 0:
+                raise ValueError("文件内容为空")
+            if file_size > _MAX_FILE_SIZE_BYTES:
+                raise ValueError(
+                    f"文件大小 {file_size / 1024 / 1024:.1f}MB 超过限制 {_MAX_FILE_SIZE_MB}MB"
+                )
+
+            file_id = _generate_file_id()
+
+            storage_path = await storage.upload_raw_file(
+                file_bytes=file_bytes,
+                user_id=user_id,
+                session_id=session_id,
+                file_id=file_id,
+                filename=filename,
+                folder_path=folder_path,
+            )
+
+            file_record = workspace_file_system_repo.create(
+                session,
+                user_id=user_id,
+                file_id=file_id,
+                file_name=filename,
+                folder_id=resolved_folder_id,
+                file_size=file_size,
+                mime_type=mime_type,
+                knowledge_base_id=knowledge_base_id,
+                knowledge_base_name=knowledge_base_name,
+                status=0,
+                creator=user_id,
+                ext_attributes=f'{{"session_id":"{session_id}","storage_path":"{storage_path}","file_extension":".{ext}"}}',
+            )
+
+            if not file_record:
+                raise RuntimeError("创建文件元数据失败")
+
+            uploaded.append(
+                FileUploadResponse(
+                    file_id=file_id,
+                    file_name=filename,
+                    storage_path=storage_path,
+                    session_id=session_id,
+                    file_size=file_size,
+                    mime_type=mime_type,
+                )
+            )
+            logger.info(f"批量上传 - 文件成功: {filename}, file_id={file_id}")
+
+        except HTTPException as he:
+            failed.append({"filename": filename, "error": he.detail})
+            logger.warning(f"批量上传 - 文件失败: {filename}, error={he.detail}")
+        except Exception as e:
+            failed.append({"filename": filename, "error": str(e)})
+            logger.warning(f"批量上传 - 文件失败: {filename}, error={e}")
+
+    total = len(files)
+    return ApiResponse.success(
+        data=BatchFileUploadResponse(
+            session_id=session_id,
+            uploaded_files=uploaded,
+            failed_files=failed,
+            total=total,
+            success_count=len(uploaded),
+            fail_count=len(failed),
+        ),
+        message=f"批量上传完成: {len(uploaded)}/{total} 成功",
+    )
+
+
+# ==================== 索引构建 API ====================
+
+
+@router.post(
+    "/build",
+    response_model=ApiResponse[IndexBuildResponse],
+    summary="触发索引构建",
+    description=(
+        "对已上传的文件触发索引构建流程。"
+        "API 向 Kafka knowledge_base.index.start Topic 发送消息，"
+        "由下游 Pipeline Worker 异步处理。"
+    ),
+)
+async def build_index(
+    request: IndexBuildRequest,
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+    producer: KafkaProducer = Depends(get_kafka_producer),
+    progress_mgr: FileProgressManager = Depends(get_file_progress_manager),
+) -> ApiResponse[IndexBuildResponse]:
+    """触发索引构建，向 Kafka 发送 IndexStartMessage"""
+
+    results: list[IndexBuildFileResult] = []
+    submitted = 0
+    failed = 0
+
+    for file_id in request.file_ids:
+        # 查询文件记录
+        file_record: Optional[WorkspaceFileSystem] = (
+            workspace_file_system_repo.get_by_user_and_file(session, user_id, file_id)
+        )
+
+        if not file_record:
+            results.append(
+                IndexBuildFileResult(
+                    file_id=file_id,
+                    file_name="",
+                    status="failed",
+                    message="文件不存在或无权限",
+                )
+            )
+            failed += 1
+            continue
+
+        # 从 ext_attributes 中解析存储路径和文件扩展名
+        import json
+
+        ext_attrs: dict = {}
+        if file_record.ext_attributes:
+            try:
+                ext_attrs = json.loads(file_record.ext_attributes)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        storage_path = ext_attrs.get("storage_path", "")
+        file_extension = ext_attrs.get("file_extension", "")
+        record_session_id = ext_attrs.get("session_id", "")
+
+        if not storage_path:
+            results.append(
+                IndexBuildFileResult(
+                    file_id=file_id,
+                    file_name=file_record.file_name,
+                    status="failed",
+                    message="文件存储路径缺失，请重新上传",
+                )
+            )
+            failed += 1
+            continue
+
+        # 构建 IndexStartMessage
+        message = IndexStartMessage(
+            user_id=user_id,
+            file_id=file_id,
+            storage_path=storage_path,
+            filename=file_record.file_name,
+            knowledge_base_id=request.knowledge_base_id,
+            knowledge_base_name=request.knowledge_base_name,
+            session_id=record_session_id or None,
+            parent_knowledge_base_id=request.parent_knowledge_base_id,
+            parent_knowledge_base_name=request.parent_knowledge_base_name,
+            knowledge_type=request.knowledge_type,
+            file_size=file_record.file_size,
+            mime_type=file_record.mime_type,
+            file_extension=file_extension or None,
+            parse_options=request.parse_options,
+        )
+
+        # 发送 Kafka 消息
+        try:
+            await producer.send_and_flush(
+                topic=KafkaTopics.INDEX_START,
+                message=message,
+            )
+        except Exception as e:
+            logger.error(f"发送索引消息失败: file_id={file_id}, error={e}")
+            results.append(
+                IndexBuildFileResult(
+                    file_id=file_id,
+                    file_name=file_record.file_name,
+                    status="failed",
+                    message=f"发送索引消息失败: {e}",
+                )
+            )
+            failed += 1
+            continue
+
+        # 写入 Redis 初始进度
+        try:
+            await progress_mgr.init_progress(
+                file_id=file_id,
+                user_id=user_id,
+                file_name=file_record.file_name,
+            )
+        except Exception as e:
+            logger.warning(f"写入 Redis 初始进度失败（不阻塞流程）: file_id={file_id}, error={e}")
+
+        # 更新文件状态为 processing（status=1）
+        file_record.status = 1
+        file_record.message = "索引构建已提交"
+        file_record.knowledge_base_id = request.knowledge_base_id
+        file_record.knowledge_base_name = request.knowledge_base_name
+        if request.parent_knowledge_base_id:
+            file_record.parent_knowledge_base_id = request.parent_knowledge_base_id
+        if request.parent_knowledge_base_name:
+            file_record.parent_knowledge_base_name = request.parent_knowledge_base_name
+        file_record.knowledge_type = request.knowledge_type
+        file_record.updater = user_id
+        try:
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"更新文件状态失败: file_id={file_id}, error={e}")
+
+        results.append(
+            IndexBuildFileResult(
+                file_id=file_id,
+                file_name=file_record.file_name,
+                status="submitted",
+                message="索引构建已提交",
+            )
+        )
+        submitted += 1
+
+        logger.info(
+            f"索引构建已提交: user_id={user_id}, file_id={file_id}, "
+            f"kb_id={request.knowledge_base_id}"
+        )
+
+    return ApiResponse.success(
+        data=IndexBuildResponse(
+            knowledge_base_id=request.knowledge_base_id,
+            results=results,
+            submitted_count=submitted,
+            failed_count=failed,
+        ),
+        message=f"索引构建完成: {submitted} 已提交, {failed} 失败",
+    )
+
+
+# ==================== 进度查询 API ====================
+
+
+@router.get(
+    "/progress/{file_id}",
+    response_model=ApiResponse[FileProgressResponse],
+    summary="查询文件索引进度",
+    description="查询单个文件的索引构建进度。优先从 Redis 读取细粒度进度，Redis 无数据时 fallback 到 MySQL。",
+)
+async def get_file_progress(
+    file_id: str,
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+    progress_mgr: FileProgressManager = Depends(get_file_progress_manager),
+) -> ApiResponse[FileProgressResponse]:
+    """查询单个文件的索引进度，优先 Redis → fallback MySQL"""
+
+    redis_progress = await progress_mgr.get_progress(file_id)
+    if redis_progress:
+        return ApiResponse.success(
+            data=FileProgressResponse(
+                file_id=redis_progress.file_id,
+                file_name=redis_progress.file_name,
+                progress=redis_progress.progress,
+                status=redis_progress.status.value,
+                stage=redis_progress.stage,
+                message=redis_progress.message,
+            )
+        )
+
+    file_record = workspace_file_system_repo.get_by_user_and_file(
+        session, user_id, file_id
+    )
+    if not file_record:
+        raise HTTPException(status_code=404, detail="文件不存在或无权限")
+
+    return ApiResponse.success(data=_fallback_progress_from_mysql(file_record))
+
+
+@router.post(
+    "/progress/batch",
+    response_model=ApiResponse[BatchProgressResponse],
+    summary="批量查询文件索引进度",
+    description="批量查询多个文件的索引构建进度。优先从 Redis 批量读取，缺失的 fallback 到 MySQL。",
+)
+async def get_batch_progress(
+    file_ids: List[str],
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+    progress_mgr: FileProgressManager = Depends(get_file_progress_manager),
+) -> ApiResponse[BatchProgressResponse]:
+    """批量查询文件索引进度，优先 Redis → fallback MySQL"""
+
+    if not file_ids:
+        raise HTTPException(status_code=400, detail="file_ids 不能为空")
+
+    redis_results = await progress_mgr.get_batch_progress(file_ids)
+
+    file_progresses: list[FileProgressResponse] = []
+    completed = 0
+    processing = 0
+    failed_count = 0
+
+    for fid, redis_prog in zip(file_ids, redis_results):
+        if redis_prog:
+            resp = FileProgressResponse(
+                file_id=redis_prog.file_id,
+                file_name=redis_prog.file_name,
+                progress=redis_prog.progress,
+                status=redis_prog.status.value,
+                stage=redis_prog.stage,
+                message=redis_prog.message,
+            )
+        else:
+            file_record = workspace_file_system_repo.get_by_user_and_file(
+                session, user_id, fid
+            )
+            if not file_record:
+                resp = FileProgressResponse(
+                    file_id=fid,
+                    file_name="",
+                    progress=0.0,
+                    status="not_found",
+                    message="文件不存在或无权限",
+                )
+                failed_count += 1
+                file_progresses.append(resp)
+                continue
+            resp = _fallback_progress_from_mysql(file_record)
+
+        status_val = resp.status
+        if status_val == "success":
+            completed += 1
+        elif status_val == "processing":
+            processing += 1
+        elif status_val == "failed":
+            failed_count += 1
+
+        file_progresses.append(resp)
+
+    return ApiResponse.success(
+        data=BatchProgressResponse(
+            files=file_progresses,
+            total=len(file_ids),
+            completed_count=completed,
+            processing_count=processing,
+            failed_count=failed_count,
+        )
+    )

@@ -12,12 +12,18 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
+import uuid
 from typing import List, Optional
+
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+
 from src.db.mysql.models.business.workspace_folder import WorkspaceFolder
 from src.db.mysql.repositories.base_repository import BaseRepository
+
+_DEFAULT_FOLDER_NAME = "user_uploads"
+_DEFAULT_FOLDER_PATH = f"/{_DEFAULT_FOLDER_NAME}/"
 
 
 class WorkspaceFolderRepository(BaseRepository[WorkspaceFolder]):
@@ -26,6 +32,69 @@ class WorkspaceFolderRepository(BaseRepository[WorkspaceFolder]):
     def __init__(self):
         super().__init__(WorkspaceFolder)
     
+    def get_or_create_default(
+        self,
+        session: Session,
+        user_id: str,
+        knowledge_base_id: str,
+        knowledge_base_name: str = "",
+    ) -> WorkspaceFolder:
+        """
+        获取或创建用户在指定知识库下的默认文件夹
+
+        同一 (user_id, knowledge_base_id) 下最多一个 is_default=1 的文件夹。
+        首次调用时自动创建，后续直接返回已有记录。
+
+        Args:
+            session: 数据库会话
+            user_id: 用户 ID
+            knowledge_base_id: 知识库 ID
+            knowledge_base_name: 知识库名称（仅首次创建时写入）
+
+        Returns:
+            默认文件夹的 WorkspaceFolder 实例
+
+        Raises:
+            RuntimeError: 创建默认文件夹失败时抛出
+        """
+        try:
+            existing = session.query(self.model).filter(
+                self.model.user_id == user_id,
+                self.model.knowledge_base_id == knowledge_base_id,
+                self.model.is_default == 1,
+                self.model.deleted == 0,
+            ).first()
+
+            if existing:
+                return existing
+
+            folder = self.model(
+                folder_id=str(uuid.uuid4()),
+                user_id=user_id,
+                folder_name=_DEFAULT_FOLDER_NAME,
+                parent_folder_id=None,
+                full_path=_DEFAULT_FOLDER_PATH,
+                depth=0,
+                sort_order=0,
+                is_default=1,
+                knowledge_base_id=knowledge_base_id,
+                knowledge_base_name=knowledge_base_name,
+                creator=user_id,
+            )
+            session.add(folder)
+            session.flush()
+
+            logger.info(
+                f"创建默认文件夹: user_id={user_id}, "
+                f"kb_id={knowledge_base_id}, folder_id={folder.folder_id}"
+            )
+            return folder
+
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"获取/创建默认文件夹失败: {e}")
+            raise RuntimeError(f"获取默认文件夹失败: {e}") from e
+
     def get_by_user_id(
         self,
         session: Session,

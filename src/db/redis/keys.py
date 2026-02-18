@@ -103,6 +103,9 @@ class RedisKeyRegistry:
         if category not in self._keys:
             self._keys[category] = {}
         
+        if name in self._keys[category]:
+            return self._keys[category][name]
+        
         key_pattern = KeyPattern(
             namespace=namespace,
             pattern=pattern,
@@ -112,8 +115,6 @@ class RedisKeyRegistry:
         )
         
         self._keys[category][name] = key_pattern
-        logger.debug(f"注册 Redis Key: {category}.{name} -> {key_pattern.get_full_pattern()}")
-        
         return key_pattern
     
     def get(self, category: str, name: str) -> Optional[KeyPattern]:
@@ -417,6 +418,32 @@ class StatsKeys:
     )
 
 
+class ProgressKeys:
+    """文件索引进度相关的 Key"""
+    
+    # 单文件索引进度（Hash 类型）
+    FILE_PROGRESS = _registry.register(
+        category="PROGRESS",
+        name="FILE_PROGRESS",
+        namespace="progress",
+        pattern="file:{file_id}",
+        description="单文件索引进度（Hash 类型，字段: user_id/file_name/progress/status/stage/message/updated_at）",
+        ttl=86400,  # 24 小时
+        examples=["progress:file:uuid-123", "progress:file:uuid-456"]
+    )
+    
+    # 用户正在处理的文件集合（Set 类型）
+    USER_FILES = _registry.register(
+        category="PROGRESS",
+        name="USER_FILES",
+        namespace="progress",
+        pattern="user:{user_id}",
+        description="用户正在处理的文件ID集合（Set 类型）",
+        ttl=86400,  # 24 小时
+        examples=["progress:user:user_123"]
+    )
+
+
 # ==================== 统一的 Key 访问入口 ====================
 
 class RedisKeys:
@@ -444,6 +471,7 @@ class RedisKeys:
     RATE_LIMIT = RateLimitKeys
     LEADERBOARD = LeaderboardKeys
     STATS = StatsKeys
+    PROGRESS = ProgressKeys
     
     @staticmethod
     def list_all():

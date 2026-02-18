@@ -185,12 +185,13 @@ class StorageManager:
         user_id: str,
         session_id: str,
         file_id: str,
-        filename: str
+        filename: str,
+        folder_path: str = "/",
     ) -> str:
         """
         上传原始文件
         
-        自动构建路径: users/{user_id}/sessions/{session_id}/raw/{file_id}/{filename}
+        自动构建路径: {user_id}/{session_id}{folder_path}{filename}
         
         Args:
             file_bytes: 文件字节内容
@@ -198,12 +199,13 @@ class StorageManager:
             session_id: 会话ID
             file_id: 文件ID
             filename: 文件名
+            folder_path: 文件夹路径（如 /默认上传/），默认根目录
             
         Returns:
             str: 完整存储路径
         """
         object_path = self._adapter.build_raw_file_path(
-            user_id, session_id, file_id, filename
+            user_id, session_id, file_id, filename, folder_path
         )
         bucket = self._get_bucket_name()
         
