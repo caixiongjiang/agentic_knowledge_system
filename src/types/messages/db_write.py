@@ -37,6 +37,7 @@ class MySQLTable(StrEnum):
 
     Business 层（业务表）：
     - workspace_file_system: 工作空间文件系统
+    - workspace_folder: 工作空间文件夹
 
     Extract 层（提取类表）：
     - chunk_summary: Chunk 摘要
@@ -50,6 +51,7 @@ class MySQLTable(StrEnum):
     CHUNK_SECTION_DOCUMENT = "chunk_section_document"
     SECTION_DOCUMENT = "section_document"
     WORKSPACE_FILE_SYSTEM = "workspace_file_system"
+    WORKSPACE_FOLDER = "workspace_folder"
     CHUNK_SUMMARY = "chunk_summary"
     CHUNK_ATOMIC_QA = "chunk_atomic_qa"
     DOCUMENT_SUMMARY = "document_summary"

@@ -13,7 +13,9 @@
 =================================================="""
 
 from src.db.mysql.models.business.workspace_file_system import WorkspaceFileSystem
+from src.db.mysql.models.business.workspace_folder import WorkspaceFolder
 
 __all__ = [
-    "WorkspaceFileSystem"
+    "WorkspaceFileSystem",
+    "WorkspaceFolder",
 ]

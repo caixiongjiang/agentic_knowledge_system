@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.13.3",
     "aiokafka[lz4]>=0.13.0",
     "beanie>=2.0.1",
+    "cryptography",
     "httpx>=0.28.1",
     "langchain-text-splitters>=1.1.0",
     "loguru>=0.7.3",

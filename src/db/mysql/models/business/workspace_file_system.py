@@ -8,25 +8,31 @@
 @Function: 
     WorkspaceFileSystem Schema 定义
 @Modify History:
-         
+    2026/02/16 - 移除 AgentMixin，用 folder_id 替代 folder_path/folder_parent_path，
+                 修复 is_text_readable 类型，添加索引
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from sqlalchemy import Column, String, Integer, BigInteger, Text
-from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin, AgentMixin
+from sqlalchemy import Column, String, Integer, BigInteger, Text, Index
+from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 
-# TODO: 建立索引
 
-class WorkspaceFileSystem(BaseModel, KnowledgeMixin, AgentMixin):
+class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
     """
     工作空间文件系统表
     
     存储用户工作空间中的文件信息，包括文件基本信息、Git信息、
-    处理状态等，支持完整的调用链追溯。
+    处理状态等。通过 folder_id 关联 WorkspaceFolder 表实现目录管理。
     
     主键：(user_id, file_id) 联合主键
     """
     __tablename__ = "workspace_file_system"
+    
+    __table_args__ = (
+        Index("idx_user_kb", "user_id", "knowledge_base_id"),
+        Index("idx_user_folder", "user_id", "folder_id"),
+        Index("idx_user_status", "user_id", "status"),
+    )
     
     # 主键（联合主键）
     user_id = Column(
@@ -49,16 +55,11 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin, AgentMixin):
         comment="文件名"
     )
     
-    folder_path = Column(
-        String(500), 
+    folder_id = Column(
+        String(64),
         nullable=True,
-        comment="文件夹路径"
-    )
-    
-    folder_parent_path = Column(
-        String(500), 
-        nullable=True,
-        comment="父文件夹路径"
+        index=True,
+        comment="所属文件夹ID（关联 workspace_folder.folder_id，NULL 表示根目录）"
     )
     
     file_size = Column(
@@ -89,14 +90,15 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin, AgentMixin):
     
     # 文件特征
     is_text_readable = Column(
-        String(255), 
+        Integer,
         nullable=True,
-        comment="文本可读性标识：true, false, unknown"
+        comment="文本可读性标识：0=不可读，1=可读，2=未知"
     )
     
     mime_type = Column(
         String(255), 
         nullable=True,
+        index=True,
         comment="文件MIME类型（如 text/plain, image/png）"
     )
     
@@ -131,7 +133,6 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin, AgentMixin):
         comment="文件描述"
     )
     
-    # BaseModel、KnowledgeMixin 和 AgentMixin 字段会自动继承：
+    # BaseModel 和 KnowledgeMixin 字段会自动继承：
     # - knowledge_base_id, knowledge_base_name, parent_knowledge_base_id, parent_knowledge_base_name, knowledge_type
-    # - user_id, session_id, task_id, agent_id, agent_instance_id, etc.
     # - status, creator, create_time, updater, update_time, deleted
