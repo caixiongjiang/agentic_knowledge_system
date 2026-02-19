@@ -56,16 +56,6 @@ class IndexBuildRequest(BaseModel):
         ..., min_length=1, description="要索引的文件ID列表"
     )
     knowledge_base_id: str = Field(..., description="目标知识库ID")
-    knowledge_base_name: str = Field(..., description="目标知识库名称")
-    parent_knowledge_base_id: Optional[str] = Field(
-        default=None, description="父知识库ID"
-    )
-    parent_knowledge_base_name: Optional[str] = Field(
-        default=None, description="父知识库名称"
-    )
-    knowledge_type: str = Field(
-        default="common_file", description="知识类型"
-    )
     parse_options: Dict[str, Any] = Field(
         default_factory=dict, description="解析选项"
     )

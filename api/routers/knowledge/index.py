@@ -58,6 +58,9 @@ from src.db.mysql.models.business.workspace_file_system import WorkspaceFileSyst
 from src.db.mysql.repositories.business.workspace_file_system_repo import (
     workspace_file_system_repo,
 )
+from src.db.mysql.repositories.business.knowledge_base_repo import (
+    knowledge_base_repo,
+)
 from src.db.mysql.repositories.business.workspace_folder_repo import (
     workspace_folder_repo,
 )
@@ -121,7 +124,6 @@ def _resolve_folder(
     folder_id: Optional[str],
     user_id: str,
     knowledge_base_id: str,
-    knowledge_base_name: str,
 ) -> tuple[str, str]:
     """
     解析 folder_id 和 folder_path。
@@ -146,7 +148,6 @@ def _resolve_folder(
         session,
         user_id=user_id,
         knowledge_base_id=knowledge_base_id,
-        knowledge_base_name=knowledge_base_name,
     )
     return default_folder.folder_id, default_folder.full_path
 
@@ -180,7 +181,6 @@ def _fallback_progress_from_mysql(
 async def upload_file(
     file: UploadFile = File(..., description="待上传的文件"),
     knowledge_base_id: str = Form(..., description="目标知识库ID"),
-    knowledge_base_name: str = Form(..., description="目标知识库名称"),
     folder_id: Optional[str] = Form(default=None, description="目标文件夹ID"),
     description: Optional[str] = Form(default=None, description="文件描述"),
     user_id: str = Depends(get_current_user_id),
@@ -189,11 +189,14 @@ async def upload_file(
 ) -> ApiResponse[FileUploadResponse]:
     """上传单个文件到对象存储并创建 MySQL 元数据记录"""
 
+    kb = knowledge_base_repo.get_by_id_and_user(session, knowledge_base_id, user_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库不存在或无权限")
+
     filename = file.filename or "unknown"
     ext = _validate_file_extension(filename)
     mime_type = file.content_type or _guess_mime_type(filename)
 
-    # 读取文件内容并校验大小
     file_bytes = await file.read()
     file_size = len(file_bytes)
     if file_size == 0:
@@ -208,7 +211,7 @@ async def upload_file(
     session_id = _generate_session_id()
 
     resolved_folder_id, folder_path = _resolve_folder(
-        session, folder_id, user_id, knowledge_base_id, knowledge_base_name,
+        session, folder_id, user_id, knowledge_base_id,
     )
 
     # 上传到 MinIO/S3
@@ -225,7 +228,6 @@ async def upload_file(
         logger.error(f"文件上传到对象存储失败: user_id={user_id}, filename={filename}, error={e}")
         raise HTTPException(status_code=500, detail=f"文件上传失败: {e}") from e
 
-    # 创建 MySQL 元数据记录
     file_record = workspace_file_system_repo.create(
         session,
         user_id=user_id,
@@ -235,7 +237,7 @@ async def upload_file(
         file_size=file_size,
         mime_type=mime_type,
         knowledge_base_id=knowledge_base_id,
-        knowledge_base_name=knowledge_base_name,
+        knowledge_base_name=kb.knowledge_base_name,
         description=description,
         status=0,
         creator=user_id,
@@ -273,7 +275,6 @@ async def upload_file(
 async def upload_files_batch(
     files: List[UploadFile] = File(..., description="待上传的文件列表"),
     knowledge_base_id: str = Form(..., description="目标知识库ID"),
-    knowledge_base_name: str = Form(..., description="目标知识库名称"),
     folder_id: Optional[str] = Form(default=None, description="目标文件夹ID"),
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
@@ -284,8 +285,12 @@ async def upload_files_batch(
     if not files:
         raise HTTPException(status_code=400, detail="文件列表不能为空")
 
+    kb = knowledge_base_repo.get_by_id_and_user(session, knowledge_base_id, user_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库不存在或无权限")
+
     resolved_folder_id, folder_path = _resolve_folder(
-        session, folder_id, user_id, knowledge_base_id, knowledge_base_name,
+        session, folder_id, user_id, knowledge_base_id,
     )
 
     session_id = _generate_session_id()
@@ -327,7 +332,7 @@ async def upload_files_batch(
                 file_size=file_size,
                 mime_type=mime_type,
                 knowledge_base_id=knowledge_base_id,
-                knowledge_base_name=knowledge_base_name,
+                knowledge_base_name=kb.knowledge_base_name,
                 status=0,
                 creator=user_id,
                 ext_attributes=f'{{"session_id":"{session_id}","storage_path":"{storage_path}","file_extension":".{ext}"}}',
@@ -391,6 +396,20 @@ async def build_index(
 ) -> ApiResponse[IndexBuildResponse]:
     """触发索引构建，向 Kafka 发送 IndexStartMessage"""
 
+    kb = knowledge_base_repo.get_by_id_and_user(
+        session, request.knowledge_base_id, user_id
+    )
+    if not kb:
+        raise HTTPException(status_code=404, detail="知识库不存在或无权限")
+
+    parent_kb_name: Optional[str] = None
+    if kb.parent_knowledge_base_id:
+        parent_kb = knowledge_base_repo.get_by_id_and_user(
+            session, kb.parent_knowledge_base_id, user_id
+        )
+        if parent_kb:
+            parent_kb_name = parent_kb.knowledge_base_name
+
     results: list[IndexBuildFileResult] = []
     submitted = 0
     failed = 0
@@ -439,18 +458,17 @@ async def build_index(
             failed += 1
             continue
 
-        # 构建 IndexStartMessage
         message = IndexStartMessage(
             user_id=user_id,
             file_id=file_id,
             storage_path=storage_path,
             filename=file_record.file_name,
             knowledge_base_id=request.knowledge_base_id,
-            knowledge_base_name=request.knowledge_base_name,
+            knowledge_base_name=kb.knowledge_base_name,
             session_id=record_session_id or None,
-            parent_knowledge_base_id=request.parent_knowledge_base_id,
-            parent_knowledge_base_name=request.parent_knowledge_base_name,
-            knowledge_type=request.knowledge_type,
+            parent_knowledge_base_id=kb.parent_knowledge_base_id,
+            parent_knowledge_base_name=parent_kb_name,
+            knowledge_type=kb.knowledge_type,
             file_size=file_record.file_size,
             mime_type=file_record.mime_type,
             file_extension=file_extension or None,
@@ -486,16 +504,13 @@ async def build_index(
         except Exception as e:
             logger.warning(f"写入 Redis 初始进度失败（不阻塞流程）: file_id={file_id}, error={e}")
 
-        # 更新文件状态为 processing（status=1）
         file_record.status = 1
         file_record.message = "索引构建已提交"
         file_record.knowledge_base_id = request.knowledge_base_id
-        file_record.knowledge_base_name = request.knowledge_base_name
-        if request.parent_knowledge_base_id:
-            file_record.parent_knowledge_base_id = request.parent_knowledge_base_id
-        if request.parent_knowledge_base_name:
-            file_record.parent_knowledge_base_name = request.parent_knowledge_base_name
-        file_record.knowledge_type = request.knowledge_type
+        file_record.knowledge_base_name = kb.knowledge_base_name
+        file_record.parent_knowledge_base_id = kb.parent_knowledge_base_id
+        file_record.parent_knowledge_base_name = parent_kb_name
+        file_record.knowledge_type = kb.knowledge_type
         file_record.updater = user_id
         try:
             session.commit()

@@ -53,6 +53,10 @@ app.include_router(knowledge_router)
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
 
+    # Python 3.12+ 的 resource_tracker 在 reload 模式下会误报信号量泄漏
+    # 这些信号量由 SQLAlchemy/Redis/loguru 等库内部创建，OS 会自动回收
+    os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:multiprocessing.resource_tracker"
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

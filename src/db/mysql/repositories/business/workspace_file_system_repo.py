@@ -269,6 +269,187 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
             logger.error(f"根据folder_id批量删除文件失败: {e}")
             return False
 
+    # ==================== 回收站相关 ====================
+
+    def cascade_soft_delete_by_folder_ids(
+        self,
+        session: Session,
+        user_id: str,
+        folder_ids: List[str],
+        updater: str = "",
+    ) -> int:
+        """
+        按文件夹ID列表级联软删除文件（deleted=2，回收站不可见）。
+        **不会 commit**，由调用方统一提交事务。
+
+        Args:
+            session: 数据库会话
+            user_id: 用户ID
+            folder_ids: 需要级联删除文件的文件夹ID列表
+            updater: 更新者
+
+        Returns:
+            被删除的文件数量
+        """
+        if not folder_ids:
+            return 0
+        count = session.query(self.model).filter(
+            self.model.user_id == user_id,
+            self.model.folder_id.in_(folder_ids),
+            self.model.deleted == 0,
+        ).update(
+            {'deleted': 2, 'updater': updater},
+            synchronize_session='fetch',
+        )
+        logger.debug(f"级联软删除{count}个文件: folder_ids count={len(folder_ids)}")
+        return count
+
+    def restore_by_folder_ids(
+        self,
+        session: Session,
+        user_id: str,
+        folder_ids: List[str],
+    ) -> int:
+        """
+        按文件夹ID列表恢复级联删除的文件（deleted=2 -> 0）。
+        **不会 commit**。
+
+        Returns:
+            被恢复的文件数量
+        """
+        if not folder_ids:
+            return 0
+        count = session.query(self.model).filter(
+            self.model.user_id == user_id,
+            self.model.folder_id.in_(folder_ids),
+            self.model.deleted == 2,
+        ).update({'deleted': 0}, synchronize_session='fetch')
+        logger.debug(f"恢复{count}个文件: folder_ids count={len(folder_ids)}")
+        return count
+
+    def get_deleted_files(
+        self,
+        session: Session,
+        user_id: str,
+        knowledge_base_id: Optional[str] = None,
+    ) -> List[WorkspaceFileSystem]:
+        """
+        获取回收站中的文件（仅 deleted=1，即用户直接删除的文件）
+
+        Args:
+            session: 数据库会话
+            user_id: 用户ID
+            knowledge_base_id: 可选，按知识库筛选
+
+        Returns:
+            WorkspaceFileSystem 列表，按删除时间倒序
+        """
+        try:
+            query = session.query(self.model).filter(
+                self.model.user_id == user_id,
+                self.model.deleted == 1,
+            )
+            if knowledge_base_id:
+                query = query.filter(
+                    self.model.knowledge_base_id == knowledge_base_id
+                )
+            return query.order_by(self.model.update_time.desc()).all()
+        except SQLAlchemyError as e:
+            logger.error(f"查询回收站文件失败: {e}")
+            return []
+
+    def get_deleted_files_by_folder(
+        self,
+        session: Session,
+        user_id: str,
+        folder_id: str,
+    ) -> List[WorkspaceFileSystem]:
+        """
+        获取回收站中某文件夹下的直接子文件（deleted=1 或 deleted=2）。
+        用于在回收站内浏览文件夹内容。
+
+        Args:
+            session: 数据库会话
+            user_id: 用户ID
+            folder_id: 文件夹ID
+
+        Returns:
+            WorkspaceFileSystem 列表
+        """
+        try:
+            return session.query(self.model).filter(
+                self.model.user_id == user_id,
+                self.model.folder_id == folder_id,
+                self.model.deleted.in_([1, 2]),
+            ).order_by(self.model.file_name).all()
+        except SQLAlchemyError as e:
+            logger.error(f"查询回收站文件夹内文件失败: {e}")
+            return []
+
+    def hard_delete_by_folder_ids(
+        self,
+        session: Session,
+        user_id: str,
+        folder_ids: List[str],
+    ) -> int:
+        """
+        按文件夹ID列表永久删除文件（物理删除）。
+        **不会 commit**。
+
+        Returns:
+            被删除的文件数量
+        """
+        if not folder_ids:
+            return 0
+        count = session.query(self.model).filter(
+            self.model.user_id == user_id,
+            self.model.folder_id.in_(folder_ids),
+            self.model.deleted.in_([1, 2]),
+        ).delete(synchronize_session='fetch')
+        logger.debug(
+            f"永久删除{count}个文件: folder_ids count={len(folder_ids)}"
+        )
+        return count
+
+    def hard_delete_by_file_id(
+        self,
+        session: Session,
+        user_id: str,
+        file_id: str,
+    ) -> bool:
+        """
+        按文件ID永久删除单个文件（物理删除）。
+        **不会 commit**。
+
+        Returns:
+            是否找到并删除
+        """
+        count = session.query(self.model).filter(
+            self.model.user_id == user_id,
+            self.model.file_id == file_id,
+            self.model.deleted.in_([1, 2]),
+        ).delete(synchronize_session='fetch')
+        return count > 0
+
+    def hard_delete_all_trash(
+        self,
+        session: Session,
+        user_id: str,
+    ) -> int:
+        """
+        清空回收站：永久删除用户所有已删除的文件。
+        **不会 commit**。
+
+        Returns:
+            被删除的文件数量
+        """
+        count = session.query(self.model).filter(
+            self.model.user_id == user_id,
+            self.model.deleted.in_([1, 2]),
+        ).delete(synchronize_session='fetch')
+        logger.info(f"清空回收站文件: user_id={user_id}, 删除{count}个文件")
+        return count
+
 
 # 全局实例
 workspace_file_system_repo = WorkspaceFileSystemRepository()
