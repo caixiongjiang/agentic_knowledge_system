@@ -12,16 +12,22 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
+from src.db.mysql.repositories.business.knowledge_base_repo import (
+    KnowledgeBaseRepository,
+    knowledge_base_repo,
+)
 from src.db.mysql.repositories.business.workspace_file_system_repo import (
     WorkspaceFileSystemRepository,
-    workspace_file_system_repo
+    workspace_file_system_repo,
 )
 from src.db.mysql.repositories.business.workspace_folder_repo import (
     WorkspaceFolderRepository,
-    workspace_folder_repo
+    workspace_folder_repo,
 )
 
 __all__ = [
+    "KnowledgeBaseRepository",
+    "knowledge_base_repo",
     "WorkspaceFileSystemRepository",
     "workspace_file_system_repo",
     "WorkspaceFolderRepository",
