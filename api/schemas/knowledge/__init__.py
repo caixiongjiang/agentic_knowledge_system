@@ -23,8 +23,33 @@ from api.schemas.knowledge.index import (
     IndexBuildResponse,
 )
 from api.schemas.knowledge.folder import (
+    FileInfo,
+    FileListResponse,
+    FolderInfo,
     FolderCreateRequest,
     FolderCreateResponse,
+    FolderListResponse,
+    FolderRenameRequest,
+    FolderMoveRequest,
+    FolderDeleteResponse,
+)
+from api.schemas.knowledge.knowledge_base import (
+    KnowledgeBaseCreateRequest,
+    KnowledgeBaseDeleteResponse,
+    KnowledgeBaseInfo,
+    KnowledgeBaseListResponse,
+    KnowledgeBaseUpdateRequest,
+)
+from api.schemas.knowledge.trash import (
+    TrashEmptyResponse,
+    TrashFolderChildItem,
+    TrashFolderChildrenResponse,
+    TrashFolderFileItem,
+    TrashFolderFilesResponse,
+    TrashItem,
+    TrashItemType,
+    TrashListResponse,
+    TrashRestoreResponse,
 )
 
 __all__ = [
@@ -35,6 +60,27 @@ __all__ = [
     "IndexBuildFileResult",
     "FileProgressResponse",
     "BatchProgressResponse",
+    "FileInfo",
+    "FileListResponse",
+    "FolderInfo",
     "FolderCreateRequest",
     "FolderCreateResponse",
+    "FolderListResponse",
+    "FolderRenameRequest",
+    "FolderMoveRequest",
+    "FolderDeleteResponse",
+    "KnowledgeBaseInfo",
+    "KnowledgeBaseCreateRequest",
+    "KnowledgeBaseListResponse",
+    "KnowledgeBaseUpdateRequest",
+    "KnowledgeBaseDeleteResponse",
+    "TrashItem",
+    "TrashItemType",
+    "TrashListResponse",
+    "TrashRestoreResponse",
+    "TrashEmptyResponse",
+    "TrashFolderChildItem",
+    "TrashFolderChildrenResponse",
+    "TrashFolderFileItem",
+    "TrashFolderFilesResponse",
 ]
