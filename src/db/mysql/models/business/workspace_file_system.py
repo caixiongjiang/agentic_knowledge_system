@@ -13,7 +13,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from sqlalchemy import Column, String, Integer, BigInteger, Text, Index
+from sqlalchemy import Column, String, Integer, BigInteger, LargeBinary, Text, Index
 from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 
 
@@ -21,8 +21,12 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
     """
     工作空间文件系统表
     
-    存储用户工作空间中的文件信息，包括文件基本信息、Git信息、
-    处理状态等。通过 folder_id 关联 WorkspaceFolder 表实现目录管理。
+    存储用户工作空间中的文件信息，包括文件基本信息、存储位置、
+    文档元数据、Git信息、处理状态等。
+    通过 folder_id 关联 WorkspaceFolder 表实现目录管理。
+    
+    本表同时承担原 DocumentMetaInfo 的职责，
+    存储文件路径、文件类型、SHA256 哈希值等文档元数据。
     
     主键：(user_id, file_id) 联合主键
     """
@@ -34,7 +38,8 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         Index("idx_user_status", "user_id", "status"),
     )
     
-    # 主键（联合主键）
+    # ==================== 主键（联合主键） ====================
+    
     user_id = Column(
         String(64), 
         primary_key=True,
@@ -48,11 +53,12 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         comment="文件ID（主键之一，全局唯一UUID）"
     )
     
-    # 文件基本信息
+    # ==================== 文件基本信息 ====================
+    
     file_name = Column(
         String(255), 
         nullable=False,
-        comment="文件名"
+        comment="用户上传时的原始文件名"
     )
     
     folder_id = Column(
@@ -68,6 +74,37 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         comment="文件大小（字节）"
     )
     
+    file_type = Column(
+        String(50),
+        nullable=True,
+        comment="文件类型：pdf, docx, txt 等"
+    )
+    
+    file_format = Column(
+        String(255),
+        nullable=True,
+        comment="文件格式详细信息"
+    )
+    
+    file_suffix = Column(
+        String(50),
+        nullable=True,
+        comment="文件后缀名（含点号，如 .pdf, .docx）"
+    )
+    
+    mime_type = Column(
+        String(255), 
+        nullable=True,
+        index=True,
+        comment="文件MIME类型（如 text/plain, image/png）"
+    )
+    
+    file_sha256 = Column(
+        LargeBinary(32),
+        nullable=True,
+        comment="文件SHA256哈希值（32字节二进制）"
+    )
+    
     document_id = Column(
         String(255), 
         index=True, 
@@ -75,7 +112,35 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         comment="关联的Document ID"
     )
     
-    # Git 相关
+    # ==================== 存储信息 ====================
+    
+    storage_id = Column(
+        Integer,
+        default=-1,
+        nullable=False,
+        comment="存储系统ID：-1=本地存储，其他值对应具体存储系统"
+    )
+    
+    bucket_name = Column(
+        String(255),
+        nullable=True,
+        comment="对象存储桶名称"
+    )
+    
+    file_path = Column(
+        String(1024),
+        nullable=True,
+        comment="文件在对象存储中的路径"
+    )
+    
+    session_id = Column(
+        String(128),
+        nullable=True,
+        comment="上传会话ID"
+    )
+    
+    # ==================== Git 相关 ====================
+    
     git_path = Column(
         String(500), 
         nullable=True,
@@ -88,21 +153,16 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         comment="Git commit hash（40位十六进制）"
     )
     
-    # 文件特征
+    # ==================== 文件特征 ====================
+    
     is_text_readable = Column(
         Integer,
         nullable=True,
         comment="文本可读性标识：0=不可读，1=可读，2=未知"
     )
     
-    mime_type = Column(
-        String(255), 
-        nullable=True,
-        index=True,
-        comment="文件MIME类型（如 text/plain, image/png）"
-    )
+    # ==================== 处理状态 ====================
     
-    # 处理状态
     queue_position = Column(
         Integer, 
         nullable=True,
@@ -121,6 +181,8 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         comment="是否重复文件：0=否，1=是"
     )
     
+    # ==================== 扩展信息 ====================
+    
     ext_attributes = Column(
         String(4096), 
         nullable=True,
@@ -132,7 +194,3 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         nullable=True,
         comment="文件描述"
     )
-    
-    # BaseModel 和 KnowledgeMixin 字段会自动继承：
-    # - knowledge_base_id, knowledge_base_name, parent_knowledge_base_id, parent_knowledge_base_name, knowledge_type
-    # - status, creator, create_time, updater, update_time, deleted

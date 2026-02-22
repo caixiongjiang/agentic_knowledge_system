@@ -520,7 +520,7 @@ class BaseRepository(Generic[DocumentType]):
                 return 0
             
             # 获取 motor 集合
-            collection = self.model.get_motor_collection()
+            collection = self.model.get_pymongo_collection()
             
             # 准备批量操作
             operations = []

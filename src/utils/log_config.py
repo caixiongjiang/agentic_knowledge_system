@@ -138,6 +138,24 @@ def setup_logging(
     logging.getLogger().handlers = [InterceptHandler()]
     logging.getLogger().setLevel(0)
     
+    # 抑制第三方库的噪声 DEBUG 日志
+    for name in [
+        "pymongo",
+        "pymongo.topology",
+        "pymongo.connection",
+        "pymongo.serverSelection",
+        "pymongo.command",
+        "pymongo.pool",
+        "motor",
+        "urllib3",
+        "urllib3.connectionpool",
+        "hpack",
+        "httpcore",
+        "httpx",
+        "multipart",
+    ]:
+        logging.getLogger(name).setLevel(logging.WARNING)
+    
     logger.info(f"日志系统初始化完成 - 级别: {log_level}")
 
 

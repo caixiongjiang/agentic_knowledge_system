@@ -23,20 +23,57 @@ from src.utils.log_config import setup_dev_logging
 
 setup_dev_logging()
 
+import os
+
 from api.routers import knowledge_router
 from src.db.kafka.connection.factory import close_kafka_manager
+from src.db.mongodb.mongodb_manager import get_mongodb_manager
 from src.db.mysql.connection.factory import get_mysql_manager
+from src.db.milvus import get_milvus_manager
 from src.db.redis.connection.factory import RedisManagerFactory
+
+
+def _init_milvus() -> None:
+    """初始化 Milvus 连接并确保所有集合存在"""
+    os.environ.setdefault("MILVUS_AUTO_CREATE_COLLECTION", "true")
+    from src.db.milvus.repositories import (
+        ChunkRepository, SectionRepository,
+        EnhancedChunkRepository,
+        SummaryRepository, AtomicQARepository,
+        SPORepository, TagRepository,
+    )
+    for cls in [
+        ChunkRepository, SectionRepository,
+        EnhancedChunkRepository,
+        SummaryRepository, AtomicQARepository,
+        SPORepository, TagRepository,
+    ]:
+        try:
+            cls()
+        except Exception as e:
+            logger.warning(f"Milvus 集合初始化跳过 {cls.__name__}: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """应用生命周期管理：启动时初始化资源，关闭时释放连接"""
+    """应用生命周期管理：启动时初始化所有数据库连接，关闭时统一释放"""
     logger.info("应用启动中...")
+
     get_mysql_manager().init_db()
+    logger.info("MySQL 初始化完成（自动建表）")
+
+    mongo_manager = await get_mongodb_manager()
+    logger.info("MongoDB 初始化完成（Beanie ODM + 索引）")
+
+    _init_milvus()
+    logger.info("Milvus 初始化完成（连接 + 集合自动创建）")
+
     yield
+
     logger.info("应用关闭中，释放资源...")
     get_mysql_manager().close()
+    await mongo_manager.disconnect()
+    get_milvus_manager().disconnect()
     await close_kafka_manager()
     await RedisManagerFactory.close_all()
     logger.info("所有资源已释放")
@@ -53,10 +90,6 @@ app.include_router(knowledge_router)
 
 
 if __name__ == "__main__":
-    import os
     import uvicorn
 
-    # Python 3.12+ 的 resource_tracker 在 reload 模式下会误报信号量泄漏
-    # 这些信号量由 SQLAlchemy/Redis/loguru 等库内部创建，OS 会自动回收
-    os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:multiprocessing.resource_tracker"
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

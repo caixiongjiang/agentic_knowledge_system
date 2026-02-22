@@ -338,28 +338,29 @@ class MinIOAdapter(BaseStorageAdapter):
         user_id: str,
         session_id: str,
         file_id: str,
-        filename: str,
+        file_suffix: str,
         folder_path: str = "/",
     ) -> str:
         """
         构建原始文件路径
         
-        格式: {user_id}/{session_id}{folder_path}{filename}
+        格式: {user_id}/{session_id}{folder_path}{file_id}{file_suffix}
         
         Args:
             user_id: 用户ID
             session_id: 会话ID
             file_id: 文件ID
-            filename: 文件名
+            file_suffix: 文件后缀（含点号，如 .pdf）
             folder_path: 文件夹路径（如 /默认上传/），默认根目录
             
         Returns:
             str: 对象路径 (不包含 bucket)
         """
+        storage_filename = f"{file_id}{file_suffix}"
         clean_path = folder_path.strip("/")
         if clean_path:
-            return f"{user_id}/{session_id}/{clean_path}/{filename}"
-        return f"{user_id}/{session_id}/{filename}"
+            return f"{user_id}/{session_id}/{clean_path}/{storage_filename}"
+        return f"{user_id}/{session_id}/{storage_filename}"
     
     def build_image_path(
         self,

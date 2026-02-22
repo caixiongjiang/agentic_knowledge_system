@@ -27,10 +27,10 @@ class FileUploadResponse(BaseModel):
     """单个文件上传响应"""
     file_id: str = Field(..., description="文件唯一标识（UUID）")
     file_name: str = Field(..., description="原始文件名")
-    storage_path: str = Field(..., description="MinIO/S3 存储路径")
     session_id: str = Field(..., description="上传会话ID")
     file_size: int = Field(..., description="文件大小（字节）")
     mime_type: str = Field(..., description="文件 MIME 类型")
+    file_sha256: str = Field(..., description="文件 SHA256 哈希值（十六进制）")
 
 
 class BatchFileUploadResponse(BaseModel):

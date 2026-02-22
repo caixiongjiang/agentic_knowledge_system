@@ -199,7 +199,6 @@ def test_auto_create_tables_sqlite():
             "section_document",
             "chunk_meta_info",
             "chunk_summary",
-            "document_meta_info",
             "workspace_file_system"
         ]
         
@@ -277,7 +276,6 @@ def test_auto_create_tables_mysql():
             "section_document",
             "chunk_meta_info",
             "chunk_summary",
-            "document_meta_info",
             "workspace_file_system"
         ]
         

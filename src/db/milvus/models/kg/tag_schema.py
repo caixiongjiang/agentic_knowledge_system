@@ -40,7 +40,7 @@ class TagSchema(BaseSchema):
     
     COLLECTION_NAME = "tag_store"
     DESCRIPTION = "标签表 - 存储实体和文档的标签分类系统"
-    VECTOR_DIM = 1536
+    VECTOR_DIM = 1024
     ENABLE_DYNAMIC_FIELD = True
     
     index_type = "HNSW"

@@ -24,10 +24,6 @@ from src.db.mysql.repositories.extract.document_summary_repo import (
     DocumentSummaryRepository,
     document_summary_repo
 )
-from src.db.mysql.repositories.extract.document_meta_info_repo import (
-    DocumentMetaInfoRepository,
-    document_meta_info_repo
-)
 
 __all__ = [
     "ChunkSummaryRepository",
@@ -36,6 +32,4 @@ __all__ = [
     "chunk_atomic_qa_repo",
     "DocumentSummaryRepository",
     "document_summary_repo",
-    "DocumentMetaInfoRepository",
-    "document_meta_info_repo",
 ]

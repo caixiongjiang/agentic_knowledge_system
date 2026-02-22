@@ -60,7 +60,7 @@ async def example_raw_file_operations():
             user_id="user_123",
             session_id="session_456",
             file_id="file_789",
-            filename="document.pdf"
+            file_suffix=".pdf"
         )
         logger.info(f"原始文件上传成功: {storage_path}")
         
@@ -225,7 +225,7 @@ async def example_service_integration():
             user_id="user_123",
             session_id="session_456",
             file_id="file_789",
-            filename="test.pdf"
+            file_suffix=".pdf"
         )
         
         # 调用 Service 解析

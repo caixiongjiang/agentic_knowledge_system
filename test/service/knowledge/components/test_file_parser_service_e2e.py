@@ -249,7 +249,7 @@ class FileParserServiceE2ETest:
                 user_id=self.user_id,
                 session_id=self.session_id,
                 file_id=self.file_id,
-                filename=self.filename
+                file_suffix=".pdf",
             )
             self.created_files.append(storage_path)
             logger.success(f"✓ 上传成功: {storage_path}")

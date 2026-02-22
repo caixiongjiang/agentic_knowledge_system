@@ -151,20 +151,23 @@ class BaseStorageAdapter(ABC):
         user_id: str,
         session_id: str,
         file_id: str,
-        filename: str,
+        file_suffix: str,
         folder_path: str = "/",
     ) -> str:
         """
         构建原始文件路径
         
-        格式: {user_id}/{session_id}{folder_path}{filename}
+        MinIO 中存储的文件名为 {file_id}{file_suffix}（如 uuid.pdf），
+        避免使用用户原始文件名。
+        
+        格式: {user_id}/{session_id}{folder_path}{file_id}{file_suffix}
         
         Args:
             user_id: 用户ID
             session_id: 会话ID
             file_id: 文件ID
-            filename: 文件名
-            folder_path: 文件夹路径（如 /默认上传/、/项目A/文档/），默认根目录
+            file_suffix: 文件后缀（含点号，如 .pdf）
+            folder_path: 文件夹路径（如 /默认上传/），默认根目录
         
         Returns:
             str: 对象路径 (不包含 bucket)

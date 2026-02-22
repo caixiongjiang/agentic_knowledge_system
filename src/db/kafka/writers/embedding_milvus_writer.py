@@ -11,20 +11,14 @@ EmbeddingMilvusWriter
     4. 路由到具体 Milvus Repository 批量写入
 """
 
-from typing import List, Dict, Optional, Any, Protocol
+from typing import List, Dict, Optional, Any
 from loguru import logger
 
 from src.db.kafka.writers.base_writer import BaseWriter
 from src.db.kafka.topics import KafkaTopics
 from src.db.milvus.repositories.base_repository import BaseRepository as MilvusBaseRepository
 from src.types.messages.db_write import EmbeddingWriteMessage, MilvusCollection
-
-
-class EmbeddingClient(Protocol):
-    """Embedding 客户端协议"""
-    async def embed(self, texts: List[str]) -> List[List[float]]:
-        """批量生成向量"""
-        ...
+from src.client.embedding import EmbeddingClient
 
 
 class EmbeddingMilvusWriter(BaseWriter):
@@ -293,13 +287,21 @@ class EmbeddingMilvusWriter(BaseWriter):
                     )
                     continue
 
+                item_id = (
+                    data_item.get("id")
+                    or data_item.get("chunk_id")
+                    or ""
+                )
+
                 texts.append(text)
                 item_metadata.append({
-                    "id": data_item.get("id", ""),
+                    "id": item_id,
                     "user_id": msg.user_id,
                     "file_id": msg.file_id,
+                    "knowledge_base_id": msg.knowledge_base_id,
+                    "knowledge_base_name": msg.knowledge_base_name,
                     "text": text,
-                    "metadata": data_item.get("metadata", {}),
+                    "item_metadata": data_item.get("metadata", {}),
                 })
 
         return texts, item_metadata
@@ -322,7 +324,7 @@ class EmbeddingMilvusWriter(BaseWriter):
 
         for i in range(0, len(texts), self._embedding_batch_size):
             batch = texts[i:i + self._embedding_batch_size]
-            batch_embeddings = await self._embedding_client.embed(batch)
+            batch_embeddings = await self._embedding_client.aembed_batch(batch)
             all_embeddings.extend(batch_embeddings)
 
         logger.debug(f"批量 Embedding 完成: {len(texts)} 文本 → {len(all_embeddings)} 向量")
@@ -336,6 +338,9 @@ class EmbeddingMilvusWriter(BaseWriter):
         """
         构建 Milvus 插入数据
 
+        包含 ChunkSchema 的必填字段（id, vector, user_id）以及
+        可选字段（knowledge_base_id 等，为 None 时 Milvus nullable 字段自动处理）。
+
         Args:
             item_metadata: 元数据列表
             embeddings: 向量列表
@@ -343,16 +348,24 @@ class EmbeddingMilvusWriter(BaseWriter):
         Returns:
             Milvus 插入数据列表
         """
+        import time
+        now_ts = int(time.time())
         insert_data = []
 
         for meta, embedding in zip(item_metadata, embeddings):
-            record = {
+            chunk_meta = meta.get("item_metadata", {})
+            record: Dict[str, Any] = {
                 "id": meta["id"],
-                "user_id": meta["user_id"],
-                "file_id": meta["file_id"],
                 "vector": embedding,
+                "user_id": meta["user_id"],
+                "document_id": meta["file_id"],
+                "type": chunk_meta.get("chunk_type"),
+                "knowledge_base_id": meta.get("knowledge_base_id"),
+                "knowledge_base_name": meta.get("knowledge_base_name"),
+                "create_time": now_ts,
+                "update_time": now_ts,
                 "text": meta["text"],
-                "metadata": meta.get("metadata", {}),
+                "file_id": meta["file_id"],
             }
             insert_data.append(record)
 

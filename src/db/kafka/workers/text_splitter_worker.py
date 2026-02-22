@@ -17,6 +17,7 @@ from loguru import logger
 
 from src.db.kafka.workers.base_worker import BaseWorker
 from src.db.kafka.topics import KafkaTopics
+from src.states.states import IndexStage
 from src.types.messages.index import ParseEndMessage, SplitEndMessage
 from src.types.messages.db_write import (
     EmbeddingWriteMessage,
@@ -199,7 +200,7 @@ class TextSplitterWorker(BaseWorker):
                 f"table={len(split_result.table_chunks)}"
             )
             
-            # 5. 分发到下游 Kafka Topic
+            # 5. 分发到下游 Kafka Topic（暂时禁用，后续阶段尚未启用）
             # 5a. 发送 MySQL 写入消息
             mysql_data = split_result.get_mysql_data(document_id=document_id)
             await self._send_mysql_messages(message, mysql_data)
@@ -208,13 +209,34 @@ class TextSplitterWorker(BaseWorker):
             mongodb_data = split_result.get_mongodb_data()
             await self._send_mongodb_messages(message, mongodb_data)
             
-            # 5c. 发送 Embedding 写入消息
+            # 5c. 发送 Chunk Embedding 写入消息
             embedding_items = split_result.get_embedding_messages()
             if embedding_items:
                 await self._send_embedding_messages(message, embedding_items, split_result)
             
-            # 5d. 发送 SplitEndMessage (前台完成通知)
-            await self._send_split_end_message(message, split_result)
+            # 5d. 发送 Section Embedding 写入消息
+            section_embedding_items = split_result.get_section_embedding_messages()
+            if section_embedding_items:
+                await self._send_section_embedding_messages(
+                    message, section_embedding_items, split_result
+                )
+            
+            # # 5e. 发送 SplitEndMessage (前台完成通知)
+            # await self._send_split_end_message(message, split_result)
+            # logger.info(
+            #     f"下游消息分发已禁用 (暂时跳过): file_id={message.file_id}, "
+            #     f"chunks={split_result.total_chunks}"
+            # )
+            
+            # 6. 更新 Redis 进度到 split_end (100%)
+            await self._update_file_progress(
+                file_id=message.file_id,
+                stage=IndexStage.SPLIT_END,
+                message=(
+                    f"文本切分完成: {split_result.total_chunks} 个文本块, "
+                    f"{split_result.total_sections} 个章节"
+                ),
+            )
             
             logger.info(f"文本切分处理完成: file_id={message.file_id}")
             return True
@@ -223,6 +245,11 @@ class TextSplitterWorker(BaseWorker):
             logger.error(
                 f"文本切分失败: file_id={message.file_id}, error={e}",
                 exc_info=True
+            )
+            await self._fail_file_progress(
+                file_id=message.file_id,
+                stage=IndexStage.SPLIT_END,
+                error_message=f"文本切分失败: {e}",
             )
             return False
     
@@ -376,7 +403,9 @@ class TextSplitterWorker(BaseWorker):
             collection_type=MilvusCollection.CHUNK,
             items=embedding_items,
             source_stage="split",
-            language=split_result.document_language
+            knowledge_base_id=message.knowledge_base_id,
+            knowledge_base_name=message.knowledge_base_name,
+            language=split_result.document_language,
         )
         
         await self._producer.send_message(
@@ -385,6 +414,44 @@ class TextSplitterWorker(BaseWorker):
         )
         
         logger.debug(f"Embedding 消息发送完成: {len(embedding_items)} 个 Chunk")
+    
+    async def _send_section_embedding_messages(
+        self,
+        message: ParseEndMessage,
+        section_items: List[Dict[str, Any]],
+        split_result: SplitResult
+    ) -> None:
+        """
+        发送 Section 向量化写入消息到 Kafka
+        
+        将所有 Section 标题文本发送到 section_store 进行向量化。
+        
+        Args:
+            message: 原始 ParseEndMessage
+            section_items: SplitResult.get_section_embedding_messages() 的返回值
+            split_result: 切分结果（用于获取语言信息）
+        """
+        if not self._producer:
+            logger.warning("Producer 未配置，无法发送 Section Embedding 消息")
+            return
+        
+        emb_msg = EmbeddingWriteMessage(
+            user_id=message.user_id,
+            file_id=message.file_id,
+            collection_type=MilvusCollection.SECTION,
+            items=section_items,
+            source_stage="split",
+            knowledge_base_id=message.knowledge_base_id,
+            knowledge_base_name=message.knowledge_base_name,
+            language=split_result.document_language,
+        )
+        
+        await self._producer.send_message(
+            topic=KafkaTopics.DB_WRITE_EMBEDDING,
+            message=emb_msg
+        )
+        
+        logger.debug(f"Section Embedding 消息发送完成: {len(section_items)} 个 Section")
     
     async def _send_split_end_message(
         self,

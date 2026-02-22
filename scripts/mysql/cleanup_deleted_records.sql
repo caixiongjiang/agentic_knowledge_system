@@ -45,8 +45,6 @@ USE `default`;
 -- UNION ALL
 -- SELECT 'document_summary', COUNT(*) FROM document_summary WHERE deleted = 1
 -- UNION ALL
--- SELECT 'document_meta_info', COUNT(*) FROM document_meta_info WHERE deleted = 1
--- UNION ALL
 -- SELECT 'workspace_file_system', COUNT(*) FROM workspace_file_system WHERE deleted = 1;
 
 -- =====================================================
@@ -63,7 +61,6 @@ DELETE FROM section_meta_info WHERE deleted = 1;
 DELETE FROM chunk_summary WHERE deleted = 1;
 DELETE FROM chunk_atomic_qa WHERE deleted = 1;
 DELETE FROM document_summary WHERE deleted = 1;
-DELETE FROM document_meta_info WHERE deleted = 1;
 
 -- Business Layer: 业务数据表
 DELETE FROM workspace_file_system WHERE deleted = 1;
@@ -89,7 +86,5 @@ UNION ALL
 SELECT 'chunk_atomic_qa', COUNT(*) FROM chunk_atomic_qa WHERE deleted = 1
 UNION ALL
 SELECT 'document_summary', COUNT(*) FROM document_summary WHERE deleted = 1
-UNION ALL
-SELECT 'document_meta_info', COUNT(*) FROM document_meta_info WHERE deleted = 1
 UNION ALL
 SELECT 'workspace_file_system', COUNT(*) FROM workspace_file_system WHERE deleted = 1;

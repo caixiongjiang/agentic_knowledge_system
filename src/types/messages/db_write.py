@@ -31,12 +31,11 @@ class MySQLTable(StrEnum):
     - chunk_meta_info: Chunk 元数据
     - section_meta_info: Section 元数据
     - element_meta_info: Element 元数据
-    - document_meta_info: Document 元数据
     - chunk_section_document: Chunk-Section-Document 关联表
     - section_document: Section-Document 关联表
 
     Business 层（业务表）：
-    - workspace_file_system: 工作空间文件系统
+    - workspace_file_system: 工作空间文件系统（含文档元数据）
     - workspace_folder: 工作空间文件夹
 
     Extract 层（提取类表）：
@@ -47,7 +46,6 @@ class MySQLTable(StrEnum):
     CHUNK_META_INFO = "chunk_meta_info"
     SECTION_META_INFO = "section_meta_info"
     ELEMENT_META_INFO = "element_meta_info"
-    DOCUMENT_META_INFO = "document_meta_info"
     CHUNK_SECTION_DOCUMENT = "chunk_section_document"
     SECTION_DOCUMENT = "section_document"
     WORKSPACE_FILE_SYSTEM = "workspace_file_system"
@@ -147,6 +145,16 @@ class EmbeddingWriteMessage(BaseMessage):
     source_stage: str = Field(
         ...,
         description="数据来源阶段（split_end, summary_end, analyze_end, image_end）"
+    )
+
+    knowledge_base_id: Optional[str] = Field(
+        default=None,
+        description="知识库ID"
+    )
+
+    knowledge_base_name: Optional[str] = Field(
+        default=None,
+        description="知识库名称"
     )
 
     need_embedding: bool = Field(

@@ -51,6 +51,8 @@ class FieldDefinition:
     auto_id: bool = False               # 是否自动生成ID
     max_length: Optional[int] = None    # VARCHAR类型的最大长度
     dim: Optional[int] = None           # VECTOR类型的维度
+    nullable: bool = False              # 是否允许为空
+    default_value: Optional[Any] = None # 默认值
 
 
 class BaseSchema(ABC):
@@ -233,7 +235,9 @@ class BaseSchema(ABC):
     def create_text_field(
         name: str, 
         max_length: int = 65535,
-        description: str = ""
+        description: str = "",
+        nullable: bool = False,
+        default_value: Optional[str] = None,
     ) -> FieldDefinition:
         """创建文本字段（VARCHAR）
         
@@ -241,6 +245,8 @@ class BaseSchema(ABC):
             name: 字段名称
             max_length: 最大长度
             description: 字段描述
+            nullable: 是否允许为空
+            default_value: 默认值
             
         Returns:
             FieldDefinition: 文本字段定义
@@ -249,7 +255,9 @@ class BaseSchema(ABC):
             name=name,
             dtype=FieldType.VARCHAR,
             max_length=max_length,
-            description=description or f"{name}文本字段"
+            description=description or f"{name}文本字段",
+            nullable=nullable,
+            default_value=default_value,
         )
     
     @staticmethod
@@ -271,7 +279,11 @@ class BaseSchema(ABC):
         )
     
     @staticmethod
-    def create_json_field(name: str, description: str = "") -> FieldDefinition:
+    def create_json_field(
+        name: str,
+        description: str = "",
+        nullable: bool = False,
+    ) -> FieldDefinition:
         """创建JSON字段
         
         用于存储结构化的JSON数据
@@ -279,6 +291,7 @@ class BaseSchema(ABC):
         Args:
             name: 字段名称
             description: 字段描述
+            nullable: 是否允许为空
             
         Returns:
             FieldDefinition: JSON字段定义
@@ -286,15 +299,20 @@ class BaseSchema(ABC):
         return FieldDefinition(
             name=name,
             dtype=FieldType.JSON,
-            description=description or f"{name}字段（JSON格式）"
+            description=description or f"{name}字段（JSON格式）",
+            nullable=nullable,
         )
     
     @staticmethod
-    def create_timestamp_field(name: str = "created_at") -> FieldDefinition:
+    def create_timestamp_field(
+        name: str = "created_at",
+        nullable: bool = False,
+    ) -> FieldDefinition:
         """创建时间戳字段
         
         Args:
             name: 字段名称
+            nullable: 是否允许为空
             
         Returns:
             FieldDefinition: 时间戳字段定义
@@ -302,16 +320,24 @@ class BaseSchema(ABC):
         return FieldDefinition(
             name=name,
             dtype=FieldType.INT64,
-            description=f"时间戳字段（Unix时间戳），记录{name.replace('_', ' ')}"
+            description=f"时间戳字段（Unix时间戳），记录{name.replace('_', ' ')}",
+            nullable=nullable,
         )
     
     @staticmethod
-    def create_int_field(name: str, description: str = "") -> FieldDefinition:
+    def create_int_field(
+        name: str,
+        description: str = "",
+        nullable: bool = False,
+        default_value: Optional[int] = None,
+    ) -> FieldDefinition:
         """创建整型字段
         
         Args:
             name: 字段名称
             description: 字段描述
+            nullable: 是否允许为空
+            default_value: 默认值
             
         Returns:
             FieldDefinition: 整型字段定义
@@ -319,7 +345,9 @@ class BaseSchema(ABC):
         return FieldDefinition(
             name=name,
             dtype=FieldType.INT64,
-            description=description or f"{name}整型字段"
+            description=description or f"{name}整型字段",
+            nullable=nullable,
+            default_value=default_value,
         )
     
     @staticmethod

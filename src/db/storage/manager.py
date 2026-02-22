@@ -185,27 +185,30 @@ class StorageManager:
         user_id: str,
         session_id: str,
         file_id: str,
-        filename: str,
+        file_suffix: str,
         folder_path: str = "/",
     ) -> str:
         """
         上传原始文件
         
-        自动构建路径: {user_id}/{session_id}{folder_path}{filename}
+        MinIO 中存储的文件名为 {file_id}{file_suffix}（如 uuid.pdf），
+        避免使用用户原始文件名。
+        
+        自动构建路径: {user_id}/{session_id}{folder_path}{file_id}{file_suffix}
         
         Args:
             file_bytes: 文件字节内容
             user_id: 用户ID
             session_id: 会话ID
             file_id: 文件ID
-            filename: 文件名
+            file_suffix: 文件后缀（含点号，如 .pdf）
             folder_path: 文件夹路径（如 /默认上传/），默认根目录
             
         Returns:
             str: 完整存储路径
         """
         object_path = self._adapter.build_raw_file_path(
-            user_id, session_id, file_id, filename, folder_path
+            user_id, session_id, file_id, file_suffix, folder_path
         )
         bucket = self._get_bucket_name()
         
@@ -248,7 +251,7 @@ class StorageManager:
         user_id: str,
         session_id: str,
         file_id: str,
-        filename: str,
+        file_suffix: str,
         expires: int = 3600
     ) -> str:
         """
@@ -258,14 +261,14 @@ class StorageManager:
             user_id: 用户ID
             session_id: 会话ID
             file_id: 文件ID
-            filename: 文件名
+            file_suffix: 文件后缀（含点号，如 .pdf）
             expires: URL 过期时间（秒），默认 1 小时
             
         Returns:
             str: 预签名 URL
         """
         object_path = self._adapter.build_raw_file_path(
-            user_id, session_id, file_id, filename
+            user_id, session_id, file_id, file_suffix
         )
         bucket = self._get_bucket_name()
         storage_path = f"{bucket}/{object_path}"

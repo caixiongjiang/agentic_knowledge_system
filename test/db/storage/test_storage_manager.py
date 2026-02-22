@@ -89,7 +89,7 @@ class StorageManagerTest:
                 user_id=user_id,
                 session_id=session_id,
                 file_id=file_id,
-                filename=filename
+                file_suffix=".pdf"
             )
             self.created_files.append(storage_path)
             logger.success(f"✓ 上传成功: {storage_path}")
@@ -216,7 +216,7 @@ class StorageManagerTest:
                 user_id=user_id,
                 session_id=session_id,
                 file_id=file_id,
-                filename=filename
+                file_suffix=".pdf"
             )
             
             upload_time = time.time() - start_time

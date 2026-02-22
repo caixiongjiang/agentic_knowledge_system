@@ -178,7 +178,7 @@ class TextSplitterService:
         parse_result = ParseResult(
             user_id=user_id,
             file_id=file_id,
-            filename="unknown",  # TODO: 从 document_meta_info 表获取
+            filename="unknown",  # TODO: 从 workspace_file_system 表获取
             status="success",
             elements=elements,
             total_pages=max((e.page_index or 0) for e in elements) + 1 if elements else 0,

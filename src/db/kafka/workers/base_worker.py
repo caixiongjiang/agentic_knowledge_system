@@ -16,6 +16,8 @@ from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.deduplication import DeduplicationManager
 from src.db.kafka.retry_manager import RetryManager
 from src.db.kafka.dlq_manager import DLQManager
+from src.states.state_manager import FileProgressManager
+from src.states.states import IndexStatus
 from src.types.messages.base import BaseMessage
 
 
@@ -28,6 +30,7 @@ class BaseWorker(BaseKafkaConsumer, ABC):
     - 重试管理支持
     - DLQ 支持
     - Producer 支持(用于发送下游消息)
+    - 进度管理支持(Redis 进度更新)
     - 统一的错误处理
     
     子类只需实现:
@@ -43,6 +46,7 @@ class BaseWorker(BaseKafkaConsumer, ABC):
         dedup_manager: Optional[DeduplicationManager] = None,
         retry_manager: Optional[RetryManager] = None,
         dlq_manager: Optional[DLQManager] = None,
+        progress_manager: Optional[FileProgressManager] = None,
         batch_size: int = 1,
         commit_interval: int = 100,
         enable_idempotency: bool = True
@@ -57,6 +61,7 @@ class BaseWorker(BaseKafkaConsumer, ABC):
             dedup_manager: 去重管理器
             retry_manager: 重试管理器
             dlq_manager: DLQ 管理器
+            progress_manager: 文件索引进度管理器(Redis)
             batch_size: 批处理大小
             commit_interval: 提交间隔
             enable_idempotency: 是否启用幂等性检查
@@ -73,6 +78,7 @@ class BaseWorker(BaseKafkaConsumer, ABC):
         self._dedup_manager = dedup_manager
         self._retry_manager = retry_manager
         self._dlq_manager = dlq_manager
+        self._progress_manager = progress_manager
         self._enable_idempotency = enable_idempotency
         
         # 统计信息
@@ -186,6 +192,68 @@ class BaseWorker(BaseKafkaConsumer, ABC):
                     error=error
                 )
                 self._dlq_count += 1
+    
+    async def _update_file_progress(
+        self,
+        file_id: str,
+        stage: str,
+        message: Optional[str] = None,
+    ) -> None:
+        """
+        更新文件索引进度到 Redis
+        
+        如果 progress_manager 未配置则静默跳过，不影响主流程。
+        
+        Args:
+            file_id: 文件 ID
+            stage: 当前完成阶段 (IndexStage 的值)
+            message: 描述信息
+        """
+        if not self._progress_manager:
+            return
+        
+        try:
+            await self._progress_manager.update_progress(
+                file_id=file_id,
+                stage=stage,
+                status=IndexStatus.PROCESSING,
+                message=message,
+            )
+        except Exception as e:
+            logger.warning(
+                f"更新 Redis 进度失败（不阻塞主流程）: "
+                f"file_id={file_id}, stage={stage}, error={e}"
+            )
+    
+    async def _fail_file_progress(
+        self,
+        file_id: str,
+        stage: str,
+        error_message: str,
+    ) -> None:
+        """
+        将文件索引进度标记为失败
+        
+        Args:
+            file_id: 文件 ID
+            stage: 失败所在阶段
+            error_message: 错误信息
+        """
+        if not self._progress_manager:
+            return
+        
+        try:
+            await self._progress_manager.update_progress(
+                file_id=file_id,
+                stage=stage,
+                status=IndexStatus.FAILED,
+                message=error_message,
+            )
+        except Exception as e:
+            logger.warning(
+                f"更新 Redis 失败状态失败: "
+                f"file_id={file_id}, stage={stage}, error={e}"
+            )
     
     def get_stats(self) -> dict:
         """

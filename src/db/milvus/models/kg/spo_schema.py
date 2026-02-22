@@ -43,7 +43,7 @@ class SPOSchema(BaseSchema):
     
     COLLECTION_NAME = "spo_store"
     DESCRIPTION = "SPO三元组表 - 存储知识图谱的主语-谓语-宾语结构"
-    VECTOR_DIM = 1536
+    VECTOR_DIM = 1024
     ENABLE_DYNAMIC_FIELD = True
     
     index_type = "HNSW"

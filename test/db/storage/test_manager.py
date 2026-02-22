@@ -94,7 +94,7 @@ class TestStorageManager:
                 user_id="demo_user",
                 session_id="session_001",
                 file_id="file_001",
-                filename="sample_document.pdf"
+                file_suffix=".pdf"
             )
             self.created_files.append(storage_path)
             logger.success(f"✓ 原始文件上传成功: {storage_path}")

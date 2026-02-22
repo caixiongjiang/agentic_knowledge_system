@@ -447,6 +447,30 @@ class SectionInfo(BaseModel):
             "text": self.content,
             "translation": [],  # 后续填充
         }
+    
+    def to_embedding_message_dict(self) -> Optional[Dict[str, Any]]:
+        """
+        转换为发送到 db_write.embedding.start 的消息格式
+        
+        使用 vector_text（Section 标题文本）作为向量化源文本。
+        如果 vector_text 为空则返回 None（不需要向量化）。
+        
+        Returns:
+            Embedding 消息字典，或 None
+        """
+        text = self.vector_text or self.content
+        if not text:
+            return None
+        
+        return {
+            "id": self.section_id,
+            "text": text,
+            "collection_type": "section",
+            "metadata": {
+                "level": self.level,
+                "page_index": self.page_index,
+            }
+        }
 
 
 class SplitResult(BaseModel):
@@ -656,6 +680,23 @@ class SplitResult(BaseModel):
             if chunk.is_text() or chunk.is_table() or chunk.is_code_block():
                 messages.append(chunk.to_embedding_message_dict())
         
+        return messages
+    
+    def get_section_embedding_messages(self) -> List[Dict[str, Any]]:
+        """
+        获取 Section 的 Embedding 消息列表
+        
+        将有 vector_text 的 Section 标题发送到 db_write.embedding.start，
+        目标 collection 为 section_store。
+        
+        Returns:
+            Section Embedding 消息列表
+        """
+        messages = []
+        for section in self.sections:
+            msg = section.to_embedding_message_dict()
+            if msg is not None:
+                messages.append(msg)
         return messages
     
     def get_summary(self) -> Dict[str, Any]:

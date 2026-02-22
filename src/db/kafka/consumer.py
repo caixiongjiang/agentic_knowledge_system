@@ -54,6 +54,7 @@ class BaseKafkaConsumer(ABC):
         aiokafka_consumer: AIOKafkaConsumer,
         message_class: Type[BaseMessage],
         batch_size: int = 1,
+        fetch_timeout_ms: int = 1000,
         auto_commit: bool = False,
         commit_interval: int = 100
     ):
@@ -64,12 +65,14 @@ class BaseKafkaConsumer(ABC):
             aiokafka_consumer: aiokafka 的 Consumer 实例
             message_class: 消息类型（BaseMessage 的子类）
             batch_size: 批处理大小（每次拉取的消息数量）
+            fetch_timeout_ms: 拉取消息的超时时间 (毫秒)，控制 getmany 等待时长
             auto_commit: 是否自动提交 offset（默认手动提交）
             commit_interval: 提交间隔（处理多少条消息后提交一次）
         """
         self._consumer = aiokafka_consumer
         self._message_class = message_class
         self._batch_size = batch_size
+        self._fetch_timeout_ms = fetch_timeout_ms
         self._auto_commit = auto_commit
         self._commit_interval = commit_interval
         
@@ -143,7 +146,7 @@ class BaseKafkaConsumer(ABC):
         try:
             # getmany() 返回 {TopicPartition: [ConsumerRecord]} 字典
             data = await self._consumer.getmany(
-                timeout_ms=1000,
+                timeout_ms=self._fetch_timeout_ms,
                 max_records=self._batch_size
             )
             

@@ -31,7 +31,6 @@ from src.db.mysql.models.base.element_meta_info import ElementMetaInfo
 from src.db.mysql.models.base_model import Base
 from src.db.mongodb import MongoDBManager
 from src.db.mongodb.models.element_data import ElementData
-from src.utils.env_manager import get_env_manager
 from src.utils.config_manager import get_config_manager
 
 

@@ -200,6 +200,10 @@ class BaseRepository(ABC):
                 field_dict["max_length"] = field_def.max_length
             if field_def.dim:
                 field_dict["dim"] = field_def.dim
+            if field_def.nullable:
+                field_dict["nullable"] = True
+            if field_def.default_value is not None:
+                field_dict["default_value"] = field_def.default_value
             
             # 创建FieldSchema
             milvus_fields.append(FieldSchema(**field_dict))

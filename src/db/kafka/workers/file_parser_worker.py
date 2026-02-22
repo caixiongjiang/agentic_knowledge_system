@@ -15,9 +15,16 @@ from typing import Optional, List, Dict, Any
 from loguru import logger
 
 from src.db.kafka.workers.base_worker import BaseWorker
-from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
+from src.states.states import IndexStage
 from src.types.messages.index import IndexStartMessage, ParseEndMessage
+from src.types.messages.db_write import (
+    MetaWriteMessage,
+    MongoWriteMessage,
+    MySQLTable,
+    MongoCollection,
+    WriteOperation,
+)
 from src.db.storage.manager import StorageManager
 from src.service.knowledge.components.file_parser_service import FileParserService
 
@@ -165,14 +172,21 @@ class FileParserWorker(BaseWorker):
             
             # 3. 发送 MySQL 写入消息到 Kafka
             if mysql_messages:
-                await self._send_mysql_messages(mysql_messages)
+                await self._send_mysql_messages(message, mysql_messages)
             
             # 4. 发送 MongoDB 写入消息到 Kafka
             if mongodb_messages:
-                await self._send_mongodb_messages(mongodb_messages)
+                await self._send_mongodb_messages(message, mongodb_messages)
             
             # 5. 发送解析完成消息
             await self._send_parse_end_message(message, parse_result)
+            
+            # 6. 更新 Redis 进度到 parse_end (40%)
+            await self._update_file_progress(
+                file_id=message.file_id,
+                stage=IndexStage.PARSE_END,
+                message=f"文件解析完成: {parse_result.total_pages} 页",
+            )
             
             logger.info(f"文件解析处理完成: file_id={message.file_id}")
             return True
@@ -182,77 +196,90 @@ class FileParserWorker(BaseWorker):
                 f"文件解析失败: file_id={message.file_id}, error={e}",
                 exc_info=True
             )
+            await self._fail_file_progress(
+                file_id=message.file_id,
+                stage=IndexStage.PARSE_END,
+                error_message=f"文件解析失败: {e}",
+            )
             return False
     
-    async def _send_mysql_messages(self, messages: List[Dict[str, Any]]) -> None:
+    async def _send_mysql_messages(
+        self,
+        message: IndexStartMessage,
+        records: List[Dict[str, Any]]
+    ) -> None:
         """
         发送 MySQL 写入消息到 Kafka
         
+        将原始 element dict 包装为 MetaWriteMessage 后发送。
+        
         Args:
-            messages: MySQL 消息列表
+            message: 原始 IndexStartMessage（提供 user_id, file_id）
+            records: MySQL 记录列表（来自 FileParserService）
         """
         if not self._producer:
             logger.warning("Producer 未配置，无法发送 MySQL 消息")
             return
         
-        logger.info(f"发送 {len(messages)} 条 MySQL 消息到 Kafka")
+        logger.info(f"发送 {len(records)} 条 MySQL 消息到 Kafka")
         
-        # 获取底层的 aiokafka producer
-        raw_producer = self._producer.get_raw_producer()
-        
-        # 批量发送消息到 meta topic (MySQL 数据)
-        import json
-        for msg in messages:
-            # 生成消息 key（使用 element_id）
-            key = msg.get("element_id", "unknown")
+        for record in records:
+            record_id = record.get("element_id", message.file_id)
             
-            # 序列化为 JSON
-            value = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-            key_bytes = key.encode("utf-8")
+            meta_msg = MetaWriteMessage(
+                user_id=message.user_id,
+                file_id=message.file_id,
+                table_name=MySQLTable.ELEMENT_META_INFO,
+                record_data=record,
+                operation=WriteOperation.INSERT,
+                record_id=record_id,
+            )
             
-            # 直接使用 aiokafka producer 发送
-            await raw_producer.send(
+            await self._producer.send_message(
                 topic=KafkaTopics.DB_WRITE_META,
-                value=value,
-                key=key_bytes
+                message=meta_msg
             )
         
-        logger.debug(f"MySQL 消息发送完成: {len(messages)} 条")
+        logger.debug(f"MySQL 消息发送完成: {len(records)} 条")
     
-    async def _send_mongodb_messages(self, messages: List[Dict[str, Any]]) -> None:
+    async def _send_mongodb_messages(
+        self,
+        message: IndexStartMessage,
+        documents: List[Dict[str, Any]]
+    ) -> None:
         """
         发送 MongoDB 写入消息到 Kafka
         
+        将原始 element dict 包装为 MongoWriteMessage 后发送。
+        
         Args:
-            messages: MongoDB 消息列表
+            message: 原始 IndexStartMessage（提供 user_id, file_id）
+            documents: MongoDB 文档列表（来自 FileParserService）
         """
         if not self._producer:
             logger.warning("Producer 未配置，无法发送 MongoDB 消息")
             return
         
-        logger.info(f"发送 {len(messages)} 条 MongoDB 消息到 Kafka")
+        logger.info(f"发送 {len(documents)} 条 MongoDB 消息到 Kafka")
         
-        # 获取底层的 aiokafka producer
-        raw_producer = self._producer.get_raw_producer()
-        
-        # 批量发送消息到 mongo topic (MongoDB 数据)
-        import json
-        for msg in messages:
-            # 生成消息 key（使用 _id）
-            key = msg.get("_id", "unknown")
+        for doc in documents:
+            document_id = doc.get("_id", message.file_id)
             
-            # 序列化为 JSON
-            value = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-            key_bytes = key.encode("utf-8")
+            mongo_msg = MongoWriteMessage(
+                user_id=message.user_id,
+                file_id=message.file_id,
+                collection_name=MongoCollection.ELEMENT_DATA,
+                document_data=doc,
+                operation=WriteOperation.INSERT,
+                document_id=str(document_id),
+            )
             
-            # 直接使用 aiokafka producer 发送
-            await raw_producer.send(
+            await self._producer.send_message(
                 topic=KafkaTopics.DB_WRITE_MONGO,
-                value=value,
-                key=key_bytes
+                message=mongo_msg
             )
         
-        logger.debug(f"MongoDB 消息发送完成: {len(messages)} 条")
+        logger.debug(f"MongoDB 消息发送完成: {len(documents)} 条")
     
     async def _send_parse_end_message(
         self,

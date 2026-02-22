@@ -37,7 +37,6 @@ def preview_deleted_records() -> Dict[str, int]:
         "chunk_summary",
         "chunk_atomic_qa",
         "document_summary",
-        "document_meta_info",
         "workspace_file_system",
     ]
     
@@ -83,7 +82,6 @@ def cleanup_deleted_records(confirm: bool = False) -> Dict[str, Any]:
         "chunk_summary",
         "chunk_atomic_qa",
         "document_summary",
-        "document_meta_info",
         # Business Layer
         "workspace_file_system",
     ]

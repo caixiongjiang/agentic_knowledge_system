@@ -24,6 +24,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
+import hashlib
 import uuid
 import mimetypes
 from datetime import datetime, timezone
@@ -78,6 +79,24 @@ _SUPPORTED_FORMATS: list[str] = _config.get(
 _MAX_FILE_SIZE_MB: int = _config.get("file_upload.max_file_size", 100)
 _MAX_FILE_SIZE_BYTES: int = _MAX_FILE_SIZE_MB * 1024 * 1024
 
+_FILE_MAGIC_BYTES: dict[str, list[bytes]] = {
+    "pdf": [b"%PDF-"],
+    "docx": [b"PK\x03\x04"],
+    "pptx": [b"PK\x03\x04"],
+    "xlsx": [b"PK\x03\x04"],
+    "json": [b"{", b"["],
+}
+
+_FILE_FORMAT_MAP: dict[str, str] = {
+    "pdf": "Portable Document Format",
+    "docx": "Microsoft Word (OpenXML)",
+    "pptx": "Microsoft PowerPoint (OpenXML)",
+    "xlsx": "Microsoft Excel (OpenXML)",
+    "txt": "Plain Text",
+    "md": "Markdown",
+    "json": "JSON",
+}
+
 
 # ==================== 辅助函数 ====================
 
@@ -97,6 +116,11 @@ def _guess_mime_type(filename: str) -> str:
     return mime or "application/octet-stream"
 
 
+def _compute_sha256(file_bytes: bytes) -> bytes:
+    """计算文件 SHA256 哈希值，返回 32 字节二进制"""
+    return hashlib.sha256(file_bytes).digest()
+
+
 def _validate_file_extension(filename: str) -> str:
     """校验并返回文件扩展名（不含点号），不合法则抛出异常"""
     ext = PurePosixPath(filename).suffix.lstrip(".").lower()
@@ -109,6 +133,19 @@ def _validate_file_extension(filename: str) -> str:
             ),
         )
     return ext
+
+
+def _validate_file_magic(file_bytes: bytes, ext: str) -> None:
+    """通过文件头魔数校验文件内容是否与声明的后缀匹配"""
+    magic_list = _FILE_MAGIC_BYTES.get(ext)
+    if magic_list is None:
+        return
+    stripped = file_bytes.lstrip()
+    if not any(stripped.startswith(magic) for magic in magic_list):
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件内容与声明的类型 .{ext} 不匹配，请检查文件是否损坏或后缀是否正确",
+        )
 
 
 _MYSQL_STATUS_MAP: dict[int, tuple[float, str, Optional[str]]] = {
@@ -195,6 +232,7 @@ async def upload_file(
 
     filename = file.filename or "unknown"
     ext = _validate_file_extension(filename)
+    file_suffix = f".{ext}"
     mime_type = file.content_type or _guess_mime_type(filename)
 
     file_bytes = await file.read()
@@ -207,6 +245,10 @@ async def upload_file(
             detail=f"文件大小 {file_size / 1024 / 1024:.1f}MB 超过限制 {_MAX_FILE_SIZE_MB}MB",
         )
 
+    _validate_file_magic(file_bytes, ext)
+
+    file_sha256 = _compute_sha256(file_bytes)
+
     file_id = _generate_file_id()
     session_id = _generate_session_id()
 
@@ -214,14 +256,13 @@ async def upload_file(
         session, folder_id, user_id, knowledge_base_id,
     )
 
-    # 上传到 MinIO/S3
     try:
         storage_path = await storage.upload_raw_file(
             file_bytes=file_bytes,
             user_id=user_id,
             session_id=session_id,
             file_id=file_id,
-            filename=filename,
+            file_suffix=file_suffix,
             folder_path=folder_path,
         )
     except Exception as e:
@@ -235,13 +276,18 @@ async def upload_file(
         file_name=filename,
         folder_id=resolved_folder_id,
         file_size=file_size,
+        file_type=ext,
+        file_format=_FILE_FORMAT_MAP.get(ext),
+        file_suffix=file_suffix,
         mime_type=mime_type,
+        file_sha256=file_sha256,
         knowledge_base_id=knowledge_base_id,
         knowledge_base_name=kb.knowledge_base_name,
         description=description,
         status=0,
         creator=user_id,
-        ext_attributes=f'{{"session_id":"{session_id}","storage_path":"{storage_path}","file_extension":".{ext}"}}',
+        file_path=storage_path,
+        session_id=session_id,
     )
 
     if not file_record:
@@ -250,17 +296,17 @@ async def upload_file(
 
     logger.info(
         f"文件上传成功: user_id={user_id}, file_id={file_id}, "
-        f"filename={filename}, size={file_size}, path={storage_path}"
+        f"filename={filename}, size={file_size}, sha256={file_sha256.hex()}"
     )
 
     return ApiResponse.success(
         data=FileUploadResponse(
             file_id=file_id,
             file_name=filename,
-            storage_path=storage_path,
             session_id=session_id,
             file_size=file_size,
             mime_type=mime_type,
+            file_sha256=file_sha256.hex(),
         ),
         message="文件上传成功",
     )
@@ -301,6 +347,7 @@ async def upload_files_batch(
         filename = upload_file_item.filename or "unknown"
         try:
             ext = _validate_file_extension(filename)
+            file_suffix = f".{ext}"
             mime_type = upload_file_item.content_type or _guess_mime_type(filename)
 
             file_bytes = await upload_file_item.read()
@@ -312,6 +359,9 @@ async def upload_files_batch(
                     f"文件大小 {file_size / 1024 / 1024:.1f}MB 超过限制 {_MAX_FILE_SIZE_MB}MB"
                 )
 
+            _validate_file_magic(file_bytes, ext)
+
+            file_sha256 = _compute_sha256(file_bytes)
             file_id = _generate_file_id()
 
             storage_path = await storage.upload_raw_file(
@@ -319,7 +369,7 @@ async def upload_files_batch(
                 user_id=user_id,
                 session_id=session_id,
                 file_id=file_id,
-                filename=filename,
+                file_suffix=file_suffix,
                 folder_path=folder_path,
             )
 
@@ -330,12 +380,17 @@ async def upload_files_batch(
                 file_name=filename,
                 folder_id=resolved_folder_id,
                 file_size=file_size,
+                file_type=ext,
+                file_format=_FILE_FORMAT_MAP.get(ext),
+                file_suffix=file_suffix,
                 mime_type=mime_type,
+                file_sha256=file_sha256,
                 knowledge_base_id=knowledge_base_id,
                 knowledge_base_name=kb.knowledge_base_name,
                 status=0,
                 creator=user_id,
-                ext_attributes=f'{{"session_id":"{session_id}","storage_path":"{storage_path}","file_extension":".{ext}"}}',
+                file_path=storage_path,
+                session_id=session_id,
             )
 
             if not file_record:
@@ -345,10 +400,10 @@ async def upload_files_batch(
                 FileUploadResponse(
                     file_id=file_id,
                     file_name=filename,
-                    storage_path=storage_path,
                     session_id=session_id,
                     file_size=file_size,
                     mime_type=mime_type,
+                    file_sha256=file_sha256.hex(),
                 )
             )
             logger.info(f"批量上传 - 文件成功: {filename}, file_id={file_id}")
@@ -432,21 +487,7 @@ async def build_index(
             failed += 1
             continue
 
-        # 从 ext_attributes 中解析存储路径和文件扩展名
-        import json
-
-        ext_attrs: dict = {}
-        if file_record.ext_attributes:
-            try:
-                ext_attrs = json.loads(file_record.ext_attributes)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        storage_path = ext_attrs.get("storage_path", "")
-        file_extension = ext_attrs.get("file_extension", "")
-        record_session_id = ext_attrs.get("session_id", "")
-
-        if not storage_path:
+        if not file_record.file_path:
             results.append(
                 IndexBuildFileResult(
                     file_id=file_id,
@@ -461,17 +502,17 @@ async def build_index(
         message = IndexStartMessage(
             user_id=user_id,
             file_id=file_id,
-            storage_path=storage_path,
+            storage_path=file_record.file_path,
             filename=file_record.file_name,
             knowledge_base_id=request.knowledge_base_id,
             knowledge_base_name=kb.knowledge_base_name,
-            session_id=record_session_id or None,
+            session_id=file_record.session_id,
             parent_knowledge_base_id=kb.parent_knowledge_base_id,
             parent_knowledge_base_name=parent_kb_name,
             knowledge_type=kb.knowledge_type,
             file_size=file_record.file_size,
             mime_type=file_record.mime_type,
-            file_extension=file_extension or None,
+            file_extension=file_record.file_suffix,
             parse_options=request.parse_options,
         )
 

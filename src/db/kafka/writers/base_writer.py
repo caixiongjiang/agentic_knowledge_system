@@ -65,10 +65,9 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         super().__init__(
             aiokafka_consumer=aiokafka_consumer,
             message_class=message_class,
-            batch_size=batch_size
+            batch_size=batch_size,
+            fetch_timeout_ms=flush_interval_ms
         )
-        
-        self._flush_interval_ms = flush_interval_ms
         self._producer = producer
         self._dedup_manager = dedup_manager
         self._retry_manager = retry_manager

@@ -14,6 +14,7 @@
 =================================================="""
 
 import asyncio
+import logging
 from typing import Optional
 from loguru import logger
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -21,6 +22,9 @@ from beanie import init_beanie
 
 from src.utils.env_manager import get_env_manager
 from src.utils.config_manager import get_config_manager
+
+for _name in ("pymongo", "motor"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 class MongoDBManager:

@@ -129,9 +129,9 @@ class TestMinIOAdapter:
                 user_id="user123",
                 session_id="session456",
                 file_id="file789",
-                filename="document.pdf"
+                file_suffix=".pdf"
             )
-            expected_raw = "users/user123/sessions/session456/raw/file789/document.pdf"
+            expected_raw = "user123/session456/file789.pdf"
             assert raw_path == expected_raw
             logger.success(f"✓ 原始文件路径构建正确: {raw_path}")
             
