@@ -391,7 +391,7 @@ async def main():
         return
     
     # 知识库信息（测试用）
-    test_knowledge_base_id = f"test_kb_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    test_knowledge_base_id = f"kb-test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     knowledge_base_info = {
         "knowledge_base_id": test_knowledge_base_id,
         "knowledge_base_name": "测试知识库",

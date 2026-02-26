@@ -148,6 +148,7 @@ class FileParserWorker(BaseWorker):
                 storage_path=message.storage_path,
                 knowledge_base_id=message.knowledge_base_id,
                 knowledge_base_name=message.knowledge_base_name,
+                document_id=message.document_id,
                 session_id=getattr(message, 'session_id', None),
                 parent_knowledge_base_id=getattr(message, 'parent_knowledge_base_id', None),
                 parent_knowledge_base_name=getattr(message, 'parent_knowledge_base_name', None),
@@ -311,6 +312,7 @@ class FileParserWorker(BaseWorker):
             parse_tool=parse_result.parse_tool,
             parse_quality=parse_result.parse_quality,
             document_language=parse_result.document_language,
+            document_id=message.document_id,
             knowledge_base_id=getattr(parse_result, 'knowledge_base_id', None) or message.knowledge_base_id,
             knowledge_base_name=getattr(parse_result, 'knowledge_base_name', None) or message.knowledge_base_name,
             error_message=parse_result.error_message

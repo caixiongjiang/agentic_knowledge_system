@@ -103,7 +103,7 @@ class ElementDataRepository(BaseRepository[ElementData]):
         
         Examples:
             >>> element = await repo.create_element(
-            ...     element_id="elem_001",
+            ...     element_id="element-001",
             ...     element_type="text",
             ...     content={"text": "some text"},
             ...     creator="user1"
@@ -157,12 +157,12 @@ class ElementDataRepository(BaseRepository[ElementData]):
         Examples:
             >>> elements = [
             ...     {
-            ...         "_id": "elem_001",
+            ...         "_id": "element-001",
             ...         "type": "text",
             ...         "content": {"text": "..."}
             ...     },
             ...     {
-            ...         "_id": "elem_002",
+            ...         "_id": "element-002",
             ...         "type": "image",
             ...         "content": {"image_caption": [...]}
             ...     }
@@ -193,8 +193,8 @@ class ElementDataRepository(BaseRepository[ElementData]):
         
         Examples:
             >>> elements = [
-            ...     {"_id": "elem_001", "type": "text", "content": {"text": "..."}},
-            ...     {"_id": "elem_002", "type": "image", "content": {"image_caption": [...]}}
+            ...     {"_id": "element-001", "type": "text", "content": {"text": "..."}},
+            ...     {"_id": "element-002", "type": "image", "content": {"image_caption": [...]}}
             ... ]
             >>> count = await repo.bulk_upsert_elements(elements, creator="user1")
         """

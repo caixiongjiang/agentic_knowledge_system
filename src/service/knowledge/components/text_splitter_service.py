@@ -83,6 +83,7 @@ class TextSplitterService:
         self,
         user_id: str,
         file_id: str,
+        document_id: str,
         mysql_session: Session,
         knowledge_base_id: Optional[str] = None
     ) -> ParseResult:
@@ -92,33 +93,26 @@ class TextSplitterService:
         Args:
             user_id: 用户ID
             file_id: 文件ID
+            document_id: Document ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）
             mysql_session: MySQL会话
             knowledge_base_id: 知识库ID
         
         Returns:
             ParseResult
         """
-        logger.info(f"从数据库加载ParseResult: user_id={user_id}, file_id={file_id}")
+        logger.info(f"从数据库加载ParseResult: user_id={user_id}, document_id={document_id}")
         
-        # 1. 从 MySQL 获取所有 ElementMetaInfo（按 knowledge_base_id 筛选）
-        if knowledge_base_id:
-            elements_meta = mysql_session.query(element_meta_info_repo.model).filter(
-                element_meta_info_repo.model.knowledge_base_id == knowledge_base_id,
-                element_meta_info_repo.model.deleted == 0
-            ).order_by(element_meta_info_repo.model.element_index).all()
-        else:
-            # 如果没有提供 knowledge_base_id，可能需要其他筛选条件
-            # 这里暂时返回空列表
-            logger.warning(f"未提供 knowledge_base_id，无法精确查询元素")
-            elements_meta = []
+        # 1. 从 MySQL 通过 document_id 获取所有 ElementMetaInfo
+        elements_meta = element_meta_info_repo.get_by_document_id(mysql_session, document_id)
         
         logger.debug(f"从MySQL加载了 {len(elements_meta)} 个元素元信息")
         
         if not elements_meta:
-            logger.warning("未找到任何元素元信息")
+            logger.warning(f"未找到任何元素元信息: document_id={document_id}")
             return ParseResult(
                 user_id=user_id,
                 file_id=file_id,
+                document_id=document_id,
                 filename="unknown",
                 status="failed",
                 error_message="未找到解析数据",
@@ -151,6 +145,7 @@ class TextSplitterService:
             # 构建 ElementInfo
             element_info = ElementInfo(
                 element_id=elem_meta.element_id,
+                document_id=elem_meta.document_id,
                 element_index=elem_meta.element_index,
                 element_type=ElementType(elem_meta.element_type),
                 page_index=elem_meta.page_index,
@@ -178,6 +173,7 @@ class TextSplitterService:
         parse_result = ParseResult(
             user_id=user_id,
             file_id=file_id,
+            document_id=document_id,
             filename="unknown",  # TODO: 从 workspace_file_system 表获取
             status="success",
             elements=elements,

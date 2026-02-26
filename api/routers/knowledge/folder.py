@@ -125,7 +125,7 @@ async def create_folder(
     if existing and existing.knowledge_base_id == request.knowledge_base_id:
         raise HTTPException(status_code=409, detail=f"同路径文件夹已存在: {full_path}")
 
-    folder_id = str(uuid.uuid4())
+    folder_id = f"folder-{uuid.uuid4()}"
     folder = workspace_folder_repo.create(
         session,
         folder_id=folder_id,

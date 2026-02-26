@@ -26,6 +26,35 @@ class ElementMetaInfoRepository(BaseRepository[ElementMetaInfo]):
     def __init__(self):
         super().__init__(ElementMetaInfo)
     
+    def get_by_document_id(
+        self,
+        session: Session,
+        document_id: str
+    ) -> List[ElementMetaInfo]:
+        """
+        根据 document_id 查询所有 ElementMetaInfo
+        
+        Args:
+            session: 数据库会话
+            document_id: 文档ID
+        
+        Returns:
+            ElementMetaInfo 列表
+        """
+        try:
+            results = session.query(self.model).filter(
+                self.model.document_id == document_id,
+                self.model.deleted == 0
+            ).order_by(self.model.element_index).all()
+            
+            logger.debug(
+                f"查询到{len(results)}个ElementMetaInfo: document_id={document_id}"
+            )
+            return results
+        except SQLAlchemyError as e:
+            logger.error(f"根据document_id查询失败: {e}")
+            return []
+    
     def get_by_element_type(
         self, 
         session: Session,

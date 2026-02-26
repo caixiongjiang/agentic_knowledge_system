@@ -30,7 +30,14 @@ class ElementMetaInfo(BaseModel, KnowledgeMixin):
     element_id = Column(
         String(255), 
         primary_key=True,
-        comment="全局唯一ID (UUID格式)"
+        comment="全局唯一ID（格式: element-{uuid}）"
+    )
+    
+    # 关联关系
+    document_id = Column(
+        String(255),
+        nullable=False,
+        comment="所属Document的ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）"
     )
     
     # 基础信息

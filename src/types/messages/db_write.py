@@ -147,6 +147,11 @@ class EmbeddingWriteMessage(BaseMessage):
         description="数据来源阶段（split_end, summary_end, analyze_end, image_end）"
     )
 
+    document_id: str = Field(
+        ...,
+        description="文档ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）"
+    )
+
     knowledge_base_id: Optional[str] = Field(
         default=None,
         description="知识库ID"

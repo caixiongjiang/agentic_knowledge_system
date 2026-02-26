@@ -50,7 +50,7 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         String(255), 
         primary_key=True,
         nullable=False,
-        comment="文件ID（主键之一，全局唯一UUID）"
+        comment="文件ID（主键之一，格式: file-{uuid}，业务层唯一标识）"
     )
     
     # ==================== 文件基本信息 ====================
@@ -109,7 +109,7 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         String(255), 
         index=True, 
         nullable=True,
-        comment="关联的Document ID"
+        comment="关联的Document ID（格式: document-{uuid}，基于file_sha256的后台唯一标识，相同内容的文件共享同一document_id）"
     )
     
     # ==================== 存储信息 ====================

@@ -60,13 +60,6 @@ class SectionMetaInfo(BaseModel, KnowledgeMixin):
         comment="结束页码（从0开始）"
     )
     
-    # Section 标题
-    title = Column(
-        String(1024), 
-        nullable=True,
-        comment="Section标题"
-    )
-    
     # 关联 Element 信息（用于文件修改 pipeline）
     element_id = Column(
         String(255),

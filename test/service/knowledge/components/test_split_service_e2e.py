@@ -77,9 +77,9 @@ class TextSplitterServiceE2ETest:
         # 测试参数
         self.user_id = f"test_user_{uuid.uuid4().hex[:8]}"
         self.session_id = f"session_{uuid.uuid4().hex[:8]}"
-        self.file_id = f"file_{uuid.uuid4().hex[:8]}"
-        self.document_id = f"doc_{uuid.uuid4().hex[:8]}"
-        self.knowledge_base_id = f"kb_{uuid.uuid4().hex[:8]}"
+        self.file_id = f"file-{uuid.uuid4().hex[:8]}"
+        self.document_id = f"document-{uuid.uuid4().hex[:8]}"
+        self.knowledge_base_id = f"kb-{uuid.uuid4().hex[:8]}"
         self.knowledge_base_name = "测试知识库_Split"
         self.filename = "test_document.pdf"
         
@@ -193,6 +193,7 @@ class TextSplitterServiceE2ETest:
         element_id_1 = f"element-{uuid.uuid4()}"
         elements.append(ElementInfo(
             element_id=element_id_1,
+            document_id=self.document_id,
             element_type=ElementType.TEXT,
             element_index=0,
             page_index=0,
@@ -209,6 +210,7 @@ class TextSplitterServiceE2ETest:
         )
         elements.append(ElementInfo(
             element_id=element_id_2,
+            document_id=self.document_id,
             element_type=ElementType.TEXT,
             element_index=1,
             page_index=0,
@@ -225,6 +227,7 @@ class TextSplitterServiceE2ETest:
         )
         elements.append(ElementInfo(
             element_id=element_id_3,
+            document_id=self.document_id,
             element_type=ElementType.TEXT,
             element_index=2,
             page_index=0,
@@ -244,6 +247,7 @@ class TextSplitterServiceE2ETest:
         """
         elements.append(ElementInfo(
             element_id=element_id_4,
+            document_id=self.document_id,
             element_type=ElementType.TABLE,
             element_index=3,
             page_index=1,
@@ -257,6 +261,7 @@ class TextSplitterServiceE2ETest:
         element_id_5 = f"element-{uuid.uuid4()}"
         elements.append(ElementInfo(
             element_id=element_id_5,
+            document_id=self.document_id,
             element_type=ElementType.IMAGE,
             element_index=4,
             page_index=1,
@@ -293,6 +298,7 @@ class TextSplitterServiceE2ETest:
             # 插入到 MySQL (element_meta_info)
             mysql_data = {
                 "element_id": element.element_id,
+                "document_id": self.file_id,
                 "element_type": element.element_type,  # ElementType 继承自 str，直接使用
                 "element_index": element.element_index,
                 "page_index": element.page_index,
@@ -361,6 +367,7 @@ class TextSplitterServiceE2ETest:
         parse_result = await self.split_service.load_parse_result_from_db(
             user_id=self.user_id,
             file_id=self.file_id,
+            document_id=self.document_id,
             mysql_session=self.mysql_session,
             knowledge_base_id=self.knowledge_base_id
         )

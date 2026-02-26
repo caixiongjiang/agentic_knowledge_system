@@ -158,6 +158,7 @@ class TextSplitterWorker(BaseWorker):
                 parse_result = await splitter_service.load_parse_result_from_db(
                     user_id=message.user_id,
                     file_id=message.file_id,
+                    document_id=message.document_id,
                     mysql_session=session,
                     knowledge_base_id=message.knowledge_base_id
                 )
@@ -177,8 +178,8 @@ class TextSplitterWorker(BaseWorker):
             if message.knowledge_base_name and not parse_result.knowledge_base_name:
                 parse_result.knowledge_base_name = message.knowledge_base_name
             
-            # 4. 执行文本切分（使用 file_id 作为 document_id）
-            document_id = message.file_id
+            # 4. 执行文本切分
+            document_id = message.document_id
             split_result = await splitter_service.split_document(
                 parse_result=parse_result,
                 document_id=document_id
@@ -403,6 +404,7 @@ class TextSplitterWorker(BaseWorker):
             collection_type=MilvusCollection.CHUNK,
             items=embedding_items,
             source_stage="split",
+            document_id=message.document_id,
             knowledge_base_id=message.knowledge_base_id,
             knowledge_base_name=message.knowledge_base_name,
             language=split_result.document_language,
@@ -441,6 +443,7 @@ class TextSplitterWorker(BaseWorker):
             collection_type=MilvusCollection.SECTION,
             items=section_items,
             source_stage="split",
+            document_id=message.document_id,
             knowledge_base_id=message.knowledge_base_id,
             knowledge_base_name=message.knowledge_base_name,
             language=split_result.document_language,

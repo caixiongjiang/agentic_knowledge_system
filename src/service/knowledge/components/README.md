@@ -210,14 +210,14 @@ result = ParseResult(
     # 统一的元素列表(文本、图片、表格)
     elements=[
         ElementInfo(
-            element_id="elem_001",
+            element_id="element-001",
             element_index=0,
             element_type=ElementType.TEXT,
             text="文本内容",
             page_index=0
         ),
         ElementInfo(
-            element_id="elem_002",
+            element_id="element-002",
             element_index=1,
             element_type=ElementType.IMAGE,
             image_file_path="path/to/image.png",
@@ -255,7 +255,7 @@ print(result.table_elements)        # 获取所有表格元素
 mysql_data = result.get_mysql_data()
 # [
 #   {
-#     "element_id": "elem_001",
+#     "element_id": "element-001",
 #     "element_index": 0,
 #     "element_type": "text",
 #     "page_index": 0,
@@ -269,7 +269,7 @@ mysql_data = result.get_mysql_data()
 mongodb_data = result.get_mongodb_data()
 # [
 #   {
-#     "_id": "elem_001",
+#     "_id": "element-001",
 #     "type": "text",
 #     "content": {"text": "..."}
 #   },

@@ -86,7 +86,7 @@ async def create_knowledge_base(
                 status_code=404, detail="父知识库不存在或无权限"
             )
 
-    kb_id = str(uuid.uuid4())
+    kb_id = f"kb-{uuid.uuid4()}"
     kb = knowledge_base_repo.create(
         session,
         knowledge_base_id=kb_id,

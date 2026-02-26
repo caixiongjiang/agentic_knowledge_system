@@ -43,7 +43,12 @@ class ElementInfo(BaseModel):
     # ========== 通用字段（所有类型都需要） ==========
     element_id: str = Field(
         ...,
-        description="元素唯一ID（UUID格式）"
+        description="元素唯一ID（格式: element-{uuid}）"
+    )
+    
+    document_id: str = Field(
+        ...,
+        description="所属Document的ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）"
     )
     
     element_index: int = Field(
@@ -165,6 +170,7 @@ class ElementInfo(BaseModel):
         """
         data = {
             "element_id": self.element_id,
+            "document_id": self.document_id,
             "element_index": self.element_index,
             "page_index": self.page_index,
             "element_type": self.element_type,
@@ -252,7 +258,12 @@ class ParseResult(BaseModel):
     
     file_id: str = Field(
         ...,
-        description="文件ID"
+        description="文件ID（格式: file-{uuid}，业务层唯一标识）"
+    )
+    
+    document_id: str = Field(
+        ...,
+        description="Document ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）"
     )
     
     filename: str = Field(

@@ -48,6 +48,12 @@ class IndexStartMessage(BaseMessage):
         description="知识库名称"
     )
     
+    # Document ID（基于 file_sha256 的后台唯一标识，格式: document-{uuid}）
+    document_id: str = Field(
+        ...,
+        description="Document ID（基于file_sha256的后台唯一标识，格式: document-{uuid}）"
+    )
+    
     # 会话ID（可选）
     session_id: Optional[str] = Field(
         default=None,
@@ -157,6 +163,12 @@ class ParseEndMessage(BaseMessage):
     document_language: Optional[str] = Field(
         default=None,
         description="文档语言（如 zh, en）"
+    )
+    
+    # Document ID（从 IndexStartMessage 透传）
+    document_id: str = Field(
+        ...,
+        description="Document ID（基于file_sha256的后台唯一标识，格式: document-{uuid}）"
     )
     
     # 知识库信息（从 IndexStartMessage 透传，供下游 Worker 使用）

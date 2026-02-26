@@ -413,11 +413,10 @@ class SectionInfo(BaseModel):
         """
         return {
             "section_id": self.section_id,
-            "text_level": self.level,  # level → text_level（字段名映射）
-            "title": self.content,      # content → title（Section标题）
-            "start_page_index": self.page_index,  # 起始页码
-            "end_page_index": self.page_index,    # 结束页码（单页Section）
-            "element_id": self.element_id,  # 关联的Element ID
+            "text_level": self.level,
+            "start_page_index": self.page_index,
+            "end_page_index": self.page_index,
+            "element_id": self.element_id,
         }
     
     def to_relation_dict(self) -> Dict[str, Any]:

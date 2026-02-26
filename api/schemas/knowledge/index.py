@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 
 class FileUploadResponse(BaseModel):
     """单个文件上传响应"""
-    file_id: str = Field(..., description="文件唯一标识（UUID）")
+    file_id: str = Field(..., description="文件唯一标识（格式: file-{uuid}）")
+    document_id: str = Field(..., description="文档唯一标识（格式: document-{uuid}，基于file_sha256去重）")
     file_name: str = Field(..., description="原始文件名")
     session_id: str = Field(..., description="上传会话ID")
     file_size: int = Field(..., description="文件大小（字节）")

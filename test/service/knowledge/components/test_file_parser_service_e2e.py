@@ -94,8 +94,8 @@ class FileParserServiceE2ETest:
         if kafka_mode:
             self.user_id = f"test_user_{uuid.uuid4().hex[:8]}"
             self.session_id = f"session_{uuid.uuid4().hex[:8]}"
-            self.file_id = f"file_{uuid.uuid4().hex[:8]}"
-            self.knowledge_base_id = f"kb_{uuid.uuid4().hex[:8]}"
+            self.file_id = f"file-{uuid.uuid4().hex[:8]}"
+            self.knowledge_base_id = f"kb-{uuid.uuid4().hex[:8]}"
             self.knowledge_base_name = "测试知识库_Kafka"
         else:
             self.user_id = "test_user_001"

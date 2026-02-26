@@ -161,6 +161,32 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
             logger.error(f"根据knowledge_base_id查询失败: {e}")
             return []
     
+    def get_by_sha256(
+        self,
+        session: Session,
+        file_sha256: bytes
+    ) -> Optional[WorkspaceFileSystem]:
+        """
+        根据 SHA256 哈希值查询已有文件（用于内容去重，复用 document_id）
+        
+        Args:
+            session: 数据库会话
+            file_sha256: 文件 SHA256 哈希值（32字节二进制）
+        
+        Returns:
+            第一个匹配的 WorkspaceFileSystem 实例，未找到返回 None
+        """
+        try:
+            result = session.query(self.model).filter(
+                self.model.file_sha256 == file_sha256,
+                self.model.document_id.isnot(None),
+                self.model.deleted == 0
+            ).first()
+            return result
+        except SQLAlchemyError as e:
+            logger.error(f"根据SHA256查询失败: {e}")
+            return None
+    
     def get_by_document_id(
         self,
         session: Session,

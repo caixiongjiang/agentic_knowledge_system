@@ -98,6 +98,7 @@ class FileParserService:
         storage_path: str,
         knowledge_base_id: str,
         knowledge_base_name: str,
+        document_id: str,
         session_id: Optional[str] = None,
         parent_knowledge_base_id: Optional[str] = None,
         parent_knowledge_base_name: Optional[str] = None,
@@ -119,11 +120,12 @@ class FileParserService:
         
         Args:
             user_id: 用户ID
-            file_id: 文件ID
+            file_id: 文件ID (格式: file-{uuid}，业务层唯一标识)
             filename: 文件名
             storage_path: 文件在对象存储中的路径(格式: bucket/path/to/file)
             knowledge_base_id: 知识库ID
             knowledge_base_name: 知识库名称
+            document_id: Document ID (格式: document-{uuid}，基于file_sha256的后台唯一标识)
             session_id: 会话ID(可选,用于图片上传路径)
             parent_knowledge_base_id: 父知识库ID(可选)
             parent_knowledge_base_name: 父知识库名称(可选)
@@ -146,6 +148,7 @@ class FileParserService:
         result = ParseResult(
             user_id=user_id,
             file_id=file_id,
+            document_id=document_id,
             filename=filename,
             status=ParseStatus.PENDING,
             storage_path=storage_path,
@@ -190,6 +193,7 @@ class FileParserService:
                 parse_result=parse_result,
                 user_id=user_id,
                 file_id=file_id,
+                document_id=document_id,
                 session_id=session_id,
                 knowledge_base_info=knowledge_base_info,
                 creator=creator,
@@ -204,6 +208,7 @@ class FileParserService:
                 mongodb_count=len(mongodb_messages),
                 user_id=user_id,
                 file_id=file_id,
+                document_id=document_id,
                 filename=filename,
                 storage_path=storage_path,
                 knowledge_base_id=knowledge_base_id,
@@ -298,6 +303,7 @@ class FileParserService:
         parse_result: Dict,
         user_id: str,
         file_id: str,
+        document_id: str,
         session_id: Optional[str],
         knowledge_base_info: Dict[str, Any],
         creator: str,
@@ -309,7 +315,8 @@ class FileParserService:
         Args:
             parse_result: FileParser.parse() 的返回结果
             user_id: 用户ID
-            file_id: 文件ID
+            file_id: 文件ID (格式: file-{uuid})
+            document_id: Document ID (格式: document-{uuid}，基于file_sha256)
             session_id: 会话ID
             knowledge_base_info: 知识库信息
             creator: 创建者
@@ -331,8 +338,7 @@ class FileParserService:
             
             # 遍历每个元素
             for element in page_info_list:
-                # 使用 UUID4 生成唯一的 element_id
-                element_id = "element_" + str(uuid.uuid4())
+                element_id = "element-" + str(uuid.uuid4())
                 element_type = element.get("type")
                 bbox = element.get("bbox", [])
                 element_index = element.get("element_index", 0)
@@ -360,7 +366,8 @@ class FileParserService:
                     knowledge_base_info=knowledge_base_info,
                     creator=creator,
                     bucket_name=bucket_name,
-                    image_file_path=image_file_path
+                    image_file_path=image_file_path,
+                    document_id=document_id
                 )
                 mysql_messages.append(mysql_message)
                 
@@ -443,7 +450,8 @@ class FileParserService:
         knowledge_base_info: Dict,
         creator: str,
         bucket_name: Optional[str] = None,
-        image_file_path: Optional[str] = None
+        image_file_path: Optional[str] = None,
+        document_id: str = ""
     ) -> Dict:
         """构建 MySQL 插入消息"""
         # 构建位置信息
@@ -471,6 +479,7 @@ class FileParserService:
         # 构建消息
         message = {
             "element_id": element_id,
+            "document_id": document_id,
             "element_index": element_index,
             "page_index": page_idx,
             "element_type": element_type,
@@ -552,6 +561,7 @@ class FileParserService:
         mongodb_count: int,
         user_id: str,
         file_id: str,
+        document_id: str,
         filename: str,
         storage_path: str,
         knowledge_base_id: str,
@@ -584,6 +594,7 @@ class FileParserService:
         result = ParseResult(
             user_id=user_id,
             file_id=file_id,
+            document_id=document_id,
             filename=filename,
             status=status,
             elements=[],  # 数据将通过 Kafka 异步写入数据库

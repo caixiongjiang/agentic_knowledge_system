@@ -102,7 +102,11 @@ _FILE_FORMAT_MAP: dict[str, str] = {
 
 
 def _generate_file_id() -> str:
-    return str(uuid.uuid4())
+    return f"file-{uuid.uuid4()}"
+
+
+def _generate_document_id() -> str:
+    return f"document-{uuid.uuid4()}"
 
 
 def _generate_session_id() -> str:
@@ -249,6 +253,10 @@ async def upload_file(
 
     file_sha256 = _compute_sha256(file_bytes)
 
+    # 基于 SHA256 去重：相同内容的文件共享同一 document_id
+    existing = workspace_file_system_repo.get_by_sha256(session, file_sha256)
+    document_id = existing.document_id if existing and existing.document_id else _generate_document_id()
+
     file_id = _generate_file_id()
     session_id = _generate_session_id()
 
@@ -281,6 +289,7 @@ async def upload_file(
         file_suffix=file_suffix,
         mime_type=mime_type,
         file_sha256=file_sha256,
+        document_id=document_id,
         knowledge_base_id=knowledge_base_id,
         knowledge_base_name=kb.knowledge_base_name,
         description=description,
@@ -302,6 +311,7 @@ async def upload_file(
     return ApiResponse.success(
         data=FileUploadResponse(
             file_id=file_id,
+            document_id=document_id,
             file_name=filename,
             session_id=session_id,
             file_size=file_size,
@@ -362,6 +372,10 @@ async def upload_files_batch(
             _validate_file_magic(file_bytes, ext)
 
             file_sha256 = _compute_sha256(file_bytes)
+
+            existing = workspace_file_system_repo.get_by_sha256(session, file_sha256)
+            document_id = existing.document_id if existing and existing.document_id else _generate_document_id()
+
             file_id = _generate_file_id()
 
             storage_path = await storage.upload_raw_file(
@@ -385,6 +399,7 @@ async def upload_files_batch(
                 file_suffix=file_suffix,
                 mime_type=mime_type,
                 file_sha256=file_sha256,
+                document_id=document_id,
                 knowledge_base_id=knowledge_base_id,
                 knowledge_base_name=kb.knowledge_base_name,
                 status=0,
@@ -399,6 +414,7 @@ async def upload_files_batch(
             uploaded.append(
                 FileUploadResponse(
                     file_id=file_id,
+                    document_id=document_id,
                     file_name=filename,
                     session_id=session_id,
                     file_size=file_size,
@@ -499,6 +515,18 @@ async def build_index(
             failed += 1
             continue
 
+        if not file_record.document_id:
+            results.append(
+                IndexBuildFileResult(
+                    file_id=file_id,
+                    file_name=file_record.file_name,
+                    status="failed",
+                    message="文件缺少 document_id，请重新上传",
+                )
+            )
+            failed += 1
+            continue
+
         message = IndexStartMessage(
             user_id=user_id,
             file_id=file_id,
@@ -506,6 +534,7 @@ async def build_index(
             filename=file_record.file_name,
             knowledge_base_id=request.knowledge_base_id,
             knowledge_base_name=kb.knowledge_base_name,
+            document_id=file_record.document_id,
             session_id=file_record.session_id,
             parent_knowledge_base_id=kb.parent_knowledge_base_id,
             parent_knowledge_base_name=parent_kb_name,

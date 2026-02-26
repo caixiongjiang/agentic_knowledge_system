@@ -32,6 +32,7 @@ class TestParseResult:
             result = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.SUCCESS,
                 parse_tool="mineru",
@@ -59,7 +60,8 @@ class TestParseResult:
         try:
             # 创建文本元素
             text_elem = ElementInfo(
-                element_id="elem_001",
+                element_id="element-001",
+                document_id="document-test-001",
                 element_index=0,
                 element_type=ElementType.TEXT,
                 page_index=0,
@@ -69,7 +71,8 @@ class TestParseResult:
             
             # 创建图片元素
             image_elem = ElementInfo(
-                element_id="elem_002",
+                element_id="element-002",
+                document_id="document-test-001",
                 element_index=1,
                 element_type=ElementType.IMAGE,
                 page_index=0,
@@ -83,7 +86,8 @@ class TestParseResult:
             
             # 创建表格元素
             table_elem = ElementInfo(
-                element_id="elem_003",
+                element_id="element-003",
+                document_id="document-test-001",
                 element_index=2,
                 element_type=ElementType.TABLE,
                 page_index=1,
@@ -96,6 +100,7 @@ class TestParseResult:
             result = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.SUCCESS,
                 elements=[text_elem, image_elem, table_elem]
@@ -127,7 +132,8 @@ class TestParseResult:
         try:
             # 创建元素
             text_elem = ElementInfo(
-                element_id="elem_001",
+                element_id="element-001",
+                document_id="document-test-001",
                 element_index=0,
                 element_type=ElementType.TEXT,
                 page_index=0,
@@ -136,7 +142,8 @@ class TestParseResult:
             )
             
             image_elem = ElementInfo(
-                element_id="elem_002",
+                element_id="element-002",
+                document_id="document-test-001",
                 element_index=1,
                 element_type=ElementType.IMAGE,
                 page_index=0,
@@ -149,7 +156,8 @@ class TestParseResult:
             )
             
             table_elem = ElementInfo(
-                element_id="elem_003",
+                element_id="element-003",
+                document_id="document-test-001",
                 element_index=2,
                 element_type=ElementType.TABLE,
                 table_body="Table body",
@@ -159,26 +167,27 @@ class TestParseResult:
             
             # 测试转换为 MySQL 格式
             mysql_data = text_elem.to_mysql_dict()
-            assert mysql_data["element_id"] == "elem_001"
+            assert mysql_data["element_id"] == "element-001"
+            assert mysql_data["document_id"] == "document-test-001"
             assert mysql_data["element_type"] == "text"
             assert mysql_data["text_level"] == 1
             
             # 测试转换为 MongoDB 格式（文本）
             mongo_data = text_elem.to_mongodb_dict()
-            assert mongo_data["_id"] == "elem_001"
+            assert mongo_data["_id"] == "element-001"
             assert mongo_data["type"] == "text"
             assert mongo_data["content"]["text"] == "Sample text"
             
             # 测试转换为 MongoDB 格式（图片）
             mongo_data_image = image_elem.to_mongodb_dict()
-            assert mongo_data_image["_id"] == "elem_002"
+            assert mongo_data_image["_id"] == "element-002"
             assert mongo_data_image["type"] == "image"
             assert mongo_data_image["content"]["image_caption"] == "Test image"
             assert mongo_data_image["content"]["image_footnote"] == "Image footnote"
             
             # 测试转换为 MongoDB 格式（表格）
             mongo_data_table = table_elem.to_mongodb_dict()
-            assert mongo_data_table["_id"] == "elem_003"
+            assert mongo_data_table["_id"] == "element-003"
             assert mongo_data_table["type"] == "table"
             assert mongo_data_table["content"]["table_body"] == "Table body"
             assert mongo_data_table["content"]["table_caption"] == "Table caption"
@@ -198,7 +207,8 @@ class TestParseResult:
             # 创建带元素的 ParseResult
             elements = [
                 ElementInfo(
-                    element_id="elem_001",
+                    element_id="element-001",
+                    document_id="document-test-001",
                     element_index=0,
                     element_type=ElementType.TEXT,
                     text="Sample text"
@@ -208,6 +218,7 @@ class TestParseResult:
             result = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.SUCCESS,
                 elements=elements,
@@ -245,13 +256,15 @@ class TestParseResult:
             # 创建多种类型的元素
             elements = [
                 ElementInfo(
-                    element_id="elem_001",
+                    element_id="element-001",
+                    document_id="document-test-001",
                     element_index=0,
                     element_type=ElementType.TEXT,
                     text="Text 1"
                 ),
                 ElementInfo(
-                    element_id="elem_002",
+                    element_id="element-002",
+                    document_id="document-test-001",
                     element_index=1,
                     element_type=ElementType.IMAGE,
                     bucket_name="test-bucket",
@@ -261,7 +274,8 @@ class TestParseResult:
                     image_footnote="Image footnote"
                 ),
                 ElementInfo(
-                    element_id="elem_003",
+                    element_id="element-003",
+                    document_id="document-test-001",
                     element_index=2,
                     element_type=ElementType.TABLE,
                     table_body="Table body",
@@ -272,6 +286,7 @@ class TestParseResult:
             result = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.SUCCESS,
                 elements=elements
@@ -307,25 +322,29 @@ class TestParseResult:
         try:
             elements = [
                 ElementInfo(
-                    element_id="elem_001",
+                    element_id="element-001",
+                    document_id="document-test-001",
                     element_index=0,
                     element_type=ElementType.TEXT,
                     text="Text"
                 ),
                 ElementInfo(
-                    element_id="elem_002",
+                    element_id="element-002",
+                    document_id="document-test-001",
                     element_index=1,
                     element_type=ElementType.IMAGE,
                     bucket_name="test-bucket"
                 ),
                 ElementInfo(
-                    element_id="elem_003",
+                    element_id="element-003",
+                    document_id="document-test-001",
                     element_index=2,
                     element_type=ElementType.IMAGE,
                     bucket_name="test-bucket"
                 ),
                 ElementInfo(
-                    element_id="elem_004",
+                    element_id="element-004",
+                    document_id="document-test-001",
                     element_index=3,
                     element_type=ElementType.TABLE,
                     table_body="Table body"
@@ -335,6 +354,7 @@ class TestParseResult:
             result = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.SUCCESS,
                 total_pages=10,
@@ -369,6 +389,7 @@ class TestParseResult:
             result_success = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.SUCCESS
             )
@@ -378,6 +399,7 @@ class TestParseResult:
             result_partial = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.PARTIAL_SUCCESS
             )
@@ -387,6 +409,7 @@ class TestParseResult:
             result_failed = ParseResult(
                 user_id="user_001",
                 file_id="file_001",
+                document_id="document-test-001",
                 filename="test.pdf",
                 status=ParseStatus.FAILED,
                 error_message="Parse failed"

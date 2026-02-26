@@ -539,7 +539,7 @@ def test_workspace_file_system():
     manager = get_mysql_manager("mysql")
     
     user_id = "test_user_001"
-    file_id = f"file_{uuid.uuid4().hex[:8]}"
+    file_id = f"file-{uuid.uuid4().hex[:8]}"
     
     # 创建记录
     print(f"\n✓ 创建 WorkspaceFileSystem 记录...")
