@@ -16,7 +16,6 @@ from typing import Dict, List, Optional
 import uuid
 import requests
 import time
-import copy
 
 from loguru import logger
 
@@ -425,136 +424,97 @@ class Mineru2Client:
 
     def _extract_mineru_format(self, full_data: Dict) -> Dict:
         """
-        将新版本 API 数据提取并映射为旧版本格式
+        从 MinerU API 返回数据中提取并清洗内容
 
-        这样可以复用现有的 _transform_mineru_data 方法
+        :param full_data: MinerU API 返回的完整数据
 
-        :param full_data: 新版本 API 返回的完整数据
-
-        :return: 旧版本格式的数据字典
+        :return: 清洗后的数据字典
         """
         data_content = full_data.get('data', {})
 
-        # 1. 提取 markdown 内容
         md_content = data_content.get('markdown', {}).get('content', '')
 
-        # 2. 提取 content_list，只保留有效的内容类型（白名单机制）
-        # 原因：只保留在 preproc_blocks 中有对应布局信息的内容类型
         content_list_raw = data_content.get('content_list', {}).get('content', [])
-
-        # 白名单：只保留这些有效类型
-        # 这些类型在 preproc_blocks 中都有对应的布局信息
         valid_types = {'text', 'image', 'table', 'equation'}
-        content_list = [item for item in content_list_raw if item.get('type') in valid_types]
+        content_list = []
+        for item in content_list_raw:
+            if item.get('type') not in valid_types:
+                continue
+            if item.get('type') == 'text' and not item.get('text', '').strip():
+                continue
+            content_list.append(item)
 
-        # 3. 从 middle_json 提取 pdf_info
         middle_json = data_content.get('middle_json', {}).get('content', {})
         pdf_info = middle_json.get('pdf_info', [])
+        page_sizes: Dict[int, Dict] = {}
+        for idx, page_info in enumerate(pdf_info):
+            size = page_info.get('page_size', [0, 0])
+            page_sizes[idx] = {"width": size[0], "height": size[1]}
 
-        # 4. 转换图片格式：从列表转换为字典 {filename: base64}
         images_list = data_content.get('images', {}).get('list', [])
-        images_dict = {}
+        images_dict: Dict[str, str] = {}
         for img in images_list:
             img_name = img.get('name')
             img_base64 = img.get('base64')
             if img_name and img_base64:
                 images_dict[img_name] = img_base64
 
-        # 构建输出结构化内容
         return {
             "md_content": md_content,
             "content_list": content_list,
-            "info": {"pdf_info": pdf_info},
+            "page_sizes": page_sizes,
             "images": images_dict
         }
 
     def _transform_mineru_data(self, data: Dict) -> Dict:
         """
-        将Mineru返回的数据转换为标准格式
+        将清洗后的数据按 page_idx 分组，构建按页嵌套的结构化数据
 
-        :param data: Mineru返回的原始数据
+        :param data: _extract_mineru_format 返回的数据
         :return: 标准化的结构化数据
         """
-        info = data.get("info", {})
         content_list = data.get("content_list", [])
         md_content = data.get("md_content", "")
         images_base64 = data.get("images", {})
+        page_sizes = data.get("page_sizes", {})
 
-        try:
-            struct_content = self.nest_content_by_level(info, content_list, images_base64)
-        except Exception as e:
-            raise Exception(f"Mineru数据格式转换失败: {str(e)}")
+        pages: Dict[int, List] = {}
+        for item in content_list:
+            page_idx = item.get('page_idx', 0)
+            if page_idx not in pages:
+                pages[page_idx] = []
+            pages[page_idx].append(item)
 
-        try:
-            return {
-                "status": "success",
-                "struct_content": struct_content,
-                "content": md_content,
-                "pages": len(struct_content.get("root", []))
-            }
-        except Exception as e:
-            raise Exception(f"Mineru数据转换失败: {str(e)}")
-
-    @staticmethod
-    def nest_content_by_level(info: Dict, content_list: List, images_base64: Dict):
-        """
-        将内容按页面结构嵌套
-
-        :param info: 包含 pdf_info 的信息字典
-        :param content_list: 内容列表
-        :param images_base64: 图片 base64 字典
-
-        :return: 嵌套结构的数据
-        """
-        nest_data = []
-
-        pdf_info = info.get("pdf_info", [])
-        total_preproc_blocks = sum([len(page_info.get("preproc_blocks", [])) for page_info in pdf_info])
-        assert total_preproc_blocks == len(content_list), \
-            f"preproc_blocks数量与content数量不匹配, preproc_blocks数量: {total_preproc_blocks}, content数量: {len(content_list)}"
-
-        content_list_idx = 0  # 追踪content_list的索引
-        for page_idx, page_info in enumerate(pdf_info):
-            page_info_item = {
+        root = []
+        for page_idx in sorted(pages.keys()):
+            page_items = pages[page_idx]
+            page_data = {
                 "page_idx": page_idx,
-                "page_size": {
-                    "width": page_info["page_size"][0],
-                    "height": page_info["page_size"][1]
-                },
+                "page_size": page_sizes.get(page_idx, {"width": 0, "height": 0}),
                 "page_info": []
             }
-            preproc_blocks = page_info.get("preproc_blocks", [])
-            for block_idx, block_info in enumerate(preproc_blocks):
-                # 使用深拷贝避免修改原始数据
-                content_item = copy.deepcopy(content_list[content_list_idx])
-                content_list_idx += 1
 
-                # 保留所有内容（包括 discarded 类型），用于翻译等场景
-                type = block_info.get("type")
-                match type:
-                    case "image":
-                        content_item["id"] = str(uuid.uuid4())
-                        content_item["bbox"] = block_info.get("bbox")
-                        # 从 content_item 中获取图片路径
-                        img_path = content_item.get("img_path", "")
-                        if img_path:
-                            image_name = img_path.split("/")[-1]
-                            content_item["image_base64"] = images_base64.get(image_name)
-                    case _:
-                        content_item["id"] = str(uuid.uuid4())
-                        content_item["bbox"] = block_info.get("bbox")
+            for element_index, item in enumerate(page_items):
+                element = dict(item)
+                element["id"] = str(uuid.uuid4())
+                element["element_index"] = element_index
 
-                page_info_item["page_info"].append(content_item)
+                if element.get("type") == "image":
+                    img_path = element.get("img_path", "")
+                    if img_path:
+                        image_name = img_path.split("/")[-1]
+                        element["image_base64"] = images_base64.get(image_name)
 
-            nest_data.append(page_info_item)
+                page_data["page_info"].append(element)
 
-        for page_item in nest_data:
-            for index, element in enumerate(page_item["page_info"]):
-                element["element_index"] = index
+            root.append(page_data)
 
-        nested = {"root": nest_data}
-
-        return nested
+        return {
+            "status": "success",
+            "struct_content": {"root": root},
+            "content": md_content,
+            "pages": len(root)
+        }
 
     def print_config(self):
         """
