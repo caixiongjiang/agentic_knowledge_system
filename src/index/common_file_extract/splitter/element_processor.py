@@ -47,17 +47,19 @@ class ElementProcessor:
     
     @staticmethod
     def create_text_chunks(
-        element: ElementInfo,
+        element_ids: List[str],
+        page_index: Optional[int],
         section_id: Optional[str],
         split_texts: List[str],
         document_id: Optional[str] = None,
         language: str = "unknown"
     ) -> List[ChunkInfo]:
         """
-        从文本元素创建Chunk列表
+        从切分后的文本列表创建Chunk列表
         
         Args:
-            element: 原始文本元素
+            element_ids: 关联的 Element ID 列表（支持多元素合并场景的溯源）
+            page_index: 页码（合并场景取首个元素的页码）
             section_id: 所属Section ID
             split_texts: 切分后的文本列表
             document_id: 文档ID
@@ -68,21 +70,19 @@ class ElementProcessor:
         """
         chunks = []
         
-        # 计算跨页分配（如果文本跨越多个页面）
-        # 这里简化处理，所有chunk都分配到当前页面
         for text in split_texts:
             chunk = ChunkInfo(
                 chunk_type=ChunkType.TEXT,
                 section_id=section_id,
-                document_id=document_id,  # 文档级关联
+                document_id=document_id,
                 content={
                     "original": {"content": text},
                     "translations": []
                 },
-                page_index=element.page_index,
+                page_index=page_index,
                 language=language,
                 metadata={},
-                element_ids=[element.element_id]  # 传递 element_id 用于文档溯源
+                element_ids=list(element_ids),
             )
             chunks.append(chunk)
         

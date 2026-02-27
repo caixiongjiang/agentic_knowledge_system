@@ -64,70 +64,10 @@ class SplitConfig(BaseModel):
         description="Token编码方式（如 cl100k_base for GPT-4）"
     )
     
-    # ========== 表格切分配置 ==========
-    enable_table_split: bool = Field(
-        default=True,
-        description="是否启用超长表格切分"
-    )
-    
-    table_max_size: int = Field(
-        default=2000,
-        gt=0,
-        description="表格最大大小，超过则切分"
-    )
-    
-    preserve_table_header: bool = Field(
-        default=True,
-        description="表格切分时是否在每个切片中保留表头"
-    )
-    
-    # ========== 代码块配置 ==========
-    code_block_max_size: int = Field(
-        default=1500,
-        gt=0,
-        description="代码块最大大小"
-    )
-    
     # ========== 文本清洗配置 ==========
     enable_text_clean: bool = Field(
         default=True,
         description="是否启用文本清洗"
-    )
-    
-    remove_extra_whitespace: bool = Field(
-        default=True,
-        description="是否移除多余空白字符"
-    )
-    
-    remove_control_chars: bool = Field(
-        default=True,
-        description="是否移除控制字符"
-    )
-    
-    # ========== 语言检测配置 ==========
-    enable_language_detection: bool = Field(
-        default=True,
-        description="是否启用语言检测"
-    )
-    
-    language_detection_threshold: float = Field(
-        default=0.8,
-        ge=0.0,
-        le=1.0,
-        description="语言检测置信度阈值"
-    )
-    
-    # ========== 其他配置 ==========
-    min_chunk_size: int = Field(
-        default=50,
-        gt=0,
-        description="最小Chunk大小（小于此大小的chunk会被忽略或合并）"
-    )
-    
-    max_chunk_size: int = Field(
-        default=5000,
-        gt=0,
-        description="最大Chunk大小（强制切分）"
     )
     
     class Config:

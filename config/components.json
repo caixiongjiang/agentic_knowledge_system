@@ -12,17 +12,7 @@
     "chunk_size": 1000,
     "chunk_overlap": 0,
     "separators": ["\n", "。", "，", " "],
-    "enable_table_split": true,
-    "table_max_size": 2000,
-    "preserve_table_header": true,
-    "code_block_max_size": 1500,
     "enable_text_clean": true,
-    "remove_extra_whitespace": true,
-    "remove_control_chars": true,
-    "enable_language_detection": true,
-    "language_detection_threshold": 0.8,
-    "min_chunk_size": 50,
-    "max_chunk_size": 5000,
     "comment": "文本切分组件（TextSplitter）"
   },
   

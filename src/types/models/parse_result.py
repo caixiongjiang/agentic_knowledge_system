@@ -24,6 +24,7 @@ class ElementType(str, Enum):
     TEXT = "text"
     IMAGE = "image"
     TABLE = "table"
+    EQUATION = "equation"
     DISCARDED = "discarded"
 
 

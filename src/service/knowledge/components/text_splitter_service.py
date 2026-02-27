@@ -184,6 +184,51 @@ class TextSplitterService:
         logger.info(f"ParseResult加载完成: {len(elements)} 个元素, {parse_result.total_pages} 页")
         return parse_result
     
+    def _flush_text_buffer(
+        self,
+        text_buffer: List[str],
+        buffer_element_ids: List[str],
+        buffer_page_index: Optional[int],
+        section_id: Optional[str],
+        document_id: str,
+        language: str
+    ) -> List[ChunkInfo]:
+        """
+        将累积的文本 buffer 合并、切分并生成 Chunk
+        
+        Args:
+            text_buffer: 累积的已清洗文本列表
+            buffer_element_ids: 累积的 Element ID 列表
+            buffer_page_index: 首个文本元素的页码
+            section_id: 当前 Section ID
+            document_id: 文档 ID
+            language: 文档语言
+        
+        Returns:
+            生成的 ChunkInfo 列表（buffer 为空时返回空列表）
+        """
+        if not text_buffer:
+            return []
+        
+        merged_text = "\n\n".join(text_buffer)
+        split_texts = self.text_splitter.split_text(merged_text)
+        
+        text_chunks = self.element_processor.create_text_chunks(
+            element_ids=buffer_element_ids,
+            page_index=buffer_page_index,
+            section_id=section_id,
+            split_texts=split_texts,
+            document_id=document_id,
+            language=language
+        )
+        
+        logger.debug(
+            f"flush文本buffer: {len(buffer_element_ids)}个元素, "
+            f"合并{len(merged_text)}字符, 切分为{len(text_chunks)}个chunk"
+        )
+        
+        return text_chunks
+    
     async def split_document(
         self,
         parse_result: ParseResult,
@@ -191,6 +236,10 @@ class TextSplitterService:
     ) -> SplitResult:
         """
         执行文档切分
+        
+        采用"文本累积 buffer"策略：连续的文本 Element 先累积到 buffer 中，
+        遇到非文本元素（图片/表格/标题）或循环结束时再统一 flush（合并 + 切分）。
+        这避免了连续短文本 Element 各自产生碎片 chunk 的问题。
         
         Args:
             parse_result: 解析结果
@@ -205,10 +254,23 @@ class TextSplitterService:
         chunks: List[ChunkInfo] = []
         current_section_id: Optional[str] = None
         
-        # 遍历所有元素
+        # ===== 文本累积 buffer 状态 =====
+        text_buffer: List[str] = []
+        buffer_element_ids: List[str] = []
+        buffer_page_index: Optional[int] = None
+        
+        # ===== 遍历所有元素 =====
         for element in parse_result.elements:
-            # 处理 Section（标题）
+            # 处理 Section（标题）—— 先 flush buffer，再创建 Section
             if element.is_text() and element.text_level and element.text_level > 0:
+                chunks.extend(self._flush_text_buffer(
+                    text_buffer, buffer_element_ids, buffer_page_index,
+                    current_section_id, document_id, parse_result.document_language
+                ))
+                text_buffer.clear()
+                buffer_element_ids.clear()
+                buffer_page_index = None
+                
                 section = self.element_processor.create_section_from_element(
                     element=element,
                     document_id=document_id
@@ -217,30 +279,30 @@ class TextSplitterService:
                 current_section_id = section.section_id
                 logger.debug(f"创建Section: level={section.level}, content={section.content[:50]}...")
             
-            # 处理普通文本
+            # 处理普通文本 —— 清洗后追加到 buffer
             elif element.is_text() and element.text:
-                # 文本清洗
                 text = element.text
                 if self.config.enable_text_clean:
                     text = self.text_cleaner.clean_all(text)
                 
-                # 切分文本
-                split_texts = self.text_splitter.split_text(text)
+                if not text:
+                    continue
                 
-                # 转换为 Chunk
-                text_chunks = self.element_processor.create_text_chunks(
-                    element=element,
-                    section_id=current_section_id,
-                    split_texts=split_texts,
-                    document_id=document_id,
-                    language=parse_result.document_language
-                )
-                chunks.extend(text_chunks)
-                
-                logger.debug(f"切分文本: 原始长度={len(text)}, 切分后={len(text_chunks)}个chunk")
+                text_buffer.append(text)
+                buffer_element_ids.append(element.element_id)
+                if buffer_page_index is None:
+                    buffer_page_index = element.page_index
             
-            # 处理图片
+            # 处理图片 —— 先 flush buffer，再创建 Image Chunk
             elif element.is_image():
+                chunks.extend(self._flush_text_buffer(
+                    text_buffer, buffer_element_ids, buffer_page_index,
+                    current_section_id, document_id, parse_result.document_language
+                ))
+                text_buffer.clear()
+                buffer_element_ids.clear()
+                buffer_page_index = None
+                
                 image_chunk = self.element_processor.create_image_chunk(
                     element=element,
                     section_id=current_section_id,
@@ -250,17 +312,23 @@ class TextSplitterService:
                 
                 logger.debug(f"创建图片Chunk: image_file_name={element.image_file_name}")
             
-            # 处理表格
+            # 处理表格 —— 先 flush buffer，再处理表格
             elif element.is_table():
-                # 组装并可能切分表格
+                chunks.extend(self._flush_text_buffer(
+                    text_buffer, buffer_element_ids, buffer_page_index,
+                    current_section_id, document_id, parse_result.document_language
+                ))
+                text_buffer.clear()
+                buffer_element_ids.clear()
+                buffer_page_index = None
+                
                 table_texts = self.table_splitter.assemble_and_split_table(
                     table_body=element.table_body or "",
                     table_caption=element.table_caption,
                     table_footnote=element.table_footnote,
-                    chunk_size=4000 # 只要表格不超过4000字符，就无需切分。
+                    chunk_size=4000
                 )
                 
-                # 转换为 Chunk
                 table_chunks = self.element_processor.create_table_chunks(
                     element=element,
                     section_id=current_section_id,
@@ -271,6 +339,12 @@ class TextSplitterService:
                 chunks.extend(table_chunks)
                 
                 logger.debug(f"切分表格: 切分后={len(table_chunks)}个chunk")
+        
+        # ===== 循环结束，flush 剩余 buffer =====
+        chunks.extend(self._flush_text_buffer(
+            text_buffer, buffer_element_ids, buffer_page_index,
+            current_section_id, document_id, parse_result.document_language
+        ))
         
         # 更新 Section 的 chunk_id_list
         for section in sections:
@@ -295,7 +369,7 @@ class TextSplitterService:
             status=SplitStatus.SUCCESS,
             sections=sections,
             chunks=chunks,
-            split_method=self.config.split_method,  # SplitMethod 继承自 str，直接使用
+            split_method=self.config.split_method,
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
             total_sections=len(sections),
