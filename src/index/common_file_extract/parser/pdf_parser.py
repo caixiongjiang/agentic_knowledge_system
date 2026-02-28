@@ -260,24 +260,32 @@ class PDFParser:
         
         # 5. 合并结果
         self.logger.info(f"🔗 合并 {len(sorted_results)} 个批次的结果")
-        merged_result = self._merge_results(sorted_results)
+        merged_result = self._merge_results(sorted_results, page_ranges)
         
         return merged_result
     
-    def _merge_results(self, results: List[Dict]) -> Dict:
+    def _merge_results(
+        self, 
+        results: List[Dict], 
+        page_ranges: List[tuple]
+    ) -> Dict:
         """
-        合并多个分页解析结果
+        合并多个分页解析结果，修正每个批次中的 page_idx 为原文档的绝对页码
         
-        :param results: 解析结果列表
+        MinerU 对每个分页批次返回的 page_idx 是相对于该批次的（从 0 开始），
+        合并时需要根据 page_ranges 中的 start_page 偏移量进行修正。
+        
+        :param results: 解析结果列表（已按批次顺序排列）
+        :param page_ranges: 每个批次对应的页面范围列表 [(start_page, end_page), ...]
         :return: 合并后的结果
         """
         if not results:
             return {}
         
         if len(results) == 1:
+            self._fix_page_indices(results[0], page_ranges[0][0])
             return results[0]
         
-        # 获取第一个结果作为基础
         merged = {
             "status": "success",
             "struct_content": {"root": []},
@@ -285,16 +293,39 @@ class PDFParser:
             "total_pages": 0
         }
         
-        # 合并 struct_content
-        for result in results:
+        for result, (start_page, _) in zip(results, page_ranges):
             root_pages = result.get("struct_content", {}).get("root", [])
+            for page in root_pages:
+                batch_page_idx = page.get("page_idx", 0)
+                actual_page_idx = start_page + batch_page_idx
+                page["page_idx"] = actual_page_idx
+                for element in page.get("page_info", []):
+                    if "page_idx" in element:
+                        element["page_idx"] = actual_page_idx
             merged["struct_content"]["root"].extend(root_pages)
         
-        # 合并 markdown 内容
         md_contents = [r.get("content", "") for r in results]
         merged["content"] = "\n\n".join(filter(None, md_contents))
         
-        # 计算总页数
         merged["total_pages"] = len(merged["struct_content"]["root"])
         
         return merged
+    
+    def _fix_page_indices(self, result: Dict, start_page: int) -> None:
+        """
+        修正单个解析结果中的 page_idx，将批次内相对索引转为原文档绝对页码
+        
+        :param result: 解析结果
+        :param start_page: 该批次在原文档中的起始页码
+        """
+        if start_page == 0:
+            return
+        
+        root_pages = result.get("struct_content", {}).get("root", [])
+        for page in root_pages:
+            batch_page_idx = page.get("page_idx", 0)
+            actual_page_idx = start_page + batch_page_idx
+            page["page_idx"] = actual_page_idx
+            for element in page.get("page_info", []):
+                if "page_idx" in element:
+                    element["page_idx"] = actual_page_idx
