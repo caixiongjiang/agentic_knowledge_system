@@ -45,7 +45,10 @@ class ElementMetaInfoRepository(BaseRepository[ElementMetaInfo]):
             results = session.query(self.model).filter(
                 self.model.document_id == document_id,
                 self.model.deleted == 0
-            ).order_by(self.model.element_index).all()
+            ).order_by(
+                self.model.page_index,
+                self.model.element_index
+            ).all()
             
             logger.debug(
                 f"查询到{len(results)}个ElementMetaInfo: document_id={document_id}"
