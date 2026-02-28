@@ -10,7 +10,7 @@
     "enabled": true,
     "split_method": "structure_first",
     "chunk_size": 1000,
-    "chunk_overlap": 0,
+    "chunk_overlap": 200,
     "separators": ["\n", "。", "，", " "],
     "enable_text_clean": true,
     "comment": "文本切分组件（TextSplitter）"

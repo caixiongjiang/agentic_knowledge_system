@@ -95,7 +95,7 @@ class TextSplitter:
         self,
         text: str,
         chunk_size: int = 1000,
-        chunk_overlap: int = 0
+        chunk_overlap: int = 200
     ) -> List[str]:
         """
         两阶段结构切分（推荐）⭐
@@ -104,11 +104,12 @@ class TextSplitter:
         - 第一阶段：按段落边界（\\n\\n）拆分
         - 第二阶段：根据段落大小决定合并或再切分
         - 优先保证段落完整性
+        - 超大段落递归切分时使用 overlap 保持上下文连贯
         
         Args:
             text: 待切分的文本
             chunk_size: 目标chunk大小
-            chunk_overlap: chunk重叠大小（建议为0）
+            chunk_overlap: chunk重叠大小（建议为 chunk_size 的 10%-20%）
         
         Returns:
             切分后的文本列表

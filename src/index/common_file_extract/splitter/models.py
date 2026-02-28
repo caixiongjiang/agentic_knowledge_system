@@ -41,9 +41,9 @@ class SplitConfig(BaseModel):
     )
     
     chunk_overlap: int = Field(
-        default=0,
+        default=200,
         ge=0,
-        description="Chunk重叠大小"
+        description="Chunk重叠大小（建议为 chunk_size 的 10%-20%）"
     )
     
     # ========== 递归切分配置 ==========
