@@ -55,7 +55,7 @@ class ElementInfo(BaseModel):
     element_index: int = Field(
         ...,
         ge=0,
-        description="元素在文档中的顺序（从0开始）"
+        description="元素在当前页内的顺序（每页从0开始），需配合 page_index 确定文档全局顺序"
     )
     
     element_type: ElementType = Field(
@@ -286,7 +286,7 @@ class ParseResult(BaseModel):
     # ========== 统一的元素列表 ==========
     elements: List[ElementInfo] = Field(
         default_factory=list,
-        description="文档中的所有元素（文本、图片、表格），按 element_index 排序"
+        description="文档中的所有元素（文本、图片、表格），按 (page_index, element_index) 排序"
     )
     
     # ========== 文档元数据 ==========

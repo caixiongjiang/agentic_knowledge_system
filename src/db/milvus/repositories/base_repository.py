@@ -405,7 +405,8 @@ class BaseRepository(ABC):
         expr: str,
         output_fields: Optional[List[str]] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        consistency_level: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """查询数据
         
@@ -414,6 +415,8 @@ class BaseRepository(ABC):
             output_fields: 要返回的字段列表，None表示返回所有字段
             limit: 返回结果数量限制
             offset: 偏移量（分页）
+            consistency_level: 一致性级别，可选值 "Strong"/"Bounded"/"Session"/"Eventually"，
+                              None 时使用 Collection 创建时的默认级别
             
         Returns:
             查询结果列表
@@ -433,11 +436,16 @@ class BaseRepository(ABC):
             if not self._collection:
                 raise RuntimeError("Collection未初始化")
             
+            kwargs: Dict[str, Any] = {}
+            if consistency_level is not None:
+                kwargs["consistency_level"] = consistency_level
+            
             results = self._collection.query(
                 expr=expr,
                 output_fields=output_fields or ["*"],
                 limit=limit,
-                offset=offset
+                offset=offset,
+                **kwargs
             )
             
             return results
@@ -473,7 +481,8 @@ class BaseRepository(ABC):
         top_k: int = 10,
         search_params: Optional[Dict[str, Any]] = None,
         output_fields: Optional[List[str]] = None,
-        filter_expr: Optional[str] = None
+        filter_expr: Optional[str] = None,
+        consistency_level: Optional[str] = None
     ) -> List[List[Dict[str, Any]]]:
         """向量搜索
         
@@ -484,6 +493,8 @@ class BaseRepository(ABC):
             search_params: 搜索参数（如果为None，使用默认参数）
             output_fields: 返回字段列表
             filter_expr: 过滤表达式（在搜索前过滤）
+            consistency_level: 一致性级别，可选值 "Strong"/"Bounded"/"Session"/"Eventually"，
+                              None 时使用 Collection 创建时的默认级别
             
         Returns:
             搜索结果列表，第一层是每个查询向量的结果，第二层是每个结果的详情
@@ -504,11 +515,12 @@ class BaseRepository(ABC):
             ...     filter_expr="user_id == '001'"
             ... )
             >>> 
-            >>> # 批量搜索
+            >>> # 指定一致性级别搜索
             >>> results = repo.search(
-            ...     vectors=[[0.1, 0.2, ...], [0.3, 0.4, ...]],
+            ...     vectors=[[0.1, 0.2, ...]],
             ...     vector_field="vector",
-            ...     top_k=10
+            ...     top_k=10,
+            ...     consistency_level="Strong"
             ... )
         """
         try:
@@ -523,13 +535,18 @@ class BaseRepository(ABC):
                     "params": {"ef": 128}  # HNSW搜索参数
                 }
             
+            kwargs: Dict[str, Any] = {}
+            if consistency_level is not None:
+                kwargs["consistency_level"] = consistency_level
+            
             results = self._collection.search(
                 data=vectors,
                 anns_field=vector_field,
                 param=search_params,
                 limit=top_k,
                 output_fields=output_fields or ["*"],
-                expr=filter_expr
+                expr=filter_expr,
+                **kwargs
             )
             
             # 格式化结果
