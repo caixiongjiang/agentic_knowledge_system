@@ -172,6 +172,10 @@ class ConfigManager:
         """获取Embedding模型配置"""
         return self.get_section("embedding")
     
+    def get_sparse_embedding_config(self) -> Dict[str, Any]:
+        """获取稀疏向量Embedding模型配置（BGE-M3）"""
+        return self.get_section("sparse_embedding")
+    
     def get_reranker_config(self) -> Dict[str, Any]:
         """获取Reranker模型配置"""
         return self.get_section("reranker")
@@ -214,6 +218,7 @@ class ConfigManager:
             "minio": ["endpoint", "default_bucket"],
             "kafka": ["bootstrap_servers"],
             "embedding": ["api_base", "model_name", "dimension"],
+            "sparse_embedding": ["api_base", "model_name"],
             "reranker": ["provider", "model_name"],
             "mineru": ["api_url"],
             "logging": ["level", "log_dir", "log_file"],
@@ -354,6 +359,16 @@ class ConfigManager:
         
         # 获取本地Embedding服务的API Key（如果需要认证）
         api_key = env_manager.get_embedding_api_key()
+        if api_key:
+            config["api_key"] = api_key
+        
+        return config
+    
+    def get_sparse_embedding_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
+        """获取完整的稀疏向量Embedding配置（BGE-M3，本地部署）"""
+        config = self.get_sparse_embedding_config()
+        
+        api_key = env_manager.get("SPARSE_EMBEDDING_API_KEY")
         if api_key:
             config["api_key"] = api_key
         

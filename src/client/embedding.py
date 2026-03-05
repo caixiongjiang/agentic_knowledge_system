@@ -745,6 +745,517 @@ class EmbeddingClient:
             return False
 
 
+class SparseEmbeddingClient:
+    """
+    BGE-M3 稀疏向量客户端
+    
+    职责单一：仅负责调用 BGE-M3 服务获取稀疏向量（sparse embedding）。
+    不处理稠密向量，稠密向量由 EmbeddingClient 负责。
+    
+    稀疏向量格式: Dict[int, float]，其中 key 是 token ID，value 是权重。
+    
+    使用场景:
+    - 索引时: EmbeddingMilvusWriter 调用此客户端为 chunk 生成稀疏向量
+    - 查询时: BM25Search 调用此客户端编码查询文本为稀疏向量
+    
+    资源管理与 EmbeddingClient 完全一致，支持上下文管理器和临时使用两种模式。
+    
+    推荐用法:
+    ```python
+    # 方式1: 临时使用
+    client = create_sparse_embedding_client()
+    sparse_vec = client.embed_sparse("text")  # Dict[int, float]
+    
+    # 方式2: 上下文管理器（推荐）
+    with create_sparse_embedding_client() as client:
+        sparse_vec = client.embed_sparse("text")
+        sparse_vecs = client.embed_sparse_batch(["text1", "text2"])
+    
+    # 方式3: 异步
+    async with create_sparse_embedding_client() as client:
+        sparse_vec = await client.aembed_sparse("text")
+    ```
+    """
+    
+    def __init__(
+        self,
+        config_manager: Optional[ConfigManager] = None,
+        env_manager: Optional[EnvManager] = None,
+        custom_config: Optional[Dict[str, Any]] = None
+    ):
+        self._config_manager = config_manager or get_config_manager()
+        self._env_manager = env_manager or get_env_manager()
+        
+        self._config = self._config_manager.get_sparse_embedding_full_config(self._env_manager)
+        
+        if custom_config:
+            self._config.update(custom_config)
+        
+        self._validate_config()
+        
+        self.api_base = self._config["api_base"].rstrip("/")
+        self.model_name = self._config["model_name"]
+        self.batch_size = self._config.get("batch_size", 32)
+        self.timeout = self._config["timeout"]
+        
+        self.embeddings_url = f"{self.api_base}/embeddings"
+        
+        self.enable_retry = self._config.get("enable_retry", False)
+        self.max_retries = self._config.get("max_retries", 3)
+        self.retry_delay = self._config.get("retry_delay", 0.5)
+        self.retry_strategy = self._config.get("retry_strategy", "exponential")
+        self.max_retry_delay = self._config.get("max_retry_delay", 10.0)
+        
+        self.api_key = self._config.get("api_key")
+        
+        self._headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            self._headers["Authorization"] = f"Bearer {self.api_key}"
+        
+        self._sync_client: Optional[httpx.Client] = None
+        self._async_client: Optional[httpx.AsyncClient] = None
+        self._context_mode = False
+        
+        logger.info(
+            f"SparseEmbedding客户端初始化完成 - "
+            f"API: {self.embeddings_url}, "
+            f"模型: {self.model_name}, "
+            f"超时: {self.timeout}s, 重试: {self.enable_retry}"
+        )
+    
+    def _validate_config(self) -> None:
+        """验证配置完整性"""
+        required_fields = ["api_base", "model_name", "timeout"]
+        missing_fields = [f for f in required_fields if f not in self._config]
+        
+        if missing_fields:
+            raise ValueError(f"SparseEmbedding配置缺少必需字段: {', '.join(missing_fields)}")
+        
+        if not isinstance(self._config["timeout"], (int, float)) or self._config["timeout"] <= 0:
+            raise ValueError(f"timeout必须是正数，当前值: {self._config['timeout']}")
+    
+    # ==================== 上下文管理器 ====================
+    
+    def __enter__(self) -> 'SparseEmbeddingClient':
+        self._context_mode = True
+        self._sync_client = httpx.Client(timeout=self.timeout)
+        logger.debug("创建持久化同步HTTP客户端（Sparse）")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._context_mode = False
+        if self._sync_client is not None:
+            self._sync_client.close()
+            self._sync_client = None
+            logger.debug("关闭同步HTTP客户端（Sparse）")
+        return False
+    
+    async def __aenter__(self) -> 'SparseEmbeddingClient':
+        self._context_mode = True
+        self._async_client = httpx.AsyncClient(timeout=self.timeout)
+        logger.debug("创建持久化异步HTTP客户端（Sparse）")
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._context_mode = False
+        if self._async_client is not None:
+            await self._async_client.aclose()
+            self._async_client = None
+            logger.debug("关闭异步HTTP客户端（Sparse）")
+        return False
+    
+    def close(self) -> None:
+        if self._sync_client is not None:
+            self._sync_client.close()
+            self._sync_client = None
+            logger.debug("手动关闭同步HTTP客户端（Sparse）")
+    
+    async def aclose(self) -> None:
+        if self._async_client is not None:
+            await self._async_client.aclose()
+            self._async_client = None
+            logger.debug("手动关闭异步HTTP客户端（Sparse）")
+    
+    def __del__(self):
+        if self._sync_client is not None:
+            try:
+                self._sync_client.close()
+                logger.warning("在析构函数中关闭同步客户端（Sparse）")
+            except Exception as e:
+                logger.error(f"析构函数关闭客户端失败: {e}")
+        if self._async_client is not None:
+            logger.warning(
+                "检测到未关闭的异步客户端（Sparse），"
+                "请使用 'async with' 或手动调用 await client.aclose()"
+            )
+    
+    # ==================== 同步方法 ====================
+    
+    def embed_sparse(self, text: str) -> Dict[int, float]:
+        """
+        同步单条文本稀疏向量编码
+        
+        Args:
+            text: 输入文本
+            
+        Returns:
+            稀疏向量 {token_id: weight}
+        """
+        if not text or not text.strip():
+            raise ValueError("文本不能为空")
+        return self.embed_sparse_batch([text])[0]
+    
+    def embed_sparse_batch(self, texts: List[str]) -> List[Dict[int, float]]:
+        """
+        同步批量文本稀疏向量编码
+        
+        Args:
+            texts: 文本列表
+            
+        Returns:
+            稀疏向量列表
+        """
+        if not texts:
+            raise ValueError("文本列表不能为空")
+        
+        non_empty_texts = [t for t in texts if t and t.strip()]
+        if len(non_empty_texts) != len(texts):
+            logger.warning(f"过滤了 {len(texts) - len(non_empty_texts)} 个空文本")
+        if not non_empty_texts:
+            raise ValueError("没有有效的非空文本")
+        
+        if self.enable_retry:
+            return self._embed_sparse_batch_with_retry_sync(non_empty_texts)
+        return self._embed_sparse_batch_sync(non_empty_texts)
+    
+    def _embed_sparse_batch_sync(self, texts: List[str]) -> List[Dict[int, float]]:
+        """同步批量稀疏编码核心实现"""
+        all_sparse = []
+        
+        if self._context_mode and self._sync_client is not None:
+            client = self._sync_client
+            should_close = False
+        else:
+            client = httpx.Client(timeout=self.timeout)
+            should_close = True
+        
+        try:
+            for i in range(0, len(texts), self.batch_size):
+                batch_texts = texts[i:i + self.batch_size]
+                
+                logger.debug(
+                    f"处理稀疏编码批次 {i // self.batch_size + 1}/"
+                    f"{(len(texts) - 1) // self.batch_size + 1} "
+                    f"({len(batch_texts)} 条文本)"
+                )
+                
+                payload = {
+                    "model": self.model_name,
+                    "input": batch_texts,
+                    "return_dense": False,
+                    "return_sparse": True,
+                }
+                
+                try:
+                    response = client.post(
+                        self.embeddings_url,
+                        json=payload,
+                        headers=self._headers
+                    )
+                    response.raise_for_status()
+                except httpx.TimeoutException as e:
+                    logger.error(f"SparseEmbedding请求超时 ({self.timeout}s): {e}")
+                    raise TimeoutError(f"SparseEmbedding请求超时 ({self.timeout}s)") from e
+                except httpx.HTTPError as e:
+                    logger.error(f"SparseEmbedding请求失败: {e}")
+                    raise
+                
+                result = response.json()
+                sparse_vecs = self._parse_sparse_response(result)
+                all_sparse.extend(sparse_vecs)
+        finally:
+            if should_close:
+                client.close()
+        
+        logger.info(f"成功获取 {len(all_sparse)} 个文本的稀疏向量")
+        return all_sparse
+    
+    def _embed_sparse_batch_with_retry_sync(self, texts: List[str]) -> List[Dict[int, float]]:
+        """带重试的同步批量稀疏编码"""
+        retry_decorator = retry_sync(
+            max_retries=self.max_retries,
+            retry_delay=self.retry_delay,
+            retry_strategy=self.retry_strategy,
+            max_delay=self.max_retry_delay,
+            exceptions=(httpx.HTTPError, TimeoutError),
+            logger=logging.getLogger(__name__),
+            raise_on_failure=True
+        )
+        wrapped_func = retry_decorator(self._embed_sparse_batch_sync)
+        return wrapped_func(texts)
+    
+    # ==================== 异步方法 ====================
+    
+    async def aembed_sparse(self, text: str) -> Dict[int, float]:
+        """
+        异步单条文本稀疏向量编码
+        
+        Args:
+            text: 输入文本
+            
+        Returns:
+            稀疏向量 {token_id: weight}
+        """
+        if not text or not text.strip():
+            raise ValueError("文本不能为空")
+        results = await self.aembed_sparse_batch([text])
+        return results[0]
+    
+    async def aembed_sparse_batch(self, texts: List[str]) -> List[Dict[int, float]]:
+        """
+        异步批量文本稀疏向量编码
+        
+        Args:
+            texts: 文本列表
+            
+        Returns:
+            稀疏向量列表
+        """
+        if not texts:
+            raise ValueError("文本列表不能为空")
+        
+        non_empty_texts = [t for t in texts if t and t.strip()]
+        if len(non_empty_texts) != len(texts):
+            logger.warning(f"过滤了 {len(texts) - len(non_empty_texts)} 个空文本")
+        if not non_empty_texts:
+            raise ValueError("没有有效的非空文本")
+        
+        if self.enable_retry:
+            return await self._aembed_sparse_batch_with_retry(non_empty_texts)
+        return await self._aembed_sparse_batch(non_empty_texts)
+    
+    async def _aembed_sparse_batch(self, texts: List[str]) -> List[Dict[int, float]]:
+        """异步批量稀疏编码核心实现"""
+        all_sparse = []
+        
+        if self._context_mode and self._async_client is not None:
+            client = self._async_client
+            should_close = False
+        else:
+            client = httpx.AsyncClient(timeout=self.timeout)
+            should_close = True
+        
+        try:
+            for i in range(0, len(texts), self.batch_size):
+                batch_texts = texts[i:i + self.batch_size]
+                
+                logger.debug(
+                    f"处理稀疏编码批次 {i // self.batch_size + 1}/"
+                    f"{(len(texts) - 1) // self.batch_size + 1} "
+                    f"({len(batch_texts)} 条文本)"
+                )
+                
+                payload = {
+                    "model": self.model_name,
+                    "input": batch_texts,
+                    "return_dense": False,
+                    "return_sparse": True,
+                }
+                
+                try:
+                    response = await client.post(
+                        self.embeddings_url,
+                        json=payload,
+                        headers=self._headers
+                    )
+                    response.raise_for_status()
+                except httpx.TimeoutException as e:
+                    logger.error(f"SparseEmbedding请求超时 ({self.timeout}s): {e}")
+                    raise TimeoutError(f"SparseEmbedding请求超时 ({self.timeout}s)") from e
+                except httpx.HTTPError as e:
+                    logger.error(f"SparseEmbedding请求失败: {e}")
+                    raise
+                
+                result = response.json()
+                sparse_vecs = self._parse_sparse_response(result)
+                all_sparse.extend(sparse_vecs)
+        finally:
+            if should_close:
+                await client.aclose()
+        
+        logger.info(f"成功获取 {len(all_sparse)} 个文本的稀疏向量")
+        return all_sparse
+    
+    async def _aembed_sparse_batch_with_retry(self, texts: List[str]) -> List[Dict[int, float]]:
+        """带重试的异步批量稀疏编码"""
+        retry_decorator = retry_async(
+            max_retries=self.max_retries,
+            retry_delay=self.retry_delay,
+            retry_strategy=self.retry_strategy,
+            max_delay=self.max_retry_delay,
+            exceptions=(httpx.HTTPError, TimeoutError),
+            logger=logging.getLogger(__name__),
+            raise_on_failure=True,
+            timeout=None
+        )
+        wrapped_func = retry_decorator(self._aembed_sparse_batch)
+        return await wrapped_func(texts)
+    
+    # ==================== 高级异步方法 ====================
+    
+    async def aembed_sparse_concurrent(
+        self,
+        texts: List[str],
+        max_concurrent: int = 5
+    ) -> List[Dict[int, float]]:
+        """
+        并发异步批量稀疏编码（适用于大量文本）
+        
+        Args:
+            texts: 文本列表
+            max_concurrent: 最大并发请求数
+            
+        Returns:
+            稀疏向量列表
+        """
+        if not texts:
+            raise ValueError("文本列表不能为空")
+        
+        non_empty_texts = [t for t in texts if t and t.strip()]
+        if not non_empty_texts:
+            raise ValueError("没有有效的非空文本")
+        
+        batches = [
+            non_empty_texts[i:i + self.batch_size]
+            for i in range(0, len(non_empty_texts), self.batch_size)
+        ]
+        
+        logger.info(f"开始并发稀疏编码 {len(batches)} 个批次（最大并发: {max_concurrent}）")
+        
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def _process_with_semaphore(batch: List[str]) -> List[Dict[int, float]]:
+            async with semaphore:
+                if self.enable_retry:
+                    return await self._aembed_sparse_batch_with_retry(batch)
+                return await self._aembed_sparse_batch(batch)
+        
+        tasks = [_process_with_semaphore(batch) for batch in batches]
+        results = await asyncio.gather(*tasks)
+        
+        all_sparse = []
+        for batch_sparse in results:
+            all_sparse.extend(batch_sparse)
+        
+        logger.info(f"并发稀疏编码完成，共获取 {len(all_sparse)} 个稀疏向量")
+        return all_sparse
+    
+    # ==================== 解析方法 ====================
+    
+    def _parse_sparse_response(self, response: Dict[str, Any]) -> List[Dict[int, float]]:
+        """
+        解析 BGE-M3 稀疏向量响应
+        
+        支持两种常见的稀疏向量响应格式：
+        1. indices + values 分离格式: {"indices": [1, 3], "values": [0.5, 0.3]}
+        2. 字典格式: {"1": 0.5, "3": 0.3}
+        
+        Args:
+            response: API 响应 JSON
+            
+        Returns:
+            稀疏向量列表
+        """
+        try:
+            if "data" not in response:
+                raise ValueError(f"响应中缺少 'data' 字段: {list(response.keys())}")
+            
+            sparse_vectors: List[Dict[int, float]] = []
+            
+            for item in response["data"]:
+                sparse_raw = item.get("sparse_embedding")
+                if sparse_raw is None:
+                    raise ValueError(
+                        f"响应 data[{item.get('index', '?')}] 中缺少 'sparse_embedding' 字段"
+                    )
+                
+                sparse_vec = self._convert_sparse_format(sparse_raw)
+                sparse_vectors.append(sparse_vec)
+            
+            return sparse_vectors
+        
+        except (KeyError, IndexError, TypeError) as e:
+            logger.error(f"解析稀疏向量响应失败: {e}, 响应: {response}")
+            raise ValueError(f"解析稀疏向量响应失败: {e}") from e
+    
+    @staticmethod
+    def _convert_sparse_format(sparse_raw: Any) -> Dict[int, float]:
+        """
+        将不同格式的稀疏向量统一转换为 Dict[int, float]
+        
+        Args:
+            sparse_raw: 原始稀疏向量数据
+            
+        Returns:
+            标准化的稀疏向量
+        """
+        if isinstance(sparse_raw, dict):
+            if "indices" in sparse_raw and "values" in sparse_raw:
+                indices = sparse_raw["indices"]
+                values = sparse_raw["values"]
+                if len(indices) != len(values):
+                    raise ValueError(
+                        f"indices 和 values 长度不匹配: {len(indices)} vs {len(values)}"
+                    )
+                return {int(idx): float(val) for idx, val in zip(indices, values)}
+            
+            return {int(k): float(v) for k, v in sparse_raw.items()}
+        
+        raise ValueError(f"不支持的稀疏向量格式: {type(sparse_raw)}")
+    
+    # ==================== 辅助方法 ====================
+    
+    def get_config(self) -> Dict[str, Any]:
+        """获取当前配置"""
+        return {
+            "api_base": self.api_base,
+            "model_name": self.model_name,
+            "batch_size": self.batch_size,
+            "timeout": self.timeout,
+            "enable_retry": self.enable_retry,
+            "max_retries": self.max_retries if self.enable_retry else None,
+            "retry_strategy": self.retry_strategy if self.enable_retry else None,
+        }
+    
+    def health_check(self) -> bool:
+        """健康检查（同步）"""
+        try:
+            sparse_vec = self.embed_sparse("健康检查测试文本")
+            if isinstance(sparse_vec, dict) and len(sparse_vec) > 0:
+                logger.info("SparseEmbedding客户端健康检查通过")
+                return True
+            else:
+                logger.error(f"稀疏向量格式异常: {type(sparse_vec)}")
+                return False
+        except Exception as e:
+            logger.error(f"SparseEmbedding客户端健康检查失败: {e}")
+            return False
+    
+    async def ahealth_check(self) -> bool:
+        """健康检查（异步）"""
+        try:
+            sparse_vec = await self.aembed_sparse("健康检查测试文本")
+            if isinstance(sparse_vec, dict) and len(sparse_vec) > 0:
+                logger.info("SparseEmbedding客户端健康检查通过")
+                return True
+            else:
+                logger.error(f"稀疏向量格式异常: {type(sparse_vec)}")
+                return False
+        except Exception as e:
+            logger.error(f"SparseEmbedding客户端健康检查失败: {e}")
+            return False
+
+
 # ==================== 工厂函数 ====================
 
 def create_embedding_client(
@@ -797,6 +1308,39 @@ def create_embedding_client(
         >>> slow_result = client_slow.embed("long text")   # 临时httpx.Client自动管理
     """
     return EmbeddingClient(
+        config_manager=config_manager,
+        env_manager=env_manager,
+        custom_config=custom_config
+    )
+
+
+def create_sparse_embedding_client(
+    config_manager: Optional[ConfigManager] = None,
+    env_manager: Optional[EnvManager] = None,
+    custom_config: Optional[Dict[str, Any]] = None
+) -> SparseEmbeddingClient:
+    """
+    创建稀疏向量Embedding客户端实例（工厂函数）
+    
+    基于 BGE-M3 模型服务，仅生成稀疏向量。
+    
+    Args:
+        config_manager: 配置管理器
+        env_manager: 环境变量管理器
+        custom_config: 自定义配置
+        
+    Returns:
+        新的 SparseEmbeddingClient 实例
+        
+    Examples:
+        >>> with create_sparse_embedding_client() as client:
+        ...     sparse_vec = client.embed_sparse("查询文本")
+        ...     sparse_vecs = client.embed_sparse_batch(["文本1", "文本2"])
+        
+        >>> async with create_sparse_embedding_client() as client:
+        ...     sparse_vec = await client.aembed_sparse("查询文本")
+    """
+    return SparseEmbeddingClient(
         config_manager=config_manager,
         env_manager=env_manager,
         custom_config=custom_config

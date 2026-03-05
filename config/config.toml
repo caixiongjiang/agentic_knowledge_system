@@ -283,6 +283,27 @@ retry_strategy = "exponential"
 # 最大重试延迟上限（秒）
 max_retry_delay = 10.0
 
+# 稀疏向量 Embedding 模型配置（BGE-M3，本地部署）
+[sparse_embedding]
+# BGE-M3 稀疏向量服务 API 地址
+api_base = "http://192.168.201.14:18085/v1"
+# 模型名称
+model_name = "bge-m3"
+# 批处理大小
+batch_size = 64
+# 请求超时时间（秒，必填）
+timeout = 60.0
+# 是否启用重试机制
+enable_retry = true
+# 最大重试次数
+max_retries = 3
+# 重试延迟时间（秒）
+retry_delay = 0.5
+# 重试策略: fixed, exponential, linear
+retry_strategy = "exponential"
+# 最大重试延迟上限（秒）
+max_retry_delay = 10.0
+
 # Reranker 模型配置
 [reranker]
 # 模型提供商: cohere, jina, bge, local
