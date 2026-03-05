@@ -210,13 +210,17 @@ class BaseRepository(ABC):
         
         return milvus_fields
     
+    _VECTOR_FIELD_TYPES = {
+        FieldType.FLOAT_VECTOR,
+        FieldType.SPARSE_FLOAT_VECTOR,
+    }
+
     def _ensure_indexes(self) -> None:
         """确保索引存在
         
-        检查所有向量字段的索引，如果不存在则创建。
+        检查所有向量字段（包括稀疏向量）的索引，如果不存在则创建。
         用于加载已存在的集合时，确保索引完整性。
         """
-        # 获取集合现有的索引信息
         existing_indexes = {}
         try:
             for index in self._collection.indexes:
@@ -224,15 +228,13 @@ class BaseRepository(ABC):
         except Exception as e:
             self.logger.warning(f"获取索引信息失败: {e}")
         
-        # 检查所有向量字段是否有索引
         vector_fields = [
             field_def for field_def in self.schema.get_fields()
-            if field_def.dtype == FieldType.FLOAT_VECTOR or field_def.dtype == FieldType.BINARY_VECTOR
+            if field_def.dtype in self._VECTOR_FIELD_TYPES
         ]
         
         for field_def in vector_fields:
             if field_def.name not in existing_indexes:
-                # 索引不存在，创建索引
                 self.logger.warning(
                     f"⚠️  字段 {field_def.name} 缺少索引，正在创建..."
                 )
@@ -245,44 +247,73 @@ class BaseRepository(ABC):
     def _create_indexes(self) -> None:
         """创建索引（新集合创建时调用）
         
-        为所有向量字段创建索引
+        为所有向量字段（包括稀疏向量）创建索引。
         
         Note:
             自动处理 Milvus Lite 的索引类型限制：
             - Lite 只支持: FLAT, IVF_FLAT, AUTOINDEX
             - Server 支持: 所有索引类型
             - 如果在 Lite 下使用不支持的索引，自动降级到 AUTOINDEX
+            - 稀疏向量索引(SPARSE_INVERTED_INDEX) 在 Lite 下不支持
         """
-        # 遍历所有字段，为向量字段创建索引
         for field_def in self.schema.get_fields():
-            if field_def.dtype == FieldType.FLOAT_VECTOR or field_def.dtype == FieldType.BINARY_VECTOR:
+            if field_def.dtype in self._VECTOR_FIELD_TYPES:
                 self._create_index_for_field(field_def.name)
     
+    def _is_sparse_vector_field(self, field_name: str) -> bool:
+        """判断字段是否为稀疏向量类型"""
+        for field_def in self.schema.get_fields():
+            if field_def.name == field_name:
+                return field_def.dtype == FieldType.SPARSE_FLOAT_VECTOR
+        return False
+
     def _create_index_for_field(self, field_name: str) -> None:
         """为指定字段创建索引
         
         Args:
             field_name: 字段名称
         """
-        index_params = self.schema.get_index_params().copy()
-        
-        # 检测是否是 Milvus Lite 模式
         is_lite_mode = self._is_lite_mode()
-        
-        # Milvus Lite 支持的索引类型
+
+        if self._is_sparse_vector_field(field_name):
+            sparse_params = self.schema.get_sparse_index_params()
+            if sparse_params is None:
+                self.logger.warning(
+                    f"字段 {field_name} 是稀疏向量类型，"
+                    f"但 Schema 未定义 get_sparse_index_params()，跳过索引创建"
+                )
+                return
+
+            if is_lite_mode:
+                self.logger.warning(
+                    f"⚠️  Milvus Lite 不支持 SPARSE_INVERTED_INDEX 索引，"
+                    f"跳过稀疏向量字段 {field_name} 的索引创建"
+                )
+                return
+
+            self._collection.create_index(
+                field_name=field_name,
+                index_params=sparse_params,
+            )
+            self.logger.debug(
+                f"已为稀疏向量字段 {field_name} 创建索引: "
+                f"{sparse_params.get('index_type')}"
+            )
+            return
+
+        index_params = self.schema.get_index_params().copy()
+
         LITE_SUPPORTED_INDEXES = {"FLAT", "IVF_FLAT", "AUTOINDEX"}
-        
-        # 如果是 Lite 模式且索引类型不支持，自动降级
+
         if is_lite_mode and index_params.get("index_type") not in LITE_SUPPORTED_INDEXES:
             original_index = index_params["index_type"]
             index_params["index_type"] = "AUTOINDEX"
-            index_params["params"] = {}  # AUTOINDEX 不需要额外参数
+            index_params["params"] = {}
             self.logger.warning(
                 f"⚠️  Milvus Lite 不支持 {original_index} 索引，"
                 f"自动降级为 AUTOINDEX"
             )
         
-        # 创建索引
         self._collection.create_index(
             field_name=field_name,
             index_params=index_params
@@ -549,40 +580,98 @@ class BaseRepository(ABC):
                 **kwargs
             )
             
-            # 格式化结果
-            formatted_results = []
-            for hits in results:
-                hit_list = []
-                for hit in hits:
-                    hit_dict = {
-                        "id": hit.id,
-                        "distance": hit.distance,
-                        "score": hit.score,  # 相似度分数
-                        "entity": {}
-                    }
-                    
-                    # 提取实体字段
-                    if hasattr(hit, 'entity'):
-                        try:
-                            # 尝试转换为字典
-                            entity_dict = hit.entity.to_dict() if hasattr(hit.entity, 'to_dict') else {}
-                            hit_dict["entity"] = entity_dict
-                        except:
-                            # 如果转换失败，尝试逐个字段获取
-                            if output_fields and output_fields != ["*"]:
-                                for field in output_fields:
-                                    if hasattr(hit.entity, field):
-                                        hit_dict["entity"][field] = getattr(hit.entity, field)
-                    
-                    hit_list.append(hit_dict)
-                formatted_results.append(hit_list)
-            
-            return formatted_results
+            return self._format_search_results(results, output_fields)
         
         except Exception as e:
             self.logger.error(f"向量搜索失败: {e}", exc_info=True)
             raise
     
+    def search_sparse(
+        self,
+        sparse_vectors: List[Dict[int, float]],
+        sparse_field: str = "sparse_vector",
+        top_k: int = 10,
+        output_fields: Optional[List[str]] = None,
+        filter_expr: Optional[str] = None,
+        consistency_level: Optional[str] = None,
+    ) -> List[List[Dict[str, Any]]]:
+        """稀疏向量搜索（BM25 关键词检索）
+
+        使用 IP（内积）度量对稀疏向量字段进行 ANN 搜索，
+        等价于 BM25 评分排序。
+
+        Args:
+            sparse_vectors: 查询稀疏向量列表，格式 [{dim_idx: weight, ...}]
+            sparse_field: 稀疏向量字段名
+            top_k: 返回 Top-K 结果
+            output_fields: 返回字段列表
+            filter_expr: 标量过滤表达式
+            consistency_level: 一致性级别
+
+        Returns:
+            搜索结果列表（与 search() 格式一致）
+        """
+        try:
+            if not self._collection:
+                raise RuntimeError("Collection未初始化")
+
+            search_params = {"metric_type": "IP"}
+
+            kwargs: Dict[str, Any] = {}
+            if consistency_level is not None:
+                kwargs["consistency_level"] = consistency_level
+
+            results = self._collection.search(
+                data=sparse_vectors,
+                anns_field=sparse_field,
+                param=search_params,
+                limit=top_k,
+                output_fields=output_fields or ["*"],
+                expr=filter_expr,
+                **kwargs,
+            )
+
+            return self._format_search_results(results, output_fields)
+
+        except Exception as e:
+            self.logger.error(f"稀疏向量搜索失败: {e}", exc_info=True)
+            raise
+
+    def _format_search_results(
+        self,
+        results: Any,
+        output_fields: Optional[List[str]] = None,
+    ) -> List[List[Dict[str, Any]]]:
+        """将 Milvus 原始搜索结果格式化为统一字典列表"""
+        formatted_results: List[List[Dict[str, Any]]] = []
+        for hits in results:
+            hit_list: List[Dict[str, Any]] = []
+            for hit in hits:
+                hit_dict: Dict[str, Any] = {
+                    "id": hit.id,
+                    "distance": hit.distance,
+                    "score": hit.score,
+                    "entity": {},
+                }
+                if hasattr(hit, "entity"):
+                    try:
+                        entity_dict = (
+                            hit.entity.to_dict()
+                            if hasattr(hit.entity, "to_dict")
+                            else {}
+                        )
+                        hit_dict["entity"] = entity_dict
+                    except Exception:
+                        if output_fields and output_fields != ["*"]:
+                            for field in output_fields:
+                                if hasattr(hit.entity, field):
+                                    hit_dict["entity"][field] = getattr(
+                                        hit.entity, field
+                                    )
+                hit_list.append(hit_dict)
+            formatted_results.append(hit_list)
+        return formatted_results
+
     def count(self) -> int:
         """获取集合中的记录数
         

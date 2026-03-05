@@ -14,7 +14,9 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from src.retrieve.types.enums import ConsistencyLevel, SemanticTarget
+from src.retrieve.types.enums import (
+    ConsistencyLevel, GranularityLevel, MatchMode, SemanticTarget,
+)
 
 
 @dataclass
@@ -79,3 +81,25 @@ class SemanticQuery:
     def __post_init__(self) -> None:
         if not self.query_text and not self.query_vector:
             raise ValueError("query_text 和 query_vector 必须至少提供一个")
+
+
+@dataclass
+class LexicalQuery:
+    """字面检索统一查询参数
+
+    Attributes:
+        query_text: 自然语言查询文本（BM25Search 使用）
+        keywords: 关键词列表（ExactMatch 使用）
+        match_mode: 字面匹配模式（ExactMatch 使用）
+        bool_expression: 布尔表达式字符串（BooleanSearch 使用）
+        top_k: 返回结果数量上限
+        target_granularity: 目标检索粒度
+        filters: 元数据过滤条件
+    """
+    top_k: int = 10
+    query_text: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    match_mode: MatchMode = MatchMode.EXACT
+    bool_expression: Optional[str] = None
+    target_granularity: GranularityLevel = GranularityLevel.CHUNK
+    filters: MetadataFilter = field(default_factory=MetadataFilter)

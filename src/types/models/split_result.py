@@ -310,6 +310,29 @@ class ChunkInfo(BaseModel):
             }
         }
     
+    def to_enhanced_embedding_message_dict(self) -> Optional[Dict[str, Any]]:
+        """
+        转换为 enhanced_chunk_store 的 Embedding 消息格式
+        
+        使用 enhanced_vector_text（Section标题 + Chunk文本）作为向量化源文本。
+        如果 enhanced_vector_text 为空则返回 None。
+        
+        Returns:
+            Enhanced Embedding 消息字典，或 None
+        """
+        if not self.enhanced_vector_text:
+            return None
+        return {
+            "chunk_id": self.chunk_id,
+            "text": self.enhanced_vector_text,
+            "language": self.language,
+            "collection_type": "enhanced_chunk",
+            "metadata": {
+                "chunk_type": self.chunk_type,
+                "page_index": self.page_index,
+            }
+        }
+    
     def get_text_content(self) -> Optional[str]:
         """
         获取文本内容（用于向量化）
@@ -696,6 +719,25 @@ class SplitResult(BaseModel):
             msg = section.to_embedding_message_dict()
             if msg is not None:
                 messages.append(msg)
+        return messages
+    
+    def get_enhanced_chunk_embedding_messages(self) -> List[Dict[str, Any]]:
+        """
+        获取 Enhanced Chunk 的 Embedding 消息列表
+        
+        使用 enhanced_vector_text（Section标题 + Chunk文本）作为源文本，
+        目标 collection 为 enhanced_chunk_store。
+        仅当 Chunk 有 enhanced_vector_text 时才生成消息。
+        
+        Returns:
+            Enhanced Chunk Embedding 消息列表
+        """
+        messages = []
+        for chunk in self.chunks:
+            if chunk.is_text() or chunk.is_table() or chunk.is_code_block():
+                msg = chunk.to_enhanced_embedding_message_dict()
+                if msg is not None:
+                    messages.append(msg)
         return messages
     
     def get_summary(self) -> Dict[str, Any]:

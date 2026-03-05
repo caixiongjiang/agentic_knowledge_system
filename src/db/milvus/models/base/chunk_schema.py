@@ -5,7 +5,7 @@ Chunk Schema - 文本分块表
 Base Layer: 原始文档分块存储
 """
 
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 from src.db.milvus.models.base_schema import (
     BaseSchema, FieldDefinition, FieldType,
     MetricType, IndexType
@@ -33,7 +33,7 @@ class ChunkSchema(BaseSchema):
     COLLECTION_NAME = "chunk_store"
     DESCRIPTION = "文本分块表 - 存储原始文档分块及其向量表示"
     VECTOR_DIM = 1024
-    ENABLE_DYNAMIC_FIELD = True
+    ENABLE_DYNAMIC_FIELD = False
     
     # 索引类型配置
     index_type = "HNSW"
@@ -83,6 +83,12 @@ class ChunkSchema(BaseSchema):
                 name="vector",
                 dim=self.VECTOR_DIM,
                 description="文本块的向量表示，用于语义相似度搜索"
+            ),
+
+            # ========== 稀疏向量字段（BM25） ==========
+            self.create_sparse_vector_field(
+                name="sparse_vector",
+                description="BM25 稀疏向量，由客户端 BM25EmbeddingFunction编码生成，用于全文关键词检索",
             ),
             
             # ========== 用户信息 ==========
@@ -178,4 +184,15 @@ class ChunkSchema(BaseSchema):
             "metric_type": self.metric_type,
             "index_type": self.index_type,
             "params": self.index_params
+        }
+
+    def get_sparse_index_params(self) -> Optional[Dict[str, Any]]:
+        """稀疏向量索引参数配置
+
+        使用 SPARSE_INVERTED_INDEX 索引 + IP（内积）度量，
+        IP 在稀疏向量场景下等价于 BM25 评分。
+        """
+        return {
+            "metric_type": "IP",
+            "index_type": "SPARSE_INVERTED_INDEX",
         }

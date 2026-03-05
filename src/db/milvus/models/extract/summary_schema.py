@@ -37,7 +37,7 @@ class SummarySchema(BaseSchema):
     COLLECTION_NAME = "summary_store"
     DESCRIPTION = "摘要表 - 存储多层次文本摘要"
     VECTOR_DIM = 1024
-    ENABLE_DYNAMIC_FIELD = True
+    ENABLE_DYNAMIC_FIELD = False
     
     index_type = "HNSW"
     metric_type = "COSINE"

@@ -222,7 +222,14 @@ class TextSplitterWorker(BaseWorker):
                     message, section_embedding_items, split_result
                 )
             
-            # # 5e. 发送 SplitEndMessage (前台完成通知)
+            # 5e. 发送 Enhanced Chunk Embedding 写入消息
+            enhanced_items = split_result.get_enhanced_chunk_embedding_messages()
+            if enhanced_items:
+                await self._send_enhanced_chunk_embedding_messages(
+                    message, enhanced_items, split_result
+                )
+            
+            # # 5f. 发送 SplitEndMessage (前台完成通知)
             # await self._send_split_end_message(message, split_result)
             # logger.info(
             #     f"下游消息分发已禁用 (暂时跳过): file_id={message.file_id}, "
@@ -455,6 +462,48 @@ class TextSplitterWorker(BaseWorker):
         )
         
         logger.debug(f"Section Embedding 消息发送完成: {len(section_items)} 个 Section")
+    
+    async def _send_enhanced_chunk_embedding_messages(
+        self,
+        message: ParseEndMessage,
+        enhanced_items: List[Dict[str, Any]],
+        split_result: SplitResult
+    ) -> None:
+        """
+        发送 Enhanced Chunk 向量化写入消息到 Kafka
+        
+        将含有 enhanced_vector_text（Section标题+Chunk文本）的 Chunk 发送到
+        enhanced_chunk_store 进行向量化。
+        
+        Args:
+            message: 原始 ParseEndMessage
+            enhanced_items: SplitResult.get_enhanced_chunk_embedding_messages() 的返回值
+            split_result: 切分结果（用于获取语言信息）
+        """
+        if not self._producer:
+            logger.warning("Producer 未配置，无法发送 Enhanced Chunk Embedding 消息")
+            return
+        
+        emb_msg = EmbeddingWriteMessage(
+            user_id=message.user_id,
+            file_id=message.file_id,
+            collection_type=MilvusCollection.ENHANCED_CHUNK,
+            items=enhanced_items,
+            source_stage="split",
+            document_id=message.document_id,
+            knowledge_base_id=message.knowledge_base_id,
+            knowledge_base_name=message.knowledge_base_name,
+            language=split_result.document_language,
+        )
+        
+        await self._producer.send_message(
+            topic=KafkaTopics.DB_WRITE_EMBEDDING,
+            message=emb_msg
+        )
+        
+        logger.debug(
+            f"Enhanced Chunk Embedding 消息发送完成: {len(enhanced_items)} 个 Chunk"
+        )
     
     async def _send_split_end_message(
         self,

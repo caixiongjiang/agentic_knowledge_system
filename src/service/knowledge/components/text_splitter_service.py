@@ -354,6 +354,22 @@ class TextSplitterService:
                 if chunk.section_id == section.section_id
             ]
         
+        # 填充 enhanced_vector_text（Section标题 + Chunk文本 → enhanced_chunk_store）
+        section_content_map = {s.section_id: s.content for s in sections}
+        enhanced_count = 0
+        for chunk in chunks:
+            if not chunk.section_id or chunk.section_id not in section_content_map:
+                continue
+            chunk_text = chunk.get_text_content()
+            if not chunk_text:
+                continue
+            section_title = section_content_map[chunk.section_id]
+            chunk.enhanced_vector_text = f"{section_title}\n{chunk_text}"
+            enhanced_count += 1
+        
+        if enhanced_count > 0:
+            logger.debug(f"填充 enhanced_vector_text: {enhanced_count}/{len(chunks)} 个Chunk")
+        
         # 计算总字符数
         total_chars = sum(
             len(chunk.get_text_content() or "")

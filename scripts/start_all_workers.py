@@ -213,6 +213,7 @@ class WorkerManager:
         self.redis_manager = None
         self.progress_manager = None
         self._embedding_client = None
+        self._sparse_embedding_client = None
         self.workers: Dict[str, object] = {}
         self.tasks: Dict[str, asyncio.Task] = {}
         
@@ -302,9 +303,13 @@ class WorkerManager:
             
             # Writer 类型需要注册 Repository 和客户端
             self._register_writer_repositories(worker_name, worker)
-            if self._embedding_client and worker_name == "embedding_milvus_writer":
-                await self._embedding_client.__aenter__()
-                logger.info("Embedding 异步连接池已创建")
+            if worker_name == "embedding_milvus_writer":
+                if self._embedding_client:
+                    await self._embedding_client.__aenter__()
+                    logger.info("稠密向量 Embedding 异步连接池已创建")
+                if self._sparse_embedding_client:
+                    await self._sparse_embedding_client.__aenter__()
+                    logger.info("稀疏向量 Embedding (BGE-M3) 异步连接池已创建")
             
             self.workers[worker_name] = worker
             
@@ -363,7 +368,7 @@ class WorkerManager:
                 MySQLTable.SECTION_DOCUMENT: section_document_repo,
             })
         elif worker_name == "embedding_milvus_writer":
-            from src.client.embedding import create_embedding_client
+            from src.client.embedding import create_embedding_client, create_sparse_embedding_client
             from src.db.milvus.repositories import (
                 ChunkRepository,
                 SectionRepository,
@@ -374,7 +379,9 @@ class WorkerManager:
                 TagRepository,
             )
             self._embedding_client = create_embedding_client()
+            self._sparse_embedding_client = create_sparse_embedding_client()
             worker._embedding_client = self._embedding_client
+            worker._sparse_embedding_client = self._sparse_embedding_client
             milvus_repo_map = {
                 MilvusCollection.CHUNK: ChunkRepository,
                 MilvusCollection.SECTION: SectionRepository,
@@ -483,9 +490,16 @@ class WorkerManager:
         if self._embedding_client:
             try:
                 await self._embedding_client.__aexit__(None, None, None)
-                logger.info("Embedding 连接池已关闭")
+                logger.info("稠密向量 Embedding 连接池已关闭")
             except Exception as e:
-                logger.warning(f"Embedding 关闭失败: {e}")
+                logger.warning(f"稠密向量 Embedding 关闭失败: {e}")
+        
+        if self._sparse_embedding_client:
+            try:
+                await self._sparse_embedding_client.__aexit__(None, None, None)
+                logger.info("稀疏向量 Embedding (BGE-M3) 连接池已关闭")
+            except Exception as e:
+                logger.warning(f"稀疏向量 Embedding 关闭失败: {e}")
         
         if self.milvus_manager:
             try:

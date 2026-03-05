@@ -11,14 +11,15 @@ EmbeddingMilvusWriter
     4. 路由到具体 Milvus Repository 批量写入
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Set
+
 from loguru import logger
 
 from src.db.kafka.writers.base_writer import BaseWriter
 from src.db.kafka.topics import KafkaTopics
 from src.db.milvus.repositories.base_repository import BaseRepository as MilvusBaseRepository
 from src.types.messages.db_write import EmbeddingWriteMessage, MilvusCollection
-from src.client.embedding import EmbeddingClient
+from src.client.embedding import EmbeddingClient, SparseEmbeddingClient
 
 
 class EmbeddingMilvusWriter(BaseWriter):
@@ -38,6 +39,7 @@ class EmbeddingMilvusWriter(BaseWriter):
 
     数据来源:
     - TextSplitter: 原始文本 chunk → MilvusCollection.CHUNK
+    - TextSplitter: Section标题+Chunk文本 → MilvusCollection.ENHANCED_CHUNK
     - Summary: 摘要 → MilvusCollection.SUMMARY
     - AtomicQA: 原子QA → MilvusCollection.ATOMIC_QA
     - KG Extract: SPO/Tag → MilvusCollection.SPO / MilvusCollection.TAG
@@ -57,6 +59,7 @@ class EmbeddingMilvusWriter(BaseWriter):
         self,
         *args,
         embedding_client: Optional[EmbeddingClient] = None,
+        sparse_embedding_client: Optional[SparseEmbeddingClient] = None,
         embedding_batch_size: int = 64,
         **kwargs
     ):
@@ -64,13 +67,20 @@ class EmbeddingMilvusWriter(BaseWriter):
         初始化 EmbeddingMilvusWriter
 
         Args:
-            embedding_client: Embedding 客户端实例
+            embedding_client: 稠密向量 Embedding 客户端实例
+            sparse_embedding_client: 稀疏向量 Embedding 客户端实例（BGE-M3）
             embedding_batch_size: Embedding API 批处理大小
         """
         super().__init__(*args, **kwargs)
         self._embedding_client = embedding_client
+        self._sparse_embedding_client = sparse_embedding_client
         self._embedding_batch_size = embedding_batch_size
         self._repo_registry: Dict[MilvusCollection, MilvusBaseRepository] = {}
+
+    _SPARSE_VECTOR_COLLECTIONS: Set[MilvusCollection] = {
+        MilvusCollection.CHUNK,
+        MilvusCollection.ENHANCED_CHUNK,
+    }
 
     def register_repository(
         self,
@@ -211,7 +221,7 @@ class EmbeddingMilvusWriter(BaseWriter):
                 logger.warning(f"Collection {collection_type} 没有待处理的文本")
                 return True
 
-            # 2. 批量调用 Embedding API
+            # 2. 批量调用稠密向量 Embedding API
             embeddings = await self._batch_embed(texts)
 
             if len(embeddings) != len(texts):
@@ -221,12 +231,25 @@ class EmbeddingMilvusWriter(BaseWriter):
                 )
                 return False
 
-            # 3. 构建 Milvus 插入数据
+            # 3. 需要稀疏向量的 Collection，批量调用稀疏编码
+            need_sparse = collection_type in self._SPARSE_VECTOR_COLLECTIONS
+            sparse_vectors: Optional[List[Dict[int, float]]] = None
+            
+            if need_sparse:
+                sparse_vectors = await self._batch_embed_sparse(texts)
+                if sparse_vectors is None or len(sparse_vectors) != len(texts):
+                    logger.error(
+                        f"稀疏向量结果数量不匹配: "
+                        f"期望 {len(texts)}, 实际 {len(sparse_vectors) if sparse_vectors else 0}"
+                    )
+                    return False
+
+            # 4. 构建 Milvus 插入数据
             insert_data = self._build_insert_data(
-                item_metadata, embeddings
+                item_metadata, embeddings, sparse_vectors
             )
 
-            # 4. 批量写入到具体 Repository
+            # 5. 批量写入到具体 Repository
             result_ids = repo.insert(insert_data)
 
             success = len(result_ids) == len(insert_data)
@@ -309,16 +332,16 @@ class EmbeddingMilvusWriter(BaseWriter):
 
     async def _batch_embed(self, texts: List[str]) -> List[List[float]]:
         """
-        批量调用 Embedding API（分批处理）
+        批量调用稠密向量 Embedding API（分批处理）
 
         Args:
             texts: 文本列表
 
         Returns:
-            向量列表
+            稠密向量列表
         """
         if not self._embedding_client:
-            logger.error("Embedding 客户端未配置")
+            logger.error("稠密向量 Embedding 客户端未配置")
             return []
 
         all_embeddings: List[List[float]] = []
@@ -328,23 +351,46 @@ class EmbeddingMilvusWriter(BaseWriter):
             batch_embeddings = await self._embedding_client.aembed_batch(batch)
             all_embeddings.extend(batch_embeddings)
 
-        logger.debug(f"批量 Embedding 完成: {len(texts)} 文本 → {len(all_embeddings)} 向量")
+        logger.debug(f"批量稠密 Embedding 完成: {len(texts)} 文本 → {len(all_embeddings)} 向量")
         return all_embeddings
+
+    async def _batch_embed_sparse(self, texts: List[str]) -> Optional[List[Dict[int, float]]]:
+        """
+        批量调用稀疏向量 Embedding API（BGE-M3，分批处理）
+
+        Args:
+            texts: 文本列表
+
+        Returns:
+            稀疏向量列表，客户端未配置时返回 None
+        """
+        if not self._sparse_embedding_client:
+            logger.error("稀疏向量 Embedding 客户端未配置")
+            return None
+
+        all_sparse: List[Dict[int, float]] = []
+
+        for i in range(0, len(texts), self._embedding_batch_size):
+            batch = texts[i:i + self._embedding_batch_size]
+            batch_sparse = await self._sparse_embedding_client.aembed_sparse_batch(batch)
+            all_sparse.extend(batch_sparse)
+
+        logger.debug(f"批量稀疏 Embedding 完成: {len(texts)} 文本 → {len(all_sparse)} 稀疏向量")
+        return all_sparse
 
     def _build_insert_data(
         self,
         item_metadata: List[Dict[str, Any]],
-        embeddings: List[List[float]]
+        embeddings: List[List[float]],
+        sparse_vectors: Optional[List[Dict[int, float]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         构建 Milvus 插入数据
 
-        包含 ChunkSchema 的必填字段（id, vector, user_id）以及
-        可选字段（knowledge_base_id 等，为 None 时 Milvus nullable 字段自动处理）。
-
         Args:
             item_metadata: 元数据列表
-            embeddings: 向量列表
+            embeddings: 稠密向量列表
+            sparse_vectors: 稀疏向量列表（仅 CHUNK / ENHANCED_CHUNK 需要）
 
         Returns:
             Milvus 插入数据列表
@@ -353,7 +399,7 @@ class EmbeddingMilvusWriter(BaseWriter):
         now_ts = int(time.time())
         insert_data = []
 
-        for meta, embedding in zip(item_metadata, embeddings):
+        for idx, (meta, embedding) in enumerate(zip(item_metadata, embeddings)):
             chunk_meta = meta.get("item_metadata", {})
             record: Dict[str, Any] = {
                 "id": meta["id"],
@@ -365,9 +411,11 @@ class EmbeddingMilvusWriter(BaseWriter):
                 "knowledge_base_name": meta.get("knowledge_base_name"),
                 "create_time": now_ts,
                 "update_time": now_ts,
-                "text": meta["text"],
-                "file_id": meta["file_id"],
             }
+
+            if sparse_vectors is not None:
+                record["sparse_vector"] = sparse_vectors[idx]
+
             insert_data.append(record)
 
         return insert_data
@@ -381,4 +429,5 @@ class EmbeddingMilvusWriter(BaseWriter):
         stats["registered_collection_count"] = len(self._repo_registry)
         stats["embedding_batch_size"] = self._embedding_batch_size
         stats["embedding_client_configured"] = self._embedding_client is not None
+        stats["sparse_embedding_client_configured"] = self._sparse_embedding_client is not None
         return stats

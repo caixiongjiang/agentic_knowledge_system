@@ -20,7 +20,7 @@ class FieldType(Enum):
     JSON = "JSON"                    # JSON对象
     BOOL = "BOOL"                    # 布尔型
     FLOAT_VECTOR = "FLOAT_VECTOR"    # 浮点向量（用于语义搜索）
-    BINARY_VECTOR = "BINARY_VECTOR"  # 二进制向量
+    SPARSE_FLOAT_VECTOR = "SPARSE_FLOAT_VECTOR"  # 稀疏浮点向量（用于 BM25 全文检索）
 
 
 class MetricType(Enum):
@@ -39,6 +39,7 @@ class IndexType(Enum):
     HNSW = "HNSW"              # 层次可导航小世界图（高性能）
     ANNOY = "ANNOY"            # Approximate Nearest Neighbors Oh Yeah
     AUTOINDEX = "AUTOINDEX"    # 自动选择索引（Milvus Lite专用）
+    SPARSE_INVERTED_INDEX = "SPARSE_INVERTED_INDEX"  # 稀疏倒排索引（BM25 稀疏向量专用）
 
 
 @dataclass
@@ -79,7 +80,7 @@ class BaseSchema(ABC):
     
     # 可选配置
     VECTOR_DIM: int = 1024              # 向量维度（根据embedding模型调整）
-    ENABLE_DYNAMIC_FIELD: bool = True   # 启用动态字段支持
+    ENABLE_DYNAMIC_FIELD: bool = False
     
     @abstractmethod
     def get_fields(self) -> List[FieldDefinition]:
@@ -105,6 +106,17 @@ class BaseSchema(ABC):
                 - params: 索引参数（如HNSW的M和efConstruction）
         """
         pass
+
+    def get_sparse_index_params(self) -> Optional[Dict[str, Any]]:
+        """返回稀疏向量索引参数
+
+        仅包含稀疏向量字段的 Schema 需要覆盖此方法。
+        默认返回 None 表示不需要稀疏向量索引。
+
+        Returns:
+            索引配置字典（SPARSE_INVERTED_INDEX + IP），或 None
+        """
+        return None
     
     def get_collection_name(self) -> str:
         """获取集合名称
@@ -229,6 +241,29 @@ class BaseSchema(ABC):
             dtype=FieldType.FLOAT_VECTOR,
             dim=dim,
             description=description or f"{dim}维语义向量，用于相似度搜索"
+        )
+
+    @staticmethod
+    def create_sparse_vector_field(
+        name: str = "sparse_vector",
+        description: str = "",
+    ) -> FieldDefinition:
+        """创建稀疏向量字段
+
+        用于 BM25 全文检索，存储由 BM25EmbeddingFunction 生成的稀疏向量。
+        稀疏向量不需要指定维度（dim），由数据本身决定。
+
+        Args:
+            name: 字段名称
+            description: 字段描述
+
+        Returns:
+            FieldDefinition: 稀疏向量字段定义
+        """
+        return FieldDefinition(
+            name=name,
+            dtype=FieldType.SPARSE_FLOAT_VECTOR,
+            description=description or "BM25 稀疏向量，用于全文检索关键词匹配",
         )
     
     @staticmethod

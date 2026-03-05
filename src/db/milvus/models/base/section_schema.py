@@ -32,7 +32,7 @@ class SectionSchema(BaseSchema):
     COLLECTION_NAME = "section_store"
     DESCRIPTION = "章节表 - 存储文档章节结构和向量表示"
     VECTOR_DIM = 1024
-    ENABLE_DYNAMIC_FIELD = True
+    ENABLE_DYNAMIC_FIELD = False
     
     index_type = "HNSW"
     metric_type = "COSINE"

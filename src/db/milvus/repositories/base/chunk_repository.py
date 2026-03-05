@@ -105,6 +105,44 @@ class ChunkRepository(BaseRepository):
         expr = f"knowledge_base_id == '{knowledge_base_id}'"
         return self.query(expr, limit=limit)
     
+    def search_by_sparse_vector(
+        self,
+        query_sparse_vector: Dict[int, float],
+        top_k: int = 10,
+        user_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        knowledge_base_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """根据稀疏向量搜索相似分块（BM25 关键词检索）
+
+        Args:
+            query_sparse_vector: 查询稀疏向量 {dim_idx: weight}
+            top_k: 返回 Top-K 结果
+            user_id: 限定用户 ID
+            document_id: 限定文档 ID
+            knowledge_base_id: 限定知识库 ID
+
+        Returns:
+            搜索结果列表
+        """
+        filter_parts = []
+        if user_id:
+            filter_parts.append(f"user_id == '{user_id}'")
+        if document_id:
+            filter_parts.append(f"document_id == '{document_id}'")
+        if knowledge_base_id:
+            filter_parts.append(f"knowledge_base_id == '{knowledge_base_id}'")
+
+        filter_expr = " and ".join(filter_parts) if filter_parts else None
+
+        results = self.search_sparse(
+            sparse_vectors=[query_sparse_vector],
+            sparse_field="sparse_vector",
+            top_k=top_k,
+            filter_expr=filter_expr,
+        )
+        return results[0] if results else []
+
     def delete_by_document(self, document_id: str) -> None:
         """删除指定文档的所有分块
         

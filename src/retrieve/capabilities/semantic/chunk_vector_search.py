@@ -50,7 +50,7 @@ class ChunkVectorSearch(BaseVectorSearch):
                 knowledge_base_id=entity.get("knowledge_base_id"),
                 metadata={
                     k: v for k, v in entity.items()
-                    if k not in ("document_id", "knowledge_base_id", "vector")
+                    if k not in ("document_id", "knowledge_base_id", "vector", "sparse_vector")
                 },
             ))
         return items

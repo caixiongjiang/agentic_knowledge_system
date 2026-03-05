@@ -33,7 +33,7 @@ class AtomicQASchema(BaseSchema):
     COLLECTION_NAME = "atomic_qa_store"
     DESCRIPTION = "原子问答对表 - 存储提取的最小粒度问答知识"
     VECTOR_DIM = 1024
-    ENABLE_DYNAMIC_FIELD = True
+    ENABLE_DYNAMIC_FIELD = False
     
     index_type = "HNSW"
     metric_type = "COSINE"
