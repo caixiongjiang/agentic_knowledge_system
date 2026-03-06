@@ -96,6 +96,11 @@ class ChunkInfo(BaseModel):
         description="关联的Element ID列表（用于文档溯源，追踪Chunk包含的元素）"
     )
     
+    split_seq: int = Field(
+        default=0,
+        description="分块序号：同一组 element 被切分为多个 chunk 时的局部顺序（从0开始）"
+    )
+    
     # ========== 内容字段 ==========
     content: Dict[str, Any] = Field(
         default_factory=dict,
@@ -246,7 +251,8 @@ class ChunkInfo(BaseModel):
             "chunk_id": self.chunk_id,
             "chunk_type": self.chunk_type,
             "page_index": self.page_index,
-            "element_ids": self.element_ids,  # 关联的Element ID列表
+            "split_seq": self.split_seq,
+            "element_ids": self.element_ids,
         }
         
         # 图片特定字段

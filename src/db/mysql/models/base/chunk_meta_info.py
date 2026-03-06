@@ -85,6 +85,14 @@ class ChunkMetaInfo(BaseModel, KnowledgeMixin):
         comment="图片文件后缀名（含.）"
     )
     
+    # 分块序号：同一组 element_ids 被切分为多个 chunk 时的顺序
+    split_seq = Column(
+        Integer,
+        nullable=True,
+        default=0,
+        comment="分块序号：同一组 element 被切分为多个 chunk 时的局部顺序（从0开始）"
+    )
+    
     # 关联 Elements 信息（用于文件修改 pipeline）
     element_ids = Column(
         JSON,

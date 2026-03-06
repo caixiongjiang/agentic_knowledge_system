@@ -25,7 +25,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -184,6 +184,57 @@ class TextSplitterService:
         logger.info(f"ParseResult加载完成: {len(elements)} 个元素, {parse_result.total_pages} 页")
         return parse_result
     
+    def _map_chunks_to_elements(
+        self,
+        merged_text: str,
+        split_texts: List[str],
+        element_char_ranges: List[Tuple[int, int, str]],
+    ) -> List[List[str]]:
+        """将每个分块精确映射到其实际包含的 element_id 列表
+
+        通过字符位置匹配：先确定每个 split_text 在 merged_text 中的位置，
+        再找出与该位置范围有交集的 element。
+
+        Args:
+            merged_text: 由 text_buffer 拼接的完整文本
+            split_texts: text_splitter 切分后的文本列表
+            element_char_ranges: 每个 element 在 merged_text 中的字符范围
+                [(start, end, element_id), ...]
+
+        Returns:
+            per_chunk_element_ids: 每个 chunk 对应的 element_id 列表
+        """
+        all_element_ids = [r[2] for r in element_char_ranges]
+        result: List[List[str]] = []
+        cursor = 0
+
+        for split_text in split_texts:
+            search_start = max(0, cursor - self.config.chunk_overlap - 50)
+            idx = merged_text.find(split_text, search_start)
+
+            if idx == -1:
+                idx = merged_text.find(split_text)
+
+            if idx >= 0:
+                chunk_start = idx
+                chunk_end = idx + len(split_text)
+                cursor = idx + 1
+
+                chunk_element_ids: List[str] = []
+                for elem_start, elem_end, elem_id in element_char_ranges:
+                    if elem_start < chunk_end and elem_end > chunk_start:
+                        chunk_element_ids.append(elem_id)
+
+                result.append(chunk_element_ids if chunk_element_ids else list(all_element_ids))
+            else:
+                logger.warning(
+                    f"无法在 merged_text 中定位分块文本(len={len(split_text)})，"
+                    f"回退至关联所有 {len(all_element_ids)} 个 element"
+                )
+                result.append(list(all_element_ids))
+
+        return result
+
     def _flush_text_buffer(
         self,
         text_buffer: List[str],
@@ -195,7 +246,12 @@ class TextSplitterService:
     ) -> List[ChunkInfo]:
         """
         将累积的文本 buffer 合并、切分并生成 Chunk
-        
+
+        精确溯源策略：
+        1. 计算每个 element 在 merged_text 中的字符范围
+        2. 切分后，根据每个 chunk 文本在 merged_text 中的位置
+           匹配与之有交集的 element，得到精确的 per-chunk element_ids
+
         Args:
             text_buffer: 累积的已清洗文本列表
             buffer_element_ids: 累积的 Element ID 列表
@@ -203,30 +259,44 @@ class TextSplitterService:
             section_id: 当前 Section ID
             document_id: 文档 ID
             language: 文档语言
-        
+
         Returns:
             生成的 ChunkInfo 列表（buffer 为空时返回空列表）
         """
         if not text_buffer:
             return []
-        
-        merged_text = "\n\n".join(text_buffer)
+
+        separator = "\n\n"
+
+        element_char_ranges: List[Tuple[int, int, str]] = []
+        offset = 0
+        for i, text in enumerate(text_buffer):
+            start = offset
+            end = offset + len(text)
+            element_char_ranges.append((start, end, buffer_element_ids[i]))
+            offset = end + len(separator)
+
+        merged_text = separator.join(text_buffer)
         split_texts = self.text_splitter.split_text(merged_text)
-        
+
+        per_chunk_element_ids = self._map_chunks_to_elements(
+            merged_text, split_texts, element_char_ranges,
+        )
+
         text_chunks = self.element_processor.create_text_chunks(
-            element_ids=buffer_element_ids,
+            per_chunk_element_ids=per_chunk_element_ids,
             page_index=buffer_page_index,
             section_id=section_id,
             split_texts=split_texts,
             document_id=document_id,
             language=language
         )
-        
+
         logger.debug(
             f"flush文本buffer: {len(buffer_element_ids)}个元素, "
             f"合并{len(merged_text)}字符, 切分为{len(text_chunks)}个chunk"
         )
-        
+
         return text_chunks
     
     async def split_document(

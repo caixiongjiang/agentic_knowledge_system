@@ -13,10 +13,8 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from typing import List, Optional, Union
+from typing import List, Optional
 from datetime import datetime
-from bson import ObjectId
-from beanie import PydanticObjectId
 
 from src.db.mongodb.repositories.base_repository import BaseRepository
 from src.db.mongodb.models.chunk_data import ChunkData
@@ -127,39 +125,25 @@ class ChunkDataRepository(BaseRepository[ChunkData]):
     
     async def get_by_ids(
         self,
-        ids: List[Union[str, ObjectId, PydanticObjectId]]
+        ids: List[str]
     ) -> List[ChunkData]:
         """
         根据ID列表批量查询
-        
+
         Args:
-            ids: ID列表（字符串、ObjectId 或 PydanticObjectId）
-            
+            ids: ID列表（chunk_id 字符串，如 chunk-<uuid>）
+
         Returns:
             ChunkData 列表
         """
         if not ids:
             return []
-        
-        # 类型转换：确保所有ID都是ObjectId类型
-        object_ids = []
-        for id_val in ids:
-            if isinstance(id_val, str):
-                try:
-                    object_ids.append(PydanticObjectId(id_val))
-                except Exception:
-                    continue
-            elif isinstance(id_val, (ObjectId, PydanticObjectId)):
-                object_ids.append(id_val)
-        
-        if not object_ids:
-            return []
-        
+
         results = await ChunkData.find({
-            "_id": {"$in": object_ids},
+            "_id": {"$in": ids},
             "deleted": 0
         }).to_list()
-        
+
         return results
     
     async def count_by_type(

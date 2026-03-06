@@ -142,10 +142,8 @@ def chunk_sort_key(
 ) -> tuple:
     """计算 chunk 的排序键
 
-    排序策略：取 chunk 关联的所有 element 中最小的 (page_index, element_index)。
-    element_index 是页面内序号（每页从 0 开始），必须配合 page_index 使用。
-    同一个 buffer flush 切出的多个 chunk 共享相同 element_ids，此时无法区分先后，
-    以 chunk_id 作为稳定性兜底。
+    排序策略：取 chunk 关联的所有 element 中最小的 (page_index, element_index)，
+    再以 split_seq 区分同一组 element 切分出的多个 chunk。
 
     Args:
         chunk_id: chunk ID
@@ -153,16 +151,19 @@ def chunk_sort_key(
         element_order_map: element_id -> (page_index, element_index) 映射
 
     Returns:
-        (page_index, min_element_index, chunk_id) 排序元组
+        (page_index, min_element_index, split_seq) 排序元组
     """
     meta = chunk_meta_map.get(chunk_id)
+    split_seq = 0
+    if meta and hasattr(meta, "split_seq") and meta.split_seq is not None:
+        split_seq = meta.split_seq
     if meta and hasattr(meta, "element_ids") and meta.element_ids:
         orders = [element_order_map[eid] for eid in meta.element_ids if eid in element_order_map]
         if orders:
             min_order = min(orders)
-            return (min_order[0], min_order[1], chunk_id)
+            return (min_order[0], min_order[1], split_seq)
     page = meta.page_index if meta and hasattr(meta, "page_index") and meta.page_index is not None else 9999
-    return (page, 9999, chunk_id)
+    return (page, 9999, split_seq)
 
 
 def write_markdown(data: Dict[str, Any], output_path: Path) -> None:

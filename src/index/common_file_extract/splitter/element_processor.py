@@ -47,7 +47,7 @@ class ElementProcessor:
     
     @staticmethod
     def create_text_chunks(
-        element_ids: List[str],
+        per_chunk_element_ids: List[List[str]],
         page_index: Optional[int],
         section_id: Optional[str],
         split_texts: List[str],
@@ -56,21 +56,23 @@ class ElementProcessor:
     ) -> List[ChunkInfo]:
         """
         从切分后的文本列表创建Chunk列表
-        
+
         Args:
-            element_ids: 关联的 Element ID 列表（支持多元素合并场景的溯源）
+            per_chunk_element_ids: 每个 chunk 精确关联的 Element ID 列表，
+                长度与 split_texts 一致
             page_index: 页码（合并场景取首个元素的页码）
             section_id: 所属Section ID
             split_texts: 切分后的文本列表
             document_id: 文档ID
             language: 语言
-        
+
         Returns:
             ChunkInfo列表
         """
         chunks = []
-        
-        for text in split_texts:
+
+        for i, text in enumerate(split_texts):
+            element_ids = per_chunk_element_ids[i] if i < len(per_chunk_element_ids) else []
             chunk = ChunkInfo(
                 chunk_type=ChunkType.TEXT,
                 section_id=section_id,
@@ -82,10 +84,11 @@ class ElementProcessor:
                 page_index=page_index,
                 language=language,
                 metadata={},
-                element_ids=list(element_ids),
+                element_ids=element_ids,
+                split_seq=i,
             )
             chunks.append(chunk)
-        
+
         return chunks
     
     @staticmethod
@@ -152,23 +155,23 @@ class ElementProcessor:
         """
         chunks = []
         
-        for table_text in assembled_table_texts:
+        for i, table_text in enumerate(assembled_table_texts):
             chunk = ChunkInfo(
                 chunk_type=ChunkType.TABLE,
                 section_id=section_id,
-                document_id=document_id,  # 文档级关联
+                document_id=document_id,
                 content={
                     "original": {"content": table_text},
                     "translations": []
                 },
                 page_index=element.page_index,
                 language=language,
-                # 表格特定字段
                 table_body=element.table_body,
                 table_caption=element.table_caption,
                 table_footnote=element.table_footnote,
                 metadata={},
-                element_ids=[element.element_id]  # 传递 element_id 用于文档溯源
+                element_ids=[element.element_id],
+                split_seq=i,
             )
             chunks.append(chunk)
         
