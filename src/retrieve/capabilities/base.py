@@ -13,16 +13,15 @@
 =================================================="""
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any, Dict
 
 from loguru import logger
+from pydantic import BaseModel
 
 from src.retrieve.types.result import RetrieveResult
 
 
-@dataclass
-class CapabilityDescriptor:
+class CapabilityDescriptor(BaseModel):
     """原子能力自描述信息
 
     用于 Skill 层自动发现可用能力，以及 Tool 层生成 Agent 工具描述。

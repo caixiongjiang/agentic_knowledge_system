@@ -11,16 +11,17 @@
          
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
-from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from pydantic import BaseModel, Field, model_validator
+
 from src.retrieve.types.enums import (
-    ConsistencyLevel, GranularityLevel, MatchMode, SemanticTarget,
+    ConsistencyLevel, ElementType, GranularityLevel, MatchMode,
+    SemanticTarget, TraverseDirection,
 )
 
 
-@dataclass
-class MetadataFilter:
+class MetadataFilter(BaseModel):
     """通用元数据过滤条件
 
     在各类检索中用于缩小查询范围。
@@ -57,8 +58,7 @@ class MetadataFilter:
         return " and ".join(parts) if parts else None
 
 
-@dataclass
-class SemanticQuery:
+class SemanticQuery(BaseModel):
     """语义向量检索查询参数
 
     Attributes:
@@ -74,17 +74,18 @@ class SemanticQuery:
     top_k: int = 10
     query_text: Optional[str] = None
     query_vector: Optional[List[float]] = None
-    filters: MetadataFilter = field(default_factory=MetadataFilter)
+    filters: MetadataFilter = Field(default_factory=MetadataFilter)
     return_content: bool = False
     consistency_level: Optional[ConsistencyLevel] = None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _check_query_input(self) -> "SemanticQuery":
         if not self.query_text and not self.query_vector:
             raise ValueError("query_text 和 query_vector 必须至少提供一个")
+        return self
 
 
-@dataclass
-class LexicalQuery:
+class LexicalQuery(BaseModel):
     """字面检索统一查询参数
 
     Attributes:
@@ -102,4 +103,32 @@ class LexicalQuery:
     match_mode: MatchMode = MatchMode.EXACT
     bool_expression: Optional[str] = None
     target_granularity: GranularityLevel = GranularityLevel.CHUNK
-    filters: MetadataFilter = field(default_factory=MetadataFilter)
+    filters: MetadataFilter = Field(default_factory=MetadataFilter)
+
+
+class NavigationQuery(BaseModel):
+    """结构化导航查询参数
+
+    所有导航能力共用此查询参数模型。各能力按需使用相关字段，
+    不相关的字段保持默认值即可。
+
+    Attributes:
+        anchor_id: 锚点 ID（chunk_id / section_id / document_id / element_id）
+        anchor_type: 锚点的粒度类型
+        direction: 遍历方向（ContextWindow 使用 PREV/NEXT/BOTH）
+        target_granularity: 目标粒度（DrillDown / RollUp 使用）
+        window_size: 上下文窗口大小（ContextWindow 使用，表示单方向 Chunk 数量）
+        max_depth: 最大展开深度（Skeleton 使用）
+        element_type_filter: 元素类型过滤（DrillDown 到 Element 粒度时使用）
+        include_content: 是否从 MongoDB 获取全文内容
+        filters: 元数据过滤条件
+    """
+    anchor_id: str
+    anchor_type: GranularityLevel
+    direction: TraverseDirection = TraverseDirection.BOTH
+    target_granularity: Optional[GranularityLevel] = None
+    window_size: int = 3
+    max_depth: int = 3
+    element_type_filter: Optional[ElementType] = None
+    include_content: bool = True
+    filters: MetadataFilter = Field(default_factory=MetadataFilter)

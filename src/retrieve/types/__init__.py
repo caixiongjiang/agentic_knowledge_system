@@ -24,6 +24,8 @@ from src.retrieve.types.enums import (
 from src.retrieve.types.query import (
     MetadataFilter,
     SemanticQuery,
+    LexicalQuery,
+    NavigationQuery,
 )
 from src.retrieve.types.result import (
     RetrieveResult,
@@ -31,6 +33,10 @@ from src.retrieve.types.result import (
     SectionItem,
     QAItem,
     SummaryItem,
+    DocumentItem,
+    ElementItem,
+    SkeletonNode,
+    SkeletonItem,
 )
 
 __all__ = [
@@ -44,9 +50,15 @@ __all__ = [
     "SemanticTarget",
     "MetadataFilter",
     "SemanticQuery",
+    "LexicalQuery",
+    "NavigationQuery",
     "RetrieveResult",
     "ChunkItem",
     "SectionItem",
     "QAItem",
     "SummaryItem",
+    "DocumentItem",
+    "ElementItem",
+    "SkeletonNode",
+    "SkeletonItem",
 ]
