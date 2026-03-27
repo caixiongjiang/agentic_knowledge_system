@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from src.utils.log_config import setup_dev_logging
@@ -31,6 +32,15 @@ from src.db.mongodb.mongodb_manager import get_mongodb_manager
 from src.db.mysql.connection.factory import get_mysql_manager
 from src.db.milvus import get_milvus_manager
 from src.db.redis.connection.factory import RedisManagerFactory
+
+
+def _get_allowed_origins() -> list[str]:
+    """读取允许跨域访问的前端来源地址"""
+    raw_origins = os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:4000,http://127.0.0.1:4000,http://192.168.201.14:4000",
+    )
+    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 
 def _init_milvus() -> None:
@@ -84,6 +94,14 @@ app = FastAPI(
     description="智能知识管理系统 API",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_get_allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(knowledge_router)

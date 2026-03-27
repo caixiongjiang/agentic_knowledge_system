@@ -6,25 +6,27 @@
 @Author  : caixiongjiang
 @Date    : 2026/02/19
 @Function: 
-    回收站管理路由（方案 B：保留文件夹层级）
+    回收站管理路由（原子化操作：保留文件夹层级，仅顶层条目可操作）
     提供回收站相关的 API 端点：
 
-    查看/浏览：
-      GET    /list                             - 查看回收站顶层列表（deleted=1）
-      GET    /folder/{folder_id}/children      - 浏览回收站文件夹的子文件夹
-      GET    /folder/{folder_id}/files         - 浏览回收站文件夹的子文件
+    查看/浏览（只读预览）：
+      GET    /list                             - 查看回收站顶层列表（仅 deleted=1）
+      GET    /folder/{folder_id}/children      - 浏览回收站文件夹的子文件夹（只读预览）
+      GET    /folder/{folder_id}/files         - 浏览回收站文件夹的子文件（只读预览）
 
-    恢复：
-      POST   /restore/folder/{folder_id}       - 恢复文件夹（支持 deleted=1/2，含后代+文件，自动重建祖先路径）
-      POST   /restore/file/{file_id}           - 恢复单个文件（支持 deleted=1/2，自动重建祖先路径）
+    恢复（仅 deleted=1 顶层条目）：
+      POST   /restore/folder/{folder_id}       - 恢复文件夹（仅 deleted=1，含后代+文件）
+      POST   /restore/file/{file_id}           - 恢复单个文件（仅 deleted=1）
 
-    永久删除：
-      DELETE /folder/{folder_id}               - 永久删除文件夹（支持 deleted=1/2，含后代+文件）
-      DELETE /file/{file_id}                   - 永久删除单个文件（支持 deleted=1/2）
-      DELETE /empty                            - 清空回收站
+    永久删除（仅 deleted=1 顶层条目，含级联删除索引数据）：
+      DELETE /folder/{folder_id}               - 永久删除文件夹（仅 deleted=1，含后代+文件+索引数据）
+      DELETE /file/{file_id}                   - 永久删除单个文件（仅 deleted=1，含索引数据）
+      DELETE /empty                            - 清空回收站（含索引数据）
 
 @Modify History:
     2026/02/19 - 升级为方案 B，支持回收站内浏览、部分恢复/删除
+    2026/03/09 - 永久删除增加级联删除（清理 Milvus/MongoDB/Storage 索引数据）
+    2026/03/17 - 改为原子化操作：恢复/永久删除仅限 deleted=1 顶层条目，避免幽灵文件
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
@@ -36,8 +38,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from api.dependencies.auth import get_current_user_id
-from api.dependencies.database import get_db_session
+from api.dependencies.database import get_db_session, get_storage_manager
 from api.schemas.common import ApiResponse
+from src.db.storage.manager import StorageManager
+from src.service.knowledge.delete_service import knowledge_delete_service
 from api.schemas.knowledge.trash import (
     TrashEmptyResponse,
     TrashFolderChildItem,
@@ -118,10 +122,11 @@ async def list_trash(
 @router.get(
     "/folder/{folder_id}/children",
     response_model=ApiResponse[TrashFolderChildrenResponse],
-    summary="浏览回收站文件夹的子文件夹",
+    summary="浏览回收站文件夹的子文件夹（只读预览）",
     description=(
-        "在回收站中展开一个已删除的文件夹，查看其直接子文件夹。"
+        "在回收站中展开一个已删除的文件夹，查看其直接子文件夹（只读预览）。"
         "返回 parent_folder_id 匹配且 deleted=1 或 deleted=2 的文件夹。"
+        "该接口仅用于预览，子项不支持独立的恢复或永久删除操作。"
     ),
 )
 async def browse_trash_folder_children(
@@ -165,10 +170,11 @@ async def browse_trash_folder_children(
 @router.get(
     "/folder/{folder_id}/files",
     response_model=ApiResponse[TrashFolderFilesResponse],
-    summary="浏览回收站文件夹的子文件",
+    summary="浏览回收站文件夹的子文件（只读预览）",
     description=(
-        "在回收站中查看一个已删除文件夹的直接子文件。"
+        "在回收站中查看一个已删除文件夹的直接子文件（只读预览）。"
         "返回 folder_id 匹配且 deleted=1 或 deleted=2 的文件。"
+        "该接口仅用于预览，子项不支持独立的恢复或永久删除操作。"
     ),
 )
 async def browse_trash_folder_files(
@@ -217,10 +223,9 @@ async def browse_trash_folder_files(
     response_model=ApiResponse[TrashRestoreResponse],
     summary="恢复文件夹",
     description=(
-        "从回收站恢复文件夹（支持 deleted=1 和 deleted=2），"
+        "从回收站恢复文件夹（仅 deleted=1 的顶层条目），"
         "同时恢复其所有后代文件夹和关联文件。"
-        "如果文件夹的祖先仍处于删除状态，会自动重建整条祖先路径。"
-        "如果最顶层祖先的父文件夹不存在，则将其移到根目录。"
+        "如果父文件夹不存在或已被删除，则将该文件夹移到根目录。"
     ),
 )
 async def restore_folder(
@@ -229,14 +234,11 @@ async def restore_folder(
     session: Session = Depends(get_db_session),
 ) -> ApiResponse[TrashRestoreResponse]:
     try:
-        restored_folder_ids, restored_ancestor_ids = (
-            workspace_folder_repo.restore_subfolder_with_ancestors(
-                session, user_id, folder_id
-            )
+        restored_folder_ids = workspace_folder_repo.restore_folder_with_descendants(
+            session, user_id, folder_id
         )
-        all_affected_folder_ids = restored_folder_ids + restored_ancestor_ids
         restored_file_count = workspace_file_system_repo.restore_by_folder_ids(
-            session, user_id, all_affected_folder_ids
+            session, user_id, restored_folder_ids
         )
         session.commit()
     except ValueError as e:
@@ -247,25 +249,20 @@ async def restore_folder(
         logger.error(f"恢复文件夹失败: {e}")
         raise HTTPException(status_code=500, detail="恢复失败")
 
-    total_folders = len(restored_folder_ids) + len(restored_ancestor_ids)
+    folder_count = len(restored_folder_ids)
     logger.info(
         f"恢复文件夹: user_id={user_id}, folder_id={folder_id}, "
-        f"self+descendants={len(restored_folder_ids)}, "
-        f"ancestors={len(restored_ancestor_ids)}, files={restored_file_count}"
+        f"folders={folder_count}, files={restored_file_count}"
     )
 
     return ApiResponse.success(
         data=TrashRestoreResponse(
             item_type=TrashItemType.FOLDER,
             item_id=folder_id,
-            restored_folder_count=total_folders,
+            restored_folder_count=folder_count,
             restored_file_count=restored_file_count,
         ),
-        message=(
-            f"成功恢复 {total_folders} 个文件夹和 {restored_file_count} 个文件"
-            + (f"（含 {len(restored_ancestor_ids)} 个祖先文件夹）"
-               if restored_ancestor_ids else "")
-        ),
+        message=f"成功恢复 {folder_count} 个文件夹和 {restored_file_count} 个文件",
     )
 
 
@@ -274,9 +271,8 @@ async def restore_folder(
     response_model=ApiResponse[TrashRestoreResponse],
     summary="恢复单个文件",
     description=(
-        "从回收站恢复单个文件（支持 deleted=1 和 deleted=2）。"
-        "如果文件的父文件夹仍处于删除状态，会自动重建整条祖先文件夹路径。"
-        "如果祖先链的最顶层父文件夹不存在，则将其移到根目录。"
+        "从回收站恢复单个文件（仅 deleted=1 的顶层条目）。"
+        "如果文件的父文件夹不存在或已被删除，则将文件移到根目录。"
     ),
 )
 async def restore_file(
@@ -287,25 +283,17 @@ async def restore_file(
     file_obj = workspace_file_system_repo.get_by_user_and_file(
         session, user_id, file_id
     )
-    if not file_obj or file_obj.deleted not in (1, 2):
-        raise HTTPException(status_code=404, detail="回收站中未找到该文件")
-
-    restored_folder_count = 0
+    if not file_obj or file_obj.deleted != 1:
+        raise HTTPException(status_code=404, detail="回收站中未找到该文件（仅支持顶层条目）")
 
     try:
         if file_obj.folder_id:
             parent_folder = session.query(WorkspaceFolder).filter(
                 WorkspaceFolder.folder_id == file_obj.folder_id,
                 WorkspaceFolder.user_id == user_id,
+                WorkspaceFolder.deleted == 0,
             ).first()
-
-            if parent_folder and parent_folder.deleted != 0:
-                parent_folder.deleted = 0
-                ancestor_ids = workspace_folder_repo.restore_ancestors_chain(
-                    session, user_id, parent_folder.parent_folder_id
-                ) if parent_folder.parent_folder_id else []
-                restored_folder_count = 1 + len(ancestor_ids)
-            elif not parent_folder:
+            if not parent_folder:
                 file_obj.folder_id = None
 
         file_obj.deleted = 0
@@ -315,28 +303,45 @@ async def restore_file(
         logger.error(f"恢复文件失败: {e}")
         raise HTTPException(status_code=500, detail="恢复失败")
 
-    logger.info(
-        f"恢复文件: user_id={user_id}, file_id={file_id}, "
-        f"restored_ancestors={restored_folder_count}"
-    )
+    logger.info(f"恢复文件: user_id={user_id}, file_id={file_id}")
 
     return ApiResponse.success(
         data=TrashRestoreResponse(
             item_type=TrashItemType.FILE,
             item_id=file_id,
-            restored_folder_count=restored_folder_count,
+            restored_folder_count=0,
             restored_file_count=1,
         ),
-        message=(
-            f"文件恢复成功"
-            + (f"，同时恢复了 {restored_folder_count} 个祖先文件夹"
-               if restored_folder_count > 0 else "")
-        ),
+        message="文件恢复成功",
     )
 
 
 
-# ==================== 永久删除 ====================
+# ==================== 永久删除（含级联删除索引数据） ====================
+
+
+async def _cascade_delete_files(
+    session: Session,
+    user_id: str,
+    file_ids: list[str],
+    storage_manager: StorageManager,
+) -> None:
+    """对一组即将被硬删除的 file_id 执行级联删除（Milvus/MongoDB/Storage）
+
+    在硬删除 workspace_file_system 记录之前调用。
+    级联删除的错误只记录日志，不阻塞回收站删除流程。
+    """
+    for file_id in file_ids:
+        try:
+            result = await knowledge_delete_service.permanent_delete_file(
+                session, user_id, file_id, storage_manager
+            )
+            if result.has_errors:
+                logger.warning(
+                    f"级联删除部分失败: file_id={file_id}, errors={result.errors}"
+                )
+        except Exception as e:
+            logger.error(f"级联删除异常: file_id={file_id}, error={e}")
 
 
 @router.delete(
@@ -344,14 +349,16 @@ async def restore_file(
     response_model=ApiResponse[TrashEmptyResponse],
     summary="永久删除文件夹",
     description=(
-        "从回收站永久删除文件夹（支持 deleted=1 和 deleted=2）"
+        "从回收站永久删除文件夹（仅 deleted=1 的顶层条目）"
         "及其所有后代文件夹和关联文件（不可恢复）。"
+        "同时级联删除文件在 Milvus、MongoDB、对象存储中的索引数据。"
     ),
 )
 async def permanent_delete_folder(
     folder_id: str,
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
+    storage_manager: StorageManager = Depends(get_storage_manager),
 ) -> ApiResponse[TrashEmptyResponse]:
     try:
         folder_ids, folder_count = (
@@ -359,6 +366,20 @@ async def permanent_delete_folder(
                 session, user_id, folder_id
             )
         )
+
+        affected_files = []
+        for fid in folder_ids:
+            files = workspace_file_system_repo.get_deleted_files_by_folder(
+                session, user_id, fid
+            )
+            affected_files.extend(files)
+        affected_file_ids = [f.file_id for f in affected_files]
+
+        if affected_file_ids:
+            await _cascade_delete_files(
+                session, user_id, affected_file_ids, storage_manager
+            )
+
         file_count = workspace_file_system_repo.hard_delete_by_folder_ids(
             session, user_id, folder_ids
         )
@@ -389,14 +410,22 @@ async def permanent_delete_folder(
     "/file/{file_id}",
     response_model=ApiResponse[TrashEmptyResponse],
     summary="永久删除单个文件",
-    description="从回收站永久删除单个文件（支持 deleted=1 和 deleted=2，不可恢复）。",
+    description=(
+        "从回收站永久删除单个文件（仅 deleted=1 的顶层条目，不可恢复）。"
+        "同时级联删除文件在 Milvus、MongoDB、对象存储中的索引数据。"
+    ),
 )
 async def permanent_delete_file(
     file_id: str,
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
+    storage_manager: StorageManager = Depends(get_storage_manager),
 ) -> ApiResponse[TrashEmptyResponse]:
     try:
+        await _cascade_delete_files(
+            session, user_id, [file_id], storage_manager
+        )
+
         deleted = workspace_file_system_repo.hard_delete_by_file_id(
             session, user_id, file_id
         )
@@ -427,13 +456,27 @@ async def permanent_delete_file(
     "/empty",
     response_model=ApiResponse[TrashEmptyResponse],
     summary="清空回收站",
-    description="永久删除回收站中的所有文件夹和文件（不可恢复）。",
+    description=(
+        "永久删除回收站中的所有文件夹和文件（不可恢复）。"
+        "同时级联删除所有文件在 Milvus、MongoDB、对象存储中的索引数据。"
+    ),
 )
 async def empty_trash(
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
+    storage_manager: StorageManager = Depends(get_storage_manager),
 ) -> ApiResponse[TrashEmptyResponse]:
     try:
+        all_deleted_files = workspace_file_system_repo.get_deleted_files(
+            session, user_id
+        )
+        all_file_ids = [f.file_id for f in all_deleted_files]
+
+        if all_file_ids:
+            await _cascade_delete_files(
+                session, user_id, all_file_ids, storage_manager
+            )
+
         folder_ids, folder_count = workspace_folder_repo.hard_delete_all_trash(
             session, user_id
         )

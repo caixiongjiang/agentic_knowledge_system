@@ -104,4 +104,14 @@ class EnhancedChunkRepository(BaseRepository):
             filter_expr=filter_expr,
         )
         return results[0] if results else []
+
+    def delete_by_document(self, document_id: str) -> None:
+        """删除指定文档的所有增强分块
+
+        Args:
+            document_id: 文档ID
+        """
+        expr = f"document_id == '{document_id}'"
+        self.delete(expr)
+        self.logger.info(f"已删除文档 {document_id} 的所有enhanced chunks")
     

@@ -445,6 +445,7 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
     ) -> bool:
         """
         按文件ID永久删除单个文件（物理删除）。
+        仅支持 deleted=1 的顶层条目。
         **不会 commit**。
 
         Returns:
@@ -453,7 +454,7 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
         count = session.query(self.model).filter(
             self.model.user_id == user_id,
             self.model.file_id == file_id,
-            self.model.deleted.in_([1, 2]),
+            self.model.deleted == 1,
         ).delete(synchronize_session='fetch')
         return count > 0
 

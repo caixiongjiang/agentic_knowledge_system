@@ -21,6 +21,7 @@
       POST /progress/batch     - 批量查询文件索引进度
 @Modify History:
     2026/02/18 - 实现文件上传、索引构建、进度查询 API
+    2026/03/17 - 移除直接删除接口（删除流程统一走回收站）
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 

@@ -167,10 +167,14 @@ auto_commit_interval_ms = 5000
 auto_offset_reset = "earliest"
 # 单次拉取最大记录数
 max_poll_records = 500
-# 单次拉取最小字节数
-fetch_min_bytes = 1024
+# 单次拉取最小字节数（设为1：空闲时 broker 立即返回空结果，避免无谓等待）
+fetch_min_bytes = 1
 # 单次拉取最大等待时间（毫秒）
 fetch_max_wait_ms = 500
+# 请求超时时间（毫秒，必须 > session_timeout_ms，避免空闲时 RequestTimedOutError）
+request_timeout_ms = 60000
+# 请求失败后的退避时间（毫秒）
+retry_backoff_ms = 500
 # Session超时时间（毫秒）
 session_timeout_ms = 30000
 # 心跳间隔（毫秒）

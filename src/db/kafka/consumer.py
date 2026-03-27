@@ -10,6 +10,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import Type, Optional, Dict, Any, List
 from aiokafka import AIOKafkaConsumer
+from aiokafka.errors import RequestTimedOutError, KafkaConnectionError
 from aiokafka.structs import ConsumerRecord
 from loguru import logger
 
@@ -144,19 +145,31 @@ class BaseKafkaConsumer(ABC):
             ConsumerRecord 列表
         """
         try:
-            # getmany() 返回 {TopicPartition: [ConsumerRecord]} 字典
             data = await self._consumer.getmany(
                 timeout_ms=self._fetch_timeout_ms,
                 max_records=self._batch_size
             )
             
-            # 展平为单一列表
+            self._consecutive_timeout_count = 0
+            
             records = []
             for partition_records in data.values():
                 records.extend(partition_records)
             
             return records
             
+        except (RequestTimedOutError, KafkaConnectionError) as e:
+            self._consecutive_timeout_count = getattr(self, "_consecutive_timeout_count", 0) + 1
+            if self._consecutive_timeout_count <= 3:
+                logger.warning(f"Kafka fetch 超时（连续第 {self._consecutive_timeout_count} 次）: {e}")
+            elif self._consecutive_timeout_count % 30 == 0:
+                logger.warning(
+                    f"Kafka fetch 持续超时（已连续 {self._consecutive_timeout_count} 次），"
+                    f"请检查 broker 连接: {e}"
+                )
+            backoff = min(2.0, 0.5 * self._consecutive_timeout_count)
+            await asyncio.sleep(backoff)
+            return []
         except Exception as e:
             logger.error(f"拉取消息失败: {e}")
             return []

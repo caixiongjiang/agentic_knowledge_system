@@ -12,10 +12,12 @@
       GET    /list              - 获取用户在某知识库下的文件夹列表
       GET    /children          - 获取指定文件夹的直接子文件夹
       GET    /{folder_id}       - 获取单个文件夹详情
+      GET    /{folder_id}/files - 获取文件夹内的文件列表
       PUT    /{folder_id}/rename - 重命名文件夹
       PUT    /{folder_id}/move   - 移动文件夹
       DELETE /{folder_id}       - 删除文件夹（软删除，含后代）
 @Modify History:
+    2026/03/17 - 文件软删除迁移到 file.py 模块
 
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
