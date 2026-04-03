@@ -231,10 +231,10 @@ async def update_knowledge_base(
 @router.delete(
     "/{knowledge_base_id}",
     response_model=ApiResponse[KnowledgeBaseDeleteResponse],
-    summary="删除知识库",
+    summary="删除知识库（级联删除子知识库）",
     description=(
-        "物理删除知识库，同时清理其下的所有空文件夹。"
-        "前置条件：知识库下（包括回收站中）不存在任何文件。"
+        "物理删除知识库及其所有子知识库，同时清理其下的所有空文件夹。"
+        "前置条件：该知识库及所有子知识库下（包括回收站中）不存在任何文件。"
         "如有文件，请先手动删除文件并清空回收站后重试。"
     ),
 )
@@ -249,8 +249,13 @@ async def delete_knowledge_base(
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在或无权限")
 
-    file_count = knowledge_base_repo.check_has_files(
+    descendant_ids = knowledge_base_repo.get_all_descendants(
         session, user_id, knowledge_base_id
+    )
+    all_kb_ids = [knowledge_base_id] + descendant_ids
+
+    file_count = knowledge_base_repo.check_tree_has_files(
+        session, user_id, all_kb_ids
     )
     if file_count < 0:
         raise HTTPException(status_code=500, detail="检查文件数量失败")
@@ -258,15 +263,17 @@ async def delete_knowledge_base(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"知识库下仍有 {file_count} 个文件（含回收站），"
+                f"知识库树下仍有 {file_count} 个文件（含回收站），"
                 "请先删除所有文件并清空回收站后重试"
             ),
         )
 
     try:
-        folder_count = knowledge_base_repo.hard_delete(
-            session, user_id, knowledge_base_id
-        )
+        total_folder_count = 0
+        for kb_id in reversed(all_kb_ids):
+            total_folder_count += knowledge_base_repo.hard_delete(
+                session, user_id, kb_id
+            )
         session.commit()
     except SQLAlchemyError as e:
         session.rollback()
@@ -275,13 +282,15 @@ async def delete_knowledge_base(
 
     logger.info(
         f"删除知识库: user_id={user_id}, kb_id={knowledge_base_id}, "
-        f"name={kb.knowledge_base_name}, folders={folder_count}"
+        f"name={kb.knowledge_base_name}, "
+        f"kb_count={len(all_kb_ids)}, folders={total_folder_count}"
     )
 
     return ApiResponse.success(
         data=KnowledgeBaseDeleteResponse(
             knowledge_base_id=knowledge_base_id,
-            deleted_folder_count=folder_count,
+            deleted_folder_count=total_folder_count,
+            deleted_kb_count=len(all_kb_ids),
         ),
-        message=f"知识库已删除，清理 {folder_count} 个文件夹",
+        message=f"已删除 {len(all_kb_ids)} 个知识库，清理 {total_folder_count} 个文件夹",
     )

@@ -125,6 +125,46 @@ class KnowledgeBaseRepository(BaseRepository[KnowledgeBase]):
             logger.error(f"检查知识库文件数量失败: {e}")
             return -1
 
+    def get_all_descendants(
+        self,
+        session: Session,
+        user_id: str,
+        knowledge_base_id: str,
+    ) -> List[str]:
+        """BFS 收集所有后代知识库 ID（不含自身）"""
+        result: List[str] = []
+        queue = [knowledge_base_id]
+        while queue:
+            parent_id = queue.pop(0)
+            children = self.get_children(session, user_id, parent_id)
+            for child in children:
+                result.append(child.knowledge_base_id)
+                queue.append(child.knowledge_base_id)
+        return result
+
+    def check_tree_has_files(
+        self,
+        session: Session,
+        user_id: str,
+        kb_ids: List[str],
+    ) -> int:
+        """检查一组知识库下的总文件数（含回收站）"""
+        if not kb_ids:
+            return 0
+        try:
+            return (
+                session.query(WorkspaceFileSystem)
+                .filter(
+                    WorkspaceFileSystem.user_id == user_id,
+                    WorkspaceFileSystem.knowledge_base_id.in_(kb_ids),
+                    WorkspaceFileSystem.deleted.in_([0, 1, 2]),
+                )
+                .count()
+            )
+        except SQLAlchemyError as e:
+            logger.error(f"批量检查知识库文件数量失败: {e}")
+            return -1
+
     def hard_delete(
         self,
         session: Session,

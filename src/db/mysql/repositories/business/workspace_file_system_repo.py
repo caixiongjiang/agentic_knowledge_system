@@ -93,7 +93,8 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
         self,
         session: Session,
         user_id: str,
-        folder_id: Optional[str]
+        folder_id: Optional[str],
+        knowledge_base_id: Optional[str] = None,
     ) -> List[WorkspaceFileSystem]:
         """
         根据文件夹ID查询该文件夹下的所有文件
@@ -102,6 +103,7 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
             session: 数据库会话
             user_id: 用户ID
             folder_id: 文件夹ID（None 表示根目录下的文件）
+            knowledge_base_id: 可选，按知识库ID筛选（folder_id=None 时建议传入）
         
         Returns:
             WorkspaceFileSystem 列表
@@ -116,6 +118,11 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
                 query = query.filter(self.model.folder_id.is_(None))
             else:
                 query = query.filter(self.model.folder_id == folder_id)
+
+            if knowledge_base_id:
+                query = query.filter(
+                    self.model.knowledge_base_id == knowledge_base_id
+                )
             
             results = query.all()
             

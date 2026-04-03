@@ -53,6 +53,7 @@ from api.schemas.knowledge.trash import (
     TrashListResponse,
     TrashRestoreResponse,
 )
+from src.db.mysql.models.business.workspace_file_system import WorkspaceFileSystem
 from src.db.mysql.models.business.workspace_folder import WorkspaceFolder
 from src.db.mysql.repositories.business.workspace_folder_repo import (
     workspace_folder_repo,
@@ -280,10 +281,12 @@ async def restore_file(
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
 ) -> ApiResponse[TrashRestoreResponse]:
-    file_obj = workspace_file_system_repo.get_by_user_and_file(
-        session, user_id, file_id
-    )
-    if not file_obj or file_obj.deleted != 1:
+    file_obj = session.query(WorkspaceFileSystem).filter(
+        WorkspaceFileSystem.user_id == user_id,
+        WorkspaceFileSystem.file_id == file_id,
+        WorkspaceFileSystem.deleted == 1,
+    ).first()
+    if not file_obj:
         raise HTTPException(status_code=404, detail="回收站中未找到该文件（仅支持顶层条目）")
 
     try:
@@ -421,20 +424,18 @@ async def permanent_delete_file(
     session: Session = Depends(get_db_session),
     storage_manager: StorageManager = Depends(get_storage_manager),
 ) -> ApiResponse[TrashEmptyResponse]:
+    file_exists = session.query(WorkspaceFileSystem).filter(
+        WorkspaceFileSystem.user_id == user_id,
+        WorkspaceFileSystem.file_id == file_id,
+    ).first()
+    if not file_exists:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
     try:
         await _cascade_delete_files(
             session, user_id, [file_id], storage_manager
         )
-
-        deleted = workspace_file_system_repo.hard_delete_by_file_id(
-            session, user_id, file_id
-        )
-        if not deleted:
-            raise HTTPException(status_code=404, detail="回收站中未找到该文件")
         session.commit()
-    except HTTPException:
-        session.rollback()
-        raise
     except SQLAlchemyError as e:
         session.rollback()
         logger.error(f"永久删除文件失败: {e}")
@@ -467,9 +468,10 @@ async def empty_trash(
     storage_manager: StorageManager = Depends(get_storage_manager),
 ) -> ApiResponse[TrashEmptyResponse]:
     try:
-        all_deleted_files = workspace_file_system_repo.get_deleted_files(
-            session, user_id
-        )
+        all_deleted_files = session.query(WorkspaceFileSystem).filter(
+            WorkspaceFileSystem.user_id == user_id,
+            WorkspaceFileSystem.deleted.in_([1, 2]),
+        ).all()
         all_file_ids = [f.file_id for f in all_deleted_files]
 
         if all_file_ids:

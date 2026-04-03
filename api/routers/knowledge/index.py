@@ -75,7 +75,11 @@ router = APIRouter(tags=["Knowledge Index"])
 _config = get_config_manager()
 _SUPPORTED_FORMATS: list[str] = _config.get(
     "file_upload.supported_formats",
-    ["pdf", "docx", "pptx", "xlsx", "txt", "md", "json"],
+    [
+        "pdf", "docx", "pptx", "xlsx", "txt", "md", "json",
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp",
+        "doc", "xls", "ppt", "csv",
+    ],
 )
 _MAX_FILE_SIZE_MB: int = _config.get("file_upload.max_file_size", 100)
 _MAX_FILE_SIZE_BYTES: int = _MAX_FILE_SIZE_MB * 1024 * 1024
@@ -86,6 +90,12 @@ _FILE_MAGIC_BYTES: dict[str, list[bytes]] = {
     "pptx": [b"PK\x03\x04"],
     "xlsx": [b"PK\x03\x04"],
     "json": [b"{", b"["],
+    "png": [b"\x89PNG"],
+    "jpg": [b"\xff\xd8\xff"],
+    "jpeg": [b"\xff\xd8\xff"],
+    "gif": [b"GIF87a", b"GIF89a"],
+    "bmp": [b"BM"],
+    "webp": [b"RIFF"],
 }
 
 _FILE_FORMAT_MAP: dict[str, str] = {
@@ -96,6 +106,17 @@ _FILE_FORMAT_MAP: dict[str, str] = {
     "txt": "Plain Text",
     "md": "Markdown",
     "json": "JSON",
+    "png": "PNG Image",
+    "jpg": "JPEG Image",
+    "jpeg": "JPEG Image",
+    "gif": "GIF Image",
+    "webp": "WebP Image",
+    "svg": "SVG Image",
+    "bmp": "BMP Image",
+    "doc": "Microsoft Word (Legacy)",
+    "xls": "Microsoft Excel (Legacy)",
+    "ppt": "Microsoft PowerPoint (Legacy)",
+    "csv": "Comma-Separated Values",
 }
 
 
@@ -166,14 +187,14 @@ def _resolve_folder(
     folder_id: Optional[str],
     user_id: str,
     knowledge_base_id: str,
-) -> tuple[str, str]:
+) -> tuple[Optional[str], str]:
     """
     解析 folder_id 和 folder_path。
 
-    传入 folder_id 时查询对应文件夹；为空时自动获取/创建默认文件夹。
+    传入 folder_id 时查询对应文件夹；为空时文件放在顶层（根目录）。
 
     Returns:
-        (folder_id, full_path) 元组
+        (folder_id, full_path) 元组，folder_id 为 None 表示顶层
     """
     if folder_id:
         from src.db.mysql.models.business.workspace_folder import WorkspaceFolder
@@ -186,12 +207,7 @@ def _resolve_folder(
             return folder.folder_id, folder.full_path
         return folder_id, "/"
 
-    default_folder = workspace_folder_repo.get_or_create_default(
-        session,
-        user_id=user_id,
-        knowledge_base_id=knowledge_base_id,
-    )
-    return default_folder.folder_id, default_folder.full_path
+    return None, "/"
 
 
 def _fallback_progress_from_mysql(
@@ -266,7 +282,7 @@ async def upload_file(
     )
 
     try:
-        storage_path = await storage.upload_raw_file(
+        storage_path, bucket_name, object_path = await storage.upload_raw_file(
             file_bytes=file_bytes,
             user_id=user_id,
             session_id=session_id,
@@ -296,7 +312,8 @@ async def upload_file(
         description=description,
         status=0,
         creator=user_id,
-        file_path=storage_path,
+        bucket_name=bucket_name,
+        file_path=object_path,
         session_id=session_id,
     )
 
@@ -379,7 +396,7 @@ async def upload_files_batch(
 
             file_id = _generate_file_id()
 
-            storage_path = await storage.upload_raw_file(
+            storage_path, bucket_name, object_path = await storage.upload_raw_file(
                 file_bytes=file_bytes,
                 user_id=user_id,
                 session_id=session_id,
@@ -405,7 +422,8 @@ async def upload_files_batch(
                 knowledge_base_name=kb.knowledge_base_name,
                 status=0,
                 creator=user_id,
-                file_path=storage_path,
+                bucket_name=bucket_name,
+                file_path=object_path,
                 session_id=session_id,
             )
 
@@ -531,7 +549,7 @@ async def build_index(
         message = IndexStartMessage(
             user_id=user_id,
             file_id=file_id,
-            storage_path=file_record.file_path,
+            storage_path=file_record.storage_path,
             filename=file_record.file_name,
             knowledge_base_id=request.knowledge_base_id,
             knowledge_base_name=kb.knowledge_base_name,

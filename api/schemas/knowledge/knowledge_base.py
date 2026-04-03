@@ -79,3 +79,6 @@ class KnowledgeBaseDeleteResponse(BaseModel):
     deleted_folder_count: int = Field(
         default=0, description="同时清理的空文件夹数量"
     )
+    deleted_kb_count: int = Field(
+        default=1, description="被删除的知识库数量（含子知识库）"
+    )

@@ -169,7 +169,7 @@ class KnowledgeDeleteService:
             return result
 
         document_id = file_obj.document_id
-        storage_path = file_obj.file_path
+        storage_path = file_obj.storage_path
 
         if document_id:
             other_refs = workspace_file_system_repo.get_by_document_id(session, document_id)

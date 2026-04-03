@@ -187,7 +187,7 @@ class StorageManager:
         file_id: str,
         file_suffix: str,
         folder_path: str = "/",
-    ) -> str:
+    ) -> tuple[str, str, str]:
         """
         上传原始文件
         
@@ -205,7 +205,7 @@ class StorageManager:
             folder_path: 文件夹路径（如 /默认上传/），默认根目录
             
         Returns:
-            str: 完整存储路径
+            tuple[str, str, str]: (完整存储路径, bucket名称, 纯对象路径)
         """
         object_path = self._adapter.build_raw_file_path(
             user_id, session_id, file_id, file_suffix, folder_path
@@ -213,7 +213,8 @@ class StorageManager:
         bucket = self._get_bucket_name()
         
         logger.info(f"上传原始文件: {bucket}/{object_path}")
-        return await self.upload_file(file_bytes, bucket, object_path)
+        storage_path = await self.upload_file(file_bytes, bucket, object_path)
+        return storage_path, bucket, object_path
     
     async def upload_image(
         self,

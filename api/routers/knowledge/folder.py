@@ -218,6 +218,29 @@ async def list_children(
 
 
 @router.get(
+    "/root-files",
+    response_model=ApiResponse[FileListResponse],
+    summary="获取知识库根目录文件",
+    description=(
+        "获取指定知识库根目录下的文件（即 folder_id 为空的文件）。"
+        "这些文件不属于任何文件夹，直接挂在知识库根目录下。"
+    ),
+)
+async def list_root_files(
+    knowledge_base_id: str = Query(..., description="知识库ID"),
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+) -> ApiResponse[FileListResponse]:
+    files = workspace_file_system_repo.get_by_folder_id(
+        session, user_id, folder_id=None, knowledge_base_id=knowledge_base_id
+    )
+    items = [_to_file_info(f) for f in files]
+    return ApiResponse.success(
+        data=FileListResponse(files=items, total=len(items))
+    )
+
+
+@router.get(
     "/{folder_id}",
     response_model=ApiResponse[FolderInfo],
     summary="获取文件夹详情",

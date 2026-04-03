@@ -66,6 +66,7 @@ class FileParserWorker(BaseWorker):
         self,
         *args,
         storage_manager: Optional[StorageManager] = None,
+        mysql_manager=None,
         **kwargs
     ):
         """
@@ -73,14 +74,19 @@ class FileParserWorker(BaseWorker):
         
         Args:
             storage_manager: 对象存储管理器（可选，如果不提供会自动创建）
+            mysql_manager: MySQL 连接管理器（可选，延迟获取）
         """
         super().__init__(*args, **kwargs)
         self._storage_manager = storage_manager
+        self._mysql_manager = mysql_manager
         self._parser_service = None  # 延迟创建
     
     def get_original_topic(self) -> str:
         """返回监听的 Topic"""
         return KafkaTopics.INDEX_START
+
+    def _get_failure_stage(self) -> str:
+        return IndexStage.PARSE_END
     
     async def _get_parser_service(self) -> FileParserService:
         """
@@ -159,9 +165,18 @@ class FileParserWorker(BaseWorker):
             
             # 检查解析是否成功
             if not parse_result.is_success():
+                error_msg = f"文件解析失败: {parse_result.error_message}"
                 logger.error(
                     f"文件解析失败: file_id={message.file_id}, "
                     f"error={parse_result.error_message}"
+                )
+                await self._fail_file_progress(
+                    file_id=message.file_id,
+                    stage=IndexStage.PARSE_END,
+                    error_message=error_msg,
+                )
+                await self._update_mysql_file_status(
+                    message.user_id, message.file_id, status=3, msg=error_msg,
                 )
                 return False
             
@@ -193,6 +208,7 @@ class FileParserWorker(BaseWorker):
             return True
             
         except Exception as e:
+            error_msg = f"文件解析失败: {e}"
             logger.error(
                 f"文件解析失败: file_id={message.file_id}, error={e}",
                 exc_info=True
@@ -200,10 +216,45 @@ class FileParserWorker(BaseWorker):
             await self._fail_file_progress(
                 file_id=message.file_id,
                 stage=IndexStage.PARSE_END,
-                error_message=f"文件解析失败: {e}",
+                error_message=error_msg,
+            )
+            await self._update_mysql_file_status(
+                message.user_id, message.file_id, status=3, msg=error_msg,
             )
             return False
-    
+
+    # ========== MySQL 状态回写 ==========
+
+    def _get_mysql_manager(self):
+        """获取 MySQL 连接管理器（懒加载）"""
+        if self._mysql_manager is None:
+            from src.db.mysql.connection.factory import MySQLManagerFactory
+            self._mysql_manager = MySQLManagerFactory.get_manager()
+        return self._mysql_manager
+
+    async def _update_mysql_file_status(
+        self, user_id: str, file_id: str, status: int, msg: str
+    ) -> None:
+        """回写 workspace_file_system.status（不阻塞主流程）"""
+        try:
+            from src.db.mysql.models.business.workspace_file_system import (
+                WorkspaceFileSystem,
+            )
+            mysql_mgr = self._get_mysql_manager()
+            with mysql_mgr.get_session() as session:
+                session.query(WorkspaceFileSystem).filter(
+                    WorkspaceFileSystem.user_id == user_id,
+                    WorkspaceFileSystem.file_id == file_id,
+                ).update(
+                    {"status": status, "message": msg[:1024]},
+                    synchronize_session="fetch",
+                )
+                session.commit()
+        except Exception as e:
+            logger.warning(
+                f"回写 MySQL 文件状态失败（不阻塞）: file_id={file_id}, error={e}"
+            )
+
     async def _send_mysql_messages(
         self,
         message: IndexStartMessage,

@@ -91,6 +91,9 @@ class TextSplitterWorker(BaseWorker):
     def get_original_topic(self) -> str:
         """返回监听的 Topic"""
         return KafkaTopics.PARSE_END
+
+    def _get_failure_stage(self) -> str:
+        return IndexStage.SPLIT_END
     
     def _get_splitter_service(self) -> TextSplitterService:
         """
@@ -142,11 +145,20 @@ class TextSplitterWorker(BaseWorker):
         
         # 1. 校验解析状态
         if message.status == "failed":
+            error_msg = f"上游解析失败: {message.error_message}"
             logger.warning(
                 f"跳过解析失败的文件: file_id={message.file_id}, "
                 f"error={message.error_message}"
             )
-            return True  # 解析失败的文件不算切分失败
+            await self._fail_file_progress(
+                file_id=message.file_id,
+                stage=IndexStage.PARSE_END,
+                error_message=error_msg,
+            )
+            await self._update_mysql_file_status(
+                message.user_id, message.file_id, status=3, msg=error_msg,
+            )
+            return True
         
         try:
             # 2. 获取 Service 和 MySQL 会话
@@ -164,14 +176,32 @@ class TextSplitterWorker(BaseWorker):
                 )
             
             if not parse_result.is_success():
+                error_msg = f"ParseResult 加载失败: {parse_result.error_message}"
                 logger.error(
                     f"ParseResult 加载失败: file_id={message.file_id}, "
                     f"error={parse_result.error_message}"
                 )
+                await self._fail_file_progress(
+                    file_id=message.file_id,
+                    stage=IndexStage.SPLIT_END,
+                    error_message=error_msg,
+                )
+                await self._update_mysql_file_status(
+                    message.user_id, message.file_id, status=3, msg=error_msg,
+                )
                 return False
             
             if not parse_result.elements:
+                error_msg = "ParseResult 无元素，无法切分"
                 logger.warning(f"ParseResult 无元素: file_id={message.file_id}")
+                await self._fail_file_progress(
+                    file_id=message.file_id,
+                    stage=IndexStage.SPLIT_END,
+                    error_message=error_msg,
+                )
+                await self._update_mysql_file_status(
+                    message.user_id, message.file_id, status=3, msg=error_msg,
+                )
                 return False
             
             # 补充知识库信息（从消息透传到 ParseResult）
@@ -186,9 +216,18 @@ class TextSplitterWorker(BaseWorker):
             )
             
             if not split_result.is_success():
+                error_msg = f"文本切分失败: {split_result.error_message}"
                 logger.error(
                     f"文本切分失败: file_id={message.file_id}, "
                     f"error={split_result.error_message}"
+                )
+                await self._fail_file_progress(
+                    file_id=message.file_id,
+                    stage=IndexStage.SPLIT_END,
+                    error_message=error_msg,
+                )
+                await self._update_mysql_file_status(
+                    message.user_id, message.file_id, status=3, msg=error_msg,
                 )
                 return False
             
@@ -237,19 +276,26 @@ class TextSplitterWorker(BaseWorker):
             # )
             
             # 6. 更新 Redis 进度到 split_end (100%)
+            success_msg = (
+                f"文本切分完成: {split_result.total_chunks} 个文本块, "
+                f"{split_result.total_sections} 个章节"
+            )
             await self._update_file_progress(
                 file_id=message.file_id,
                 stage=IndexStage.SPLIT_END,
-                message=(
-                    f"文本切分完成: {split_result.total_chunks} 个文本块, "
-                    f"{split_result.total_sections} 个章节"
-                ),
+                message=success_msg,
+            )
+
+            # 7. 回写 MySQL status=2（前台阶段全部完成）
+            await self._update_mysql_file_status(
+                message.user_id, message.file_id, status=2, msg=success_msg,
             )
             
             logger.info(f"文本切分处理完成: file_id={message.file_id}")
             return True
             
         except Exception as e:
+            error_msg = f"文本切分失败: {e}"
             logger.error(
                 f"文本切分失败: file_id={message.file_id}, error={e}",
                 exc_info=True
@@ -257,10 +303,38 @@ class TextSplitterWorker(BaseWorker):
             await self._fail_file_progress(
                 file_id=message.file_id,
                 stage=IndexStage.SPLIT_END,
-                error_message=f"文本切分失败: {e}",
+                error_message=error_msg,
+            )
+            await self._update_mysql_file_status(
+                message.user_id, message.file_id, status=3, msg=error_msg,
             )
             return False
     
+    # ========== MySQL 状态回写 ==========
+
+    async def _update_mysql_file_status(
+        self, user_id: str, file_id: str, status: int, msg: str
+    ) -> None:
+        """回写 workspace_file_system.status（不阻塞主流程）"""
+        try:
+            from src.db.mysql.models.business.workspace_file_system import (
+                WorkspaceFileSystem,
+            )
+            mysql_mgr = self._get_mysql_manager()
+            with mysql_mgr.get_session() as session:
+                session.query(WorkspaceFileSystem).filter(
+                    WorkspaceFileSystem.user_id == user_id,
+                    WorkspaceFileSystem.file_id == file_id,
+                ).update(
+                    {"status": status, "message": msg[:1024]},
+                    synchronize_session="fetch",
+                )
+                session.commit()
+        except Exception as e:
+            logger.warning(
+                f"回写 MySQL 文件状态失败（不阻塞）: file_id={file_id}, error={e}"
+            )
+
     # ========== 下游消息发送方法 ==========
     
     # MySQL 表名字符串 → MySQLTable 枚举的映射

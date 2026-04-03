@@ -149,6 +149,15 @@ class BaseWorker(BaseKafkaConsumer, ABC):
         """
         raise NotImplementedError("子类必须实现 get_original_topic 方法")
     
+    def _get_failure_stage(self) -> str:
+        """
+        返回当前 Worker 失败时对应的进度阶段。
+
+        子类应覆盖此方法返回具体的 IndexStage 值，
+        供 _handle_failure 兜底写 Redis 失败态时使用。
+        """
+        return "unknown"
+
     async def _handle_failure(self, message: BaseMessage, error: str) -> None:
         """
         处理失败的消息
@@ -157,6 +166,8 @@ class BaseWorker(BaseKafkaConsumer, ABC):
             message: 失败的消息
             error: 错误信息
         """
+        retried = False
+
         # 尝试重试
         if self._retry_manager:
             success = await self._retry_manager.schedule_retry(
@@ -167,6 +178,7 @@ class BaseWorker(BaseKafkaConsumer, ABC):
             
             if success:
                 self._retry_count += 1
+                retried = True
                 logger.info(
                     f"消息已调度重试: event_id={message.metadata.event_id}, "
                     f"retry_count={message.metadata.retry_count}"
@@ -192,6 +204,16 @@ class BaseWorker(BaseKafkaConsumer, ABC):
                     error=error
                 )
                 self._dlq_count += 1
+
+        # 兜底：若消息不会被重试，确保 Redis 进度标记为失败
+        if not retried:
+            file_id = getattr(message, "file_id", None)
+            if file_id:
+                await self._fail_file_progress(
+                    file_id=file_id,
+                    stage=self._get_failure_stage(),
+                    error_message=error,
+                )
     
     async def _update_file_progress(
         self,

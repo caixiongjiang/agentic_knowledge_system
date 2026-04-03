@@ -160,12 +160,12 @@ async def get_file_preview(
 
     try:
         preview_url = await storage.get_preview_url(
-            file_record.file_path, expires
+            file_record.storage_path, expires
         )
     except Exception as e:
         logger.error(
             f"生成预览URL失败: file_id={file_id}, "
-            f"storage_path={file_record.file_path}, error={e}"
+            f"storage_path={file_record.storage_path}, error={e}"
         )
         raise HTTPException(status_code=500, detail="生成预览URL失败")
 

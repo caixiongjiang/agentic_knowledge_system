@@ -194,3 +194,10 @@ class WorkspaceFileSystem(BaseModel, KnowledgeMixin):
         nullable=True,
         comment="文件描述"
     )
+
+    @property
+    def storage_path(self) -> str:
+        """重建完整存储路径：bucket_name/file_path"""
+        if self.bucket_name and self.file_path:
+            return f"{self.bucket_name}/{self.file_path}"
+        return self.file_path or ""
