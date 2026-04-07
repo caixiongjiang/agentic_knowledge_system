@@ -313,9 +313,9 @@ max_retry_delay = 10.0
 # 模型提供商: cohere, jina, bge, local
 provider = "local"
 # 模型名称或路径
-model_name = "BAAI/bge-reranker-v2-m3"
+model_name = "qwen3-reranker-0.6b"
 # API基础URL（如果是API服务）
-api_base = ""
+api_base = "http://192.168.201.14:18083/v1"
 # 批处理大小
 batch_size = 16
 # Top K 返回数量
