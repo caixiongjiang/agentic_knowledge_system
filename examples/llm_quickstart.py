@@ -4,218 +4,173 @@
 @PROJECT_NAME: agentic_knowledge_system
 @File    : llm_quickstart.py
 @Author  : caixiongjiang
-@Date    : 2026/1/5
-@Function: 
-    LLM Client 快速开始示例
+@Date    : 2026/04/21
+@Function:
+    LiteLLM 客户端快速开始示例（重写后）
+
+    覆盖：
+        1) 同步基础生成
+        2) 异步并发
+        3) 推理模型 + thinking_budget（DeepSeek-Reasoner）
+        4) 多 provider 切换 —— 只改 model 字符串
+        5) OpenAI 原生 tool calling 简化示例
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
+from __future__ import annotations
 
+import asyncio
+import json
 import sys
 from pathlib import Path
 
-# 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-import asyncio
-from src.client.llm import create_llm_client
+from src.client.llm import create_llm_client  # noqa: E402
 
 
-def example_basic():
-    """基础使用示例"""
+def example_basic() -> None:
     print("=" * 60)
-    print("示例1: 基础使用（DeepSeek-V3.2 非思考模式）")
+    print("示例 1: 基础同步生成（DeepSeek-Chat）")
     print("=" * 60)
-    
-    # 创建客户端（需要在环境变量中设置 DEEPSEEK_API_KEY）
-    # deepseek-chat: DeepSeek-V3.2 非思考模式，快速响应
+
     client = create_llm_client(
-        provider="deepseek",
-        model_name="deepseek-chat",
+        model="deepseek/deepseek-chat",
         temperature=0.0,
-        max_tokens=100
+        max_tokens=100,
     )
-    
-    # 发送请求
-    response = client.generate(
-        messages=[
-            {"role": "user", "content": "什么是Python？用一句话回答。"}
-        ]
+    resp = client.generate(
+        messages=[{"role": "user", "content": "什么是 Python？用一句话回答。"}],
     )
-    
-    # 输出结果
-    print(f"回答: {response.content}")
-    print(f"Token使用: {response.usage.total_tokens}")
-    print(f"模型: {response.model}")
+    print(f"回答: {resp.content}")
+    print(f"Token: {resp.usage.total_tokens}, model={resp.model}")
     print()
 
 
-def example_with_context_manager():
-    """上下文管理器示例（推荐）"""
+async def example_async_concurrent() -> None:
     print("=" * 60)
-    print("示例2: 上下文管理器（批量处理）")
+    print("示例 2: 异步并发")
     print("=" * 60)
-    
-    # 使用上下文管理器，复用连接池
-    with create_llm_client("deepseek", "deepseek-chat") as client:
-        questions = [
-            "什么是Python？",
-            "什么是机器学习？",
-            "什么是深度学习？"
-        ]
-        
-        for i, question in enumerate(questions, 1):
-            response = client.generate(
-                messages=[{"role": "user", "content": question}],
-                max_tokens=50
-            )
-            print(f"{i}. {question}")
-            print(f"   回答: {response.content[:100]}...")
-            print(f"   Token: {response.usage.total_tokens}")
-            print()
 
-
-async def example_async_concurrent():
-    """异步并发示例"""
-    print("=" * 60)
-    print("示例3: 异步并发处理")
-    print("=" * 60)
-    
     questions = [
-        "什么是Python？",
+        "什么是 Python？",
         "什么是机器学习？",
         "什么是深度学习？",
-        "什么是自然语言处理？",
-        "什么是计算机视觉？"
+        "什么是 RAG？",
     ]
-    
-    # 使用异步上下文管理器
-    async with create_llm_client("deepseek", "deepseek-chat") as client:
-        # 创建并发任务
-        tasks = [
-            client.agenerate(
-                messages=[{"role": "user", "content": q}],
-                max_tokens=50
-            )
-            for q in questions
-        ]
-        
-        # 并发执行
-        responses = await asyncio.gather(*tasks)
-        
-        # 输出结果
-        for i, (q, resp) in enumerate(zip(questions, responses), 1):
-            print(f"{i}. {q}")
-            print(f"   回答: {resp.content[:100]}...")
-            print(f"   Token: {resp.usage.total_tokens}")
-            print()
-
-
-def example_deepseek_thinking():
-    """DeepSeek 推理模式示例"""
-    print("=" * 60)
-    print("示例4: DeepSeek-V3.2 思考模式")
-    print("=" * 60)
-    
-    # 方式1: 使用 deepseek-reasoner（推荐）
-    # deepseek-reasoner: DeepSeek-V3.2 思考模式，自动启用推理
-    client = create_llm_client(
-        provider="deepseek",
-        model_name="deepseek-reasoner",
-        temperature=0.0,
-        max_tokens=500
-    )
-    
-    # 方式2: 使用 deepseek-chat + enable_thinking（等价）
-    # client = create_llm_client(
-    #     provider="deepseek",
-    #     model_name="deepseek-chat",
-    #     temperature=0.0,
-    #     max_tokens=500,
-    #     enable_thinking=True
-    # )
-    
-    response = client.generate(
-        messages=[
-            {"role": "user", "content": "分析一下快速排序算法的时间复杂度"}
-        ]
-    )
-    
-    print(f"回答: {response.content}")
-    
-    if response.thinking:
-        print(f"\n推理过程:")
-        print(response.thinking.reasoning[:200] + "...")
-        print(f"推理Token: {response.thinking.tokens_used}")
-    
-    print(f"\n总Token使用: {response.usage.total_tokens}")
+    client = create_llm_client(model="deepseek/deepseek-chat", max_tokens=80)
+    tasks = [
+        client.agenerate(messages=[{"role": "user", "content": q}])
+        for q in questions
+    ]
+    resps = await asyncio.gather(*tasks)
+    for q, r in zip(questions, resps):
+        print(f"- {q} → {r.content[:80]}")
     print()
 
 
-def example_different_providers():
-    """不同provider示例"""
+def example_thinking() -> None:
     print("=" * 60)
-    print("示例5: 使用不同的Provider")
+    print("示例 3: 推理模型 + thinking_budget")
     print("=" * 60)
-    
-    providers = [
-        ("deepseek", "deepseek-chat"),
-        # ("openai", "gpt-4o"),  # 需要 OPENAI_API_KEY
-        # ("gemini", "gemini-1.5-pro"),  # 需要 GEMINI_API_KEY
-        # ("anthropic", "claude-3-5-sonnet-20241022"),  # 需要 ANTHROPIC_API_KEY
+
+    client = create_llm_client(
+        model="deepseek/deepseek-reasoner",
+        temperature=0.0,
+        max_tokens=400,
+        thinking_budget=2048,
+    )
+    resp = client.generate(
+        messages=[{"role": "user", "content": "分析快速排序的时间复杂度"}],
+    )
+    print(f"回答: {resp.content[:120]}...")
+    if resp.thinking:
+        print(f"\n推理（前 200 字）: {resp.thinking.reasoning[:200]}...")
+        print(f"推理 Token: {resp.thinking.tokens_used}")
+    print()
+
+
+def example_multi_provider() -> None:
+    print("=" * 60)
+    print("示例 4: 多 provider 切换（只改 model 字符串）")
+    print("=" * 60)
+
+    candidates = [
+        "deepseek/deepseek-chat",
+        # "openai/gpt-4o-mini",
+        # "gemini/gemini-1.5-flash",
+        # "anthropic/claude-3-5-sonnet-20241022",
     ]
-    
-    question = "什么是人工智能？用一句话回答。"
-    
-    for provider, model in providers:
+    question = "什么是人工智能？一句话回答。"
+    for model in candidates:
         try:
-            client = create_llm_client(
-                provider=provider,
-                model_name=model,
-                max_tokens=50
-            )
-            
-            response = client.generate(
-                messages=[{"role": "user", "content": question}]
-            )
-            
-            print(f"{provider.upper()} ({model}):")
-            print(f"  回答: {response.content}")
-            print(f"  Token: {response.usage.total_tokens}")
-            print()
-            
+            client = create_llm_client(model=model, max_tokens=60)
+            resp = client.generate(messages=[{"role": "user", "content": question}])
+            print(f"  {model} → {resp.content}")
         except Exception as e:
-            print(f"{provider.upper()}: 跳过（{e}）")
-            print()
+            print(f"  {model} 失败: {e}")
+    print()
+
+
+def example_tool_calling() -> None:
+    print("=" * 60)
+    print("示例 5: OpenAI 原生 tool calling")
+    print("=" * 60)
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "查询城市当前天气",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }]
+
+    client = create_llm_client(model="deepseek/deepseek-chat", max_tokens=200)
+    messages = [
+        {"role": "system", "content": "天气问题必须调用 get_weather。"},
+        {"role": "user", "content": "北京现在天气怎么样？"},
+    ]
+    resp = client.generate(messages=messages, tools=tools, tool_choice="auto")
+
+    if not resp.tool_calls:
+        print(f"  模型直接回答：{resp.content}")
+        return
+
+    tc = resp.tool_calls[0]
+    print(f"  → 工具调用 {tc.name}({tc.arguments})")
+
+    messages.append({
+        "role": "assistant",
+        "content": resp.content or "",
+        "tool_calls": [{
+            "id": tc.id, "type": "function",
+            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+        }],
+    })
+    messages.append({
+        "role": "tool",
+        "tool_call_id": tc.id,
+        "content": '{"city":"北京","temp":"18°C","desc":"晴"}',
+    })
+    final = client.generate(messages=messages)
+    print(f"  最终回答: {final.content}")
 
 
 if __name__ == "__main__":
-    # 同步示例
-    try:
-        example_basic()
-    except Exception as e:
-        print(f"示例1失败: {e}\n")
-    
-    try:
-        example_with_context_manager()
-    except Exception as e:
-        print(f"示例2失败: {e}\n")
-    
-    try:
-        example_deepseek_thinking()
-    except Exception as e:
-        print(f"示例4失败: {e}\n")
-    
-    try:
-        example_different_providers()
-    except Exception as e:
-        print(f"示例5失败: {e}\n")
-    
-    # 异步示例
-    print("运行异步示例...")
+    for fn in (example_basic, example_thinking, example_multi_provider, example_tool_calling):
+        try:
+            fn()
+        except Exception as e:
+            print(f"{fn.__name__} 失败: {e}\n")
+
     try:
         asyncio.run(example_async_concurrent())
     except Exception as e:
-        print(f"示例3失败: {e}\n")
-    
+        print(f"example_async_concurrent 失败: {e}\n")
+
     print("所有示例运行完成！")

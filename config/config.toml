@@ -73,8 +73,8 @@ pool_size = 10
 max_overflow = 20
 pool_timeout = 30
 pool_recycle = 3600
-# 是否显示SQL语句
-echo = true
+# 是否显示SQL语句（true 时每条 SQL 会以 INFO 打到日志）
+echo = false
 
 # ========== SQLite配置 ==========
 # SQLite数据库文件路径
@@ -261,33 +261,94 @@ dedup_cache_ttl = 86400  # 24小时
 # 使用Redis作为去重缓存
 use_redis = true
 
-# ==================== 模型配置 ====================
+# ==================== 模型网关（LiteLLM Proxy） ====================
+# 同时被 LLM / Embedding / Reranker 三类模型复用：
+# - api_base 默认值在此声明（建议留空，由 .env: LITELLM_PROXY_URL 提供，避免把 endpoint 写进版本库）
+# - api_key 永远只来自 .env: LITELLM_PROXY_KEY
+# - default_timeout / default_max_retries 是 LLM/embedding/reranker 客户端的兜底值
 
-# Embedding 模型配置（本地部署）
+[proxy]
+api_base = ""
+default_timeout = 60
+default_max_retries = 2
+
+# ==================== LLM 配置（LiteLLM 统一接入） ====================
+# - 模型字符串使用 LiteLLM 原生格式：'<provider>/<model>'
+# - 各 preset 可在 components.json 里以 "llm_preset" 引用；
+#   也可在 components.json 内联 "llm" 字段为单个组件指定独立模型
+# - api_base / api_key 默认走 [proxy]，可在单个 preset 中覆盖
+
+[llm]
+# 默认 thinking 预算（仅在 preset / components 中显式启用 thinking_budget 时才生效）
+default_thinking_budget = 0
+
+[llm.presets.fast]
+model = "deepseek/deepseek-chat"
+temperature = 0.0
+max_tokens = 2048
+timeout = 60
+
+[llm.presets.quality]
+model = "openai/gpt-4o"
+temperature = 0.3
+max_tokens = 4096
+timeout = 60
+
+[llm.presets.reasoning]
+model = "deepseek/deepseek-reasoner"
+temperature = 0.0
+max_tokens = 4096
+timeout = 120
+thinking_budget = 4096
+
+[llm.presets.long_context]
+model = "gemini/gemini-1.5-pro"
+temperature = 0.5
+max_tokens = 8192
+timeout = 90
+
+[llm.presets.multimodal]
+model = "gemini/gemini-2.0-flash"
+temperature = 0.7
+max_tokens = 4096
+timeout = 90
+
+[llm.presets.test]
+model = "deepseek/deepseek-chat"
+temperature = 0.3
+max_tokens = 2048
+timeout = 60
+
+# ==================== Embedding 配置（LiteLLM 统一接入） ====================
+# - 业务约束（dimension/batch_size/max_concurrent）在 [embedding] 节
+# - 模型路由（model 字符串）在 [embedding.presets.*] 节，可被 components.json 引用
+# - api_base / api_key 默认走 [proxy]，可在 preset 中覆盖
+
 [embedding]
-# 本地Embedding服务API地址（不要包含 /v1，代码会自动添加 /v1/embeddings）
-# 例如: "http://192.168.201.14:18084/v1" -> 最终请求 "http://192.168.201.14:18084/v1/embeddings"
-api_base = "http://192.168.201.14:18084/v1"
-# 模型名称或路径
-model_name = "qwen3-embedding-0.6b"
-# 向量维度（必须与Milvus配置的vector_dim一致）
+# 默认 preset 名称（components 未声明 embedding/embedding_preset 时使用）
+default_preset = "local_dense"
+# 稠密向量维度（业务约束，必须与 [milvus].vector_dim 一致；模型返回不一致时报错）
 dimension = 1024
-# 批处理大小
+# 单批次发往 Embedding 服务的文本数量
 batch_size = 64
-# 请求超时时间（秒，必填）
+# aembed_concurrent 的最大并发请求数
+max_concurrent = 5
+# 请求超时（秒），preset 未指定时使用此值
 timeout = 60.0
-# 是否启用重试机制
-enable_retry = true
-# 最大重试次数（仅在enable_retry=true时生效）
-max_retries = 3
-# 重试延迟时间（秒）
-retry_delay = 0.5
-# 重试策略: fixed（固定延迟）, exponential（指数退避）, linear（线性递增）
-retry_strategy = "exponential"
-# 最大重试延迟上限（秒）
-max_retry_delay = 10.0
 
-# 稀疏向量 Embedding 模型配置（BGE-M3，本地部署）
+[embedding.presets.local_dense]
+# 通过 LiteLLM Proxy 调用本地 qwen3-embedding-0.6b（OpenAI 兼容 /embeddings）
+model = "openai/qwen3-embedding-0.6b"
+# 可选：dimension / batch_size / timeout / api_base / api_key / extra_params
+
+# 示例：未来想用 OpenAI text-embedding-3-large
+# [embedding.presets.openai_large]
+# model = "openai/text-embedding-3-large"
+# dimension = 3072
+
+# ==================== Sparse Embedding 配置（BGE-M3，独立实现） ====================
+# 注：LiteLLM 暂不支持 BGE-M3 sparse 输出，保留独立 httpx 实现。
+
 [sparse_embedding]
 # BGE-M3 稀疏向量服务 API 地址
 api_base = "http://192.168.201.14:18085/v1"
@@ -308,22 +369,24 @@ retry_strategy = "exponential"
 # 最大重试延迟上限（秒）
 max_retry_delay = 10.0
 
-# Reranker 模型配置
+# ==================== Reranker 配置（LiteLLM 统一接入） ====================
+# - LiteLLM 走 cohere /rerank 协议；vLLM 部署的 Qwen3-reranker 完全兼容该格式
+# - 业务约束（batch_size/top_k）在 [reranker] 节，模型路由在 [reranker.presets.*]
+
 [reranker]
-# 模型提供商: cohere, jina, bge, local
-provider = "local"
-# 模型名称或路径
-model_name = "qwen3-reranker-0.6b"
-# API基础URL（如果是API服务）
-api_base = "http://192.168.201.14:18083/v1"
-# 批处理大小
+# 默认 preset 名称
+default_preset = "local_rerank"
+# 单批次发往 Reranker 的文档数量
 batch_size = 16
-# Top K 返回数量
+# 默认返回 Top-K 数量
 top_k = 10
-# 超时时间（秒）
-timeout = 30
-# 最大重试次数
-max_retries = 3
+# 请求超时（秒）
+timeout = 30.0
+
+[reranker.presets.local_rerank]
+# 通过 LiteLLM Proxy 调用本地 qwen3-reranker-0.6b（cohere /rerank 格式）
+model = "cohere/qwen3-reranker-0.6b"
+# 可选：top_k / batch_size / timeout / api_base / api_key / extra_params
 
 # ==================== 第三方服务配置 ====================
 

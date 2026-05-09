@@ -59,7 +59,7 @@ def test_rerank_result_model():
 
 
 def test_config_loading():
-    """测试从 config.toml 加载配置"""
+    """测试从 config.toml 加载配置（LiteLLM 版）"""
     print("=" * 80)
     print("测试2: 从 config.toml 加载真实配置")
     print("=" * 80)
@@ -68,27 +68,35 @@ def test_config_loading():
     config = client.get_config()
     print(f"  配置: {config}")
 
-    assert config["provider"] == "local"
-    assert "reranker" in config["model_name"].lower() or "qwen" in config["model_name"].lower()
-    assert config["api_base"] != ""
+    # LiteLLM 版 get_config() 返回字段：model / api_base / batch_size / top_k / timeout
+    assert "model" in config and isinstance(config["model"], str) and config["model"]
+    assert "/" in config["model"], f"model 字符串应为 'provider/model' 形式: {config['model']}"
+    assert "reranker" in config["model"].lower() or "qwen" in config["model"].lower()
+    # api_base 允许为 None（由 LiteLLM 走 provider 默认 endpoint），但走 Proxy 时会有值
+    assert config["api_base"] is None or config["api_base"] != ""
     assert config["timeout"] > 0
-    print(f"  provider={config['provider']}, model={config['model_name']}, api_base={config['api_base']} ✓")
+    assert config["batch_size"] > 0
+    assert config["top_k"] > 0
+    print(
+        f"  model={config['model']}, api_base={config['api_base']}, "
+        f"batch_size={config['batch_size']}, top_k={config['top_k']} ✓"
+    )
 
     print()
 
 
 def test_config_validation_missing_fields():
-    """测试缺少必需字段时的校验"""
+    """测试缺少必需字段时的校验（LiteLLM 版只校验 model 字段）"""
     print("=" * 80)
     print("测试3: 配置缺少必需字段时抛异常")
     print("=" * 80)
 
-    for field in ["provider", "model_name"]:
-        try:
-            create_reranker_client(custom_config={field: ""})
-            print(f"  ✗ 缺少 {field} 应该抛异常")
-        except ValueError as e:
-            print(f"  ✓ 缺少 {field}: {e}")
+    # LiteLLM 时代只对 'model' 强校验（api_base/api_key 可由 [proxy] + .env 兜底）
+    try:
+        create_reranker_client(custom_config={"model": ""})
+        print(f"  ✗ 缺少 model 应该抛异常")
+    except ValueError as e:
+        print(f"  ✓ 缺少 model: {e}")
 
     print()
 
@@ -363,61 +371,49 @@ async def test_async_rerank_batch():
 
 
 def test_sync_context_manager():
-    """测试同步上下文管理器"""
+    """测试同步上下文管理器（LiteLLM 版为 no-op，连接池由 LiteLLM 维护）"""
     print("=" * 80)
-    print("测试13: 同步上下文管理器 — 连接复用")
+    print("测试13: 同步上下文管理器 — 接口保留（no-op）")
     print("=" * 80)
 
     client = create_reranker_client()
     docs = ["苹果是水果", "香蕉是水果"]
 
-    assert client._context_mode is False
-    assert client._sync_client is None
-    print(f"  进入前: context_mode=False, sync_client=None ✓")
-
-    with client:
-        assert client._context_mode is True
-        assert client._sync_client is not None
-        print(f"  进入后: context_mode=True, sync_client 已创建 ✓")
-
-        # 连续两次调用，复用同一连接
+    # 上下文管理器接口仍然可用（向后兼容），只是不再持有 httpx 客户端
+    with client as ctx_client:
+        assert ctx_client is client, "__enter__ 应返回 self"
         r1 = client.rerank("水果", docs, top_k=2)
-        client_ref = client._sync_client
         r2 = client.rerank("食物", docs, top_k=2)
-        assert client._sync_client is client_ref
-        print(f"  两次调用复用同一连接 ✓")
-        print(f"  调用1: {len(r1)} 结果, 调用2: {len(r2)} 结果")
+        assert len(r1) > 0 and len(r2) > 0
+        print(f"  with-block 内连续调用通过: r1={len(r1)} 条, r2={len(r2)} 条 ✓")
 
-    assert client._context_mode is False
-    assert client._sync_client is None
-    print(f"  退出后: context_mode=False, sync_client=None (已关闭) ✓")
+    # close() 也是 no-op，不应抛异常
+    client.close()
+    client.close()
+    print(f"  退出 with + 重复 close() 不抛异常 ✓")
 
     print()
 
 
 async def test_async_context_manager():
-    """测试异步上下文管理器"""
+    """测试异步上下文管理器（LiteLLM 版为 no-op）"""
     print("=" * 80)
-    print("测试14: 异步上下文管理器 — 连接复用")
+    print("测试14: 异步上下文管理器 — 接口保留（no-op）")
     print("=" * 80)
 
     client = create_reranker_client()
     docs = ["Python是语言", "Java是语言"]
 
-    async with client:
-        assert client._context_mode is True
-        assert client._async_client is not None
-        print(f"  进入后: context_mode=True, async_client 已创建 ✓")
-
+    async with client as ctx_client:
+        assert ctx_client is client, "__aenter__ 应返回 self"
         r1 = await client.arerank("编程语言", docs, top_k=2)
-        client_ref = client._async_client
         r2 = await client.arerank("技术", docs, top_k=2)
-        assert client._async_client is client_ref
-        print(f"  两次调用复用同一连接 ✓")
+        assert len(r1) > 0 and len(r2) > 0
+        print(f"  async-with-block 内连续调用通过: r1={len(r1)} 条, r2={len(r2)} 条 ✓")
 
-    assert client._context_mode is False
-    assert client._async_client is None
-    print(f"  退出后: 连接已关闭 ✓")
+    await client.aclose()
+    await client.aclose()
+    print(f"  退出 async-with + 重复 aclose() 不抛异常 ✓")
 
     print()
 
@@ -553,46 +549,45 @@ def test_latency():
 
 
 def test_close():
-    """测试手动 close"""
+    """测试手动 close（LiteLLM 版为 no-op，调用后仍可继续使用）"""
     print("=" * 80)
     print("测试21: 手动 close()")
     print("=" * 80)
 
     client = create_reranker_client()
+    docs = ["唯一文档"]
 
-    # 进入上下文创建连接，手动关闭
-    client.__enter__()
-    assert client._sync_client is not None
     client.close()
-    assert client._sync_client is None
-    print(f"  close() 后 sync_client=None ✓")
-
-    # 重复 close 不报错
+    print(f"  首次 close() 不抛异常 ✓")
     client.close()
-    print(f"  重复 close() 不报错 ✓")
+    print(f"  重复 close() 不抛异常 ✓")
 
-    client._context_mode = False
+    # close 后调用 rerank 仍应可用（无状态）
+    results = client.rerank("查询", docs, top_k=1)
+    assert len(results) == 1
+    print(f"  close 后仍可继续 rerank: 返回 {len(results)} 条 ✓")
+
     print()
 
 
 async def test_aclose():
-    """测试手动 aclose"""
+    """测试手动 aclose（LiteLLM 版为 no-op）"""
     print("=" * 80)
     print("测试22: 手动 aclose()")
     print("=" * 80)
 
     client = create_reranker_client()
-
-    await client.__aenter__()
-    assert client._async_client is not None
-    await client.aclose()
-    assert client._async_client is None
-    print(f"  aclose() 后 async_client=None ✓")
+    docs = ["唯一文档"]
 
     await client.aclose()
-    print(f"  重复 aclose() 不报错 ✓")
+    print(f"  首次 aclose() 不抛异常 ✓")
+    await client.aclose()
+    print(f"  重复 aclose() 不抛异常 ✓")
 
-    client._context_mode = False
+    results = await client.arerank("查询", docs, top_k=1)
+    assert len(results) == 1
+    print(f"  aclose 后仍可继续 arerank: 返回 {len(results)} 条 ✓")
+
     print()
 
 
