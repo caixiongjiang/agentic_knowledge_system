@@ -77,6 +77,10 @@ class SemanticQuery(BaseModel):
     filters: MetadataFilter = Field(default_factory=MetadataFilter)
     return_content: bool = False
     consistency_level: Optional[ConsistencyLevel] = None
+    score_threshold: Optional[float] = Field(
+        default=None,
+        description="召回层分数阈值 (COSINE: 0~1), 低于此值的结果在召回阶段即被过滤; None 表示不过滤",
+    )
 
     @model_validator(mode="after")
     def _check_query_input(self) -> "SemanticQuery":
@@ -96,6 +100,7 @@ class LexicalQuery(BaseModel):
         top_k: 返回结果数量上限
         target_granularity: 目标检索粒度
         filters: 元数据过滤条件
+        score_threshold: 召回层分数阈值 (IP score), 低于此值的结果被过滤
     """
     top_k: int = 10
     query_text: Optional[str] = None
@@ -104,6 +109,10 @@ class LexicalQuery(BaseModel):
     bool_expression: Optional[str] = None
     target_granularity: GranularityLevel = GranularityLevel.CHUNK
     filters: MetadataFilter = Field(default_factory=MetadataFilter)
+    score_threshold: Optional[float] = Field(
+        default=None,
+        description="召回层分数阈值 (IP score), 低于此值的结果在召回阶段即被过滤; None 表示不过滤",
+    )
 
 
 class NavigationQuery(BaseModel):
