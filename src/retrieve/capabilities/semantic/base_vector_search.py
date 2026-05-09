@@ -14,6 +14,8 @@
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional
 
+from loguru import logger
+
 from src.client.embedding import EmbeddingClient
 from src.db.milvus.repositories.base_repository import BaseRepository as MilvusBaseRepository
 from src.retrieve.capabilities.base import BaseCapability
@@ -87,6 +89,16 @@ class BaseVectorSearch(BaseCapability):
 
         hits = raw_results[0] if raw_results else []
         items = self._build_result_items(hits)
+
+        if query.score_threshold is not None and items:
+            before_count = len(items)
+            items = [it for it in items if it.score >= query.score_threshold]
+            filtered_count = before_count - len(items)
+            if filtered_count:
+                logger.debug(
+                    f"语义召回阈值过滤: {filtered_count}/{before_count} 条 "
+                    f"score < {query.score_threshold} 被过滤"
+                )
 
         return RetrieveResult(
             items=items,

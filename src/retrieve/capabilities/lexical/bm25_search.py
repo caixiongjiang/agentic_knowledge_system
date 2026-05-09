@@ -71,6 +71,16 @@ class BM25Search(BaseCapability):
         hits = raw_results[0] if raw_results else []
         items = self._build_result_items(hits)
 
+        if query.score_threshold is not None and items:
+            before_count = len(items)
+            items = [it for it in items if it.score >= query.score_threshold]
+            filtered_count = before_count - len(items)
+            if filtered_count:
+                logger.debug(
+                    f"BM25 召回阈值过滤: {filtered_count}/{before_count} 条 "
+                    f"score < {query.score_threshold} 被过滤"
+                )
+
         return RetrieveResult(
             items=items,
             total_count=len(items),
@@ -99,14 +109,14 @@ class BM25Search(BaseCapability):
     def describe(self) -> CapabilityDescriptor:
         return CapabilityDescriptor(
             name="bm25_search",
-            display_name="稀疏向量全文检索",
+            display_name="稀疏向量全文检索（路由名 bm25_sparse）",
             description=(
-                "基于 BGE-M3 learned sparse representation 的全文检索。"
-                "将查询文本编码为稀疏向量，在 Milvus chunk_store 中执行 ANN 检索。"
-                "适用于包含专有名词、代码、公式等需要精确关键词匹配的查询。"
+                "路由标识 **bm25_sparse**：**BGE-M3 learned sparse representation** + Milvus sparse_vector 相似度检索；"
+                "**不是**传统 BM25 倒排统计。查询为自然语言（整句或你认为更利于该路的改写均可），由稀疏编码器内部处理，无需刻意「空格拆词」。"
+                "可与稠密向量路组合；若路由计划里为该路提供了 ``params.query_text``，则使用该改写，否则用用户原问。"
             ),
             input_schema={
-                "query_text": "str - 自然语言查询文本",
+                "query_text": "str - 默认=用户原问；可选由 route_plan.params.query_text 按路覆盖",
                 "top_k": "int - 返回数量上限，默认 10",
                 "filters": "MetadataFilter - 元数据过滤条件（可选）",
             },

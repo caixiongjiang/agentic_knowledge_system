@@ -27,6 +27,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from src.db.mongodb.models.chunk_data import ChunkData
 from src.retrieve.capabilities.base import BaseCapability, CapabilityDescriptor
+from src.retrieve.capabilities.lexical._filter_helper import (
+    filter_has_chunk_scope,
+    resolve_chunk_ids_from_filters,
+)
 from src.retrieve.types.query import LexicalQuery
 from src.retrieve.types.result import ChunkItem, RetrieveResult
 
@@ -273,6 +277,17 @@ class BooleanSearch(BaseCapability):
         ast = self._parser.parse(query.bool_expression)
         mongo_query = ast.to_mongo_query()
         mongo_query["deleted"] = 0
+
+        # 透传 MetadataFilter：先在 MySQL 解析 chunk_id 集合，再注入 _id $in 条件
+        if filter_has_chunk_scope(query.filters):
+            allowed_ids = resolve_chunk_ids_from_filters(query.filters)
+            if allowed_ids is None:
+                # MySQL 不可用 → 保守起见仍然执行不带 ID 限制的查询
+                pass
+            elif not allowed_ids:
+                return RetrieveResult(items=[], total_count=0)
+            else:
+                mongo_query["_id"] = {"$in": allowed_ids}
 
         results = await ChunkData.find(
             mongo_query,
