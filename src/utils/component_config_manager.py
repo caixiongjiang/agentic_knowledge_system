@@ -30,6 +30,9 @@ class ComponentConfigManager:
     - KGExtractor（知识图谱提取）
     - ImageUnderstand（图片理解）
     - TextAnalyzer（文本分析器）
+    - RoutePlanner / ResultValidator（检索管线 LLM₁ / LLM₂；配置在 config/components.json，
+      支持 llm 内联或 llm_preset。LLM₂ 现已改为 LiteLLM 原生 tool calling，
+      与其他组件共用同一套 LiteLLM 模型字符串与 api_base / api_key 字段）
     - 各种 Writers（MySQL、MongoDB、Neo4j、Embedding+Milvus）
     """
     
@@ -170,8 +173,205 @@ class ComponentConfigManager:
         """获取 EmbeddingMilvusWriter 组件配置"""
         return self.get_component_config("embedding_milvus_writer")
     
-    # ========== 工具方法 ==========
+    def get_route_planner_config(self) -> Dict[str, Any]:
+        """获取 RoutePlanner 组件配置"""
+        return self.get_component_config("route_planner")
     
+    def get_result_validator_config(self) -> Dict[str, Any]:
+        """获取 ResultValidator 组件配置"""
+        return self.get_component_config("result_validator")
+
+    # ========== LLM 客户端创建 ==========
+
+    # ``llm`` 内联字段允许出现的键（其它键会被忽略并 warning，避免 TypeError）
+    _ALLOWED_LLM_KEYS = frozenset({
+        "model",
+        "api_base",
+        "api_key",
+        "temperature",
+        "max_tokens",
+        "timeout",
+        "max_retries",
+        "thinking_budget",
+        "extra_params",
+    })
+
+    def get_llm_client_for_component(self, component_name: str, **kwargs):
+        """
+        根据组件配置创建 LLM 客户端（LiteLLM）
+
+        组件配置优先级：``llm`` 内联 > ``llm_preset`` 引用。
+
+        ``llm`` 内联字段示例（仅 ``model`` 必填）::
+
+            {
+              "model": "deepseek/deepseek-chat",   # 必填，LiteLLM 'provider/model'
+              "api_base": "...",                   # 选填，覆盖 [proxy] / .env
+              "api_key": "...",                    # 选填，覆盖 [proxy] / .env
+              "temperature": 0.3,
+              "max_tokens": 2048,
+              "timeout": 60,
+              "max_retries": 2,
+              "thinking_budget": 2048,
+              "extra_params": { ... }              # 透传 litellm.acompletion
+            }
+
+        ``llm_preset`` 引用示例::
+
+            { "llm_preset": "fast" }   # → config/config.toml [llm.presets.fast]
+
+        全局唯一字段（模型网关的 ``api_base`` / ``api_key`` / ``default_timeout``
+        / ``default_max_retries``）统一来自 ``ConfigManager.get_proxy_full_config``，
+        组件无需重复声明，需要差异化时再在 ``llm`` / preset 中覆盖即可。
+
+        Args:
+            component_name: 组件名称
+            **kwargs: 运行时覆盖参数（透传 ``create_llm_client``）
+
+        Returns:
+            ``LLMClient`` 实例
+
+        Raises:
+            ValueError: 组件未配置 ``llm`` / ``llm_preset``，或 ``llm`` 字段缺少 ``model``
+        """
+        from src.client.llm import create_llm_client, create_llm_client_from_preset
+
+        config = self.get_component_config(component_name)
+
+        # ── 1) 内联 llm（LiteLLM 风格） ──
+        llm_config = config.get("llm")
+        if isinstance(llm_config, dict):
+            if "model" not in llm_config:
+                raise ValueError(
+                    f"组件 '{component_name}' 的 llm 内联配置缺少必填字段 'model'"
+                )
+            llm_params: Dict[str, Any] = {
+                k: v for k, v in llm_config.items() if k in self._ALLOWED_LLM_KEYS
+            }
+            unknown = set(llm_config) - self._ALLOWED_LLM_KEYS
+            if unknown:
+                logger.warning(
+                    f"组件 '{component_name}' 的 llm 配置包含未识别字段 {sorted(unknown)}，已忽略"
+                )
+            llm_params.update(kwargs)
+            return create_llm_client(**llm_params)
+
+        # ── 2) preset 引用 ──
+        preset_name = config.get("llm_preset")
+        if preset_name:
+            client = create_llm_client_from_preset(preset_name)
+            if kwargs:
+                for k, v in kwargs.items():
+                    if hasattr(client.config, k):
+                        setattr(client.config, k, v)
+            return client
+
+        raise ValueError(
+            f"组件 '{component_name}' 未配置 llm 或 llm_preset，"
+            f"请在 components.json 中添加对应配置"
+        )
+    
+    # ========== Embedding / Reranker 客户端创建 ==========
+
+    _ALLOWED_EMBEDDING_KEYS = frozenset({
+        "model",
+        "api_base",
+        "api_key",
+        "dimension",
+        "batch_size",
+        "max_concurrent",
+        "timeout",
+        "extra_params",
+    })
+
+    _ALLOWED_RERANKER_KEYS = frozenset({
+        "model",
+        "api_base",
+        "api_key",
+        "batch_size",
+        "top_k",
+        "timeout",
+        "extra_params",
+    })
+
+    def get_embedding_client_for_component(self, component_name: str, **kwargs):
+        """根据组件配置创建 Embedding 客户端（LiteLLM）
+
+        优先级：组件 ``embedding`` 内联 > 组件 ``embedding_preset`` 引用 >
+        ``[embedding].default_preset``。
+
+        组件可在 ``components.json`` 内声明：
+
+        - ``"embedding_preset": "local_dense"``
+        - ``"embedding": {"model": "openai/...", "dimension": 1024, ...}``
+
+        Args:
+            component_name: 组件名称
+            **kwargs: 透传给 ``create_embedding_client.custom_config``
+
+        Returns:
+            ``EmbeddingClient`` 实例
+        """
+        from src.client.embedding import create_embedding_client
+
+        config = self.get_component_config(component_name)
+
+        custom: Dict[str, Any] = {}
+        preset_name: Optional[str] = None
+
+        emb = config.get("embedding")
+        if isinstance(emb, dict):
+            unknown = set(emb) - self._ALLOWED_EMBEDDING_KEYS
+            if unknown:
+                logger.warning(
+                    f"组件 '{component_name}' 的 embedding 配置含未识别字段 {sorted(unknown)}，已忽略"
+                )
+            custom = {k: v for k, v in emb.items() if k in self._ALLOWED_EMBEDDING_KEYS}
+        else:
+            preset_name = config.get("embedding_preset")
+
+        if kwargs:
+            custom.update(kwargs)
+
+        return create_embedding_client(
+            custom_config=custom or None,
+            preset_name=preset_name,
+        )
+
+    def get_reranker_client_for_component(self, component_name: str, **kwargs):
+        """根据组件配置创建 Reranker 客户端（LiteLLM）
+
+        优先级：组件 ``reranker`` 内联 > 组件 ``reranker_preset`` 引用 >
+        ``[reranker].default_preset``。
+        """
+        from src.client.reranker import create_reranker_client
+
+        config = self.get_component_config(component_name)
+
+        custom: Dict[str, Any] = {}
+        preset_name: Optional[str] = None
+
+        rk = config.get("reranker")
+        if isinstance(rk, dict):
+            unknown = set(rk) - self._ALLOWED_RERANKER_KEYS
+            if unknown:
+                logger.warning(
+                    f"组件 '{component_name}' 的 reranker 配置含未识别字段 {sorted(unknown)}，已忽略"
+                )
+            custom = {k: v for k, v in rk.items() if k in self._ALLOWED_RERANKER_KEYS}
+        else:
+            preset_name = config.get("reranker_preset")
+
+        if kwargs:
+            custom.update(kwargs)
+
+        return create_reranker_client(
+            custom_config=custom or None,
+            preset_name=preset_name,
+        )
+
+    # ========== 工具方法 ==========
+
     def is_component_enabled(self, component_name: str) -> bool:
         """
         检查组件是否启用

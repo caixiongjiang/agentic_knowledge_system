@@ -267,55 +267,37 @@ class EnvManager:
             "ssl_password": self.get("KAFKA_SSL_PASSWORD"),
         }
     
-    # ==================== AI 模型 API Keys ====================
-    
-    def get_embedding_api_key(self) -> Optional[str]:
-        """获取本地Embedding服务API Key"""
-        return self.get("EMBEDDING_API_KEY")
-    
-    def get_openai_api_key(self) -> Optional[str]:
-        """获取OpenAI API Key"""
-        return self.get("OPENAI_API_KEY")
-    
-    def get_zhipu_api_key(self) -> Optional[str]:
-        """获取智谱AI API Key"""
-        return self.get("ZHIPU_API_KEY")
-    
-    def get_qwen_api_key(self) -> Optional[str]:
-        """获取通义千问API Key"""
-        return self.get("QWEN_API_KEY")
-    
-    def get_baidu_api_keys(self) -> Dict[str, str]:
-        """获取百度千帆API Keys"""
-        return {
-            "api_key": self.get("BAIDU_API_KEY", ""),
-            "secret_key": self.get("BAIDU_SECRET_KEY", ""),
-        }
-    
-    def get_deepseek_api_key(self) -> Optional[str]:
-        """获取DeepSeek API Key"""
-        return self.get("DEEPSEEK_API_KEY")
-    
-    def get_anthropic_api_key(self) -> Optional[str]:
-        """获取Anthropic API Key"""
-        return self.get("ANTHROPIC_API_KEY")
-    
-    def get_cohere_api_key(self) -> Optional[str]:
-        """获取Cohere API Key"""
-        return self.get("COHERE_API_KEY")
-    
-    def get_jina_api_key(self) -> Optional[str]:
-        """获取Jina AI API Key"""
-        return self.get("JINA_API_KEY")
-    
-    def get_gemini_api_key(self) -> Optional[str]:
-        """获取Google Gemini API Key"""
-        return self.get("GEMINI_API_KEY")
-    
+    # ==================== 模型网关（LiteLLM Proxy 统一接入 LLM/Embedding/Reranker） ====================
+    #
+    # 所有 LLM / Embedding / Reranker 的真实密钥与 Endpoint 都收敛到
+    # 自托管 LiteLLM Proxy。不再为单个 provider 暴露独立 API Key getter——
+    # 这些密钥应配置在 Proxy 服务端，由 Proxy 端写入 PostgreSQL 做计费 / 审计。
+    #
+    # 本端只需要两个变量即可访问 Proxy：
+    #   - LITELLM_PROXY_URL  : 自托管 Proxy 的 base URL
+    #   - LITELLM_PROXY_KEY  : 调用方 token（虚拟 key）
+    #
+    # 业务侧通常不直接用这俩 getter；``ConfigManager.get_proxy_full_config``
+    # 会把 config.toml 的 [proxy] 与 .env 合并后吐出最终配置。
+
+    def get_litellm_proxy_url(self) -> Optional[str]:
+        """获取自托管 LiteLLM Proxy base URL（如 ``http://litellm:4000``）"""
+        return self.get("LITELLM_PROXY_URL")
+
+    def get_litellm_proxy_key(self) -> Optional[str]:
+        """获取调用 LiteLLM Proxy 用的 virtual key / token"""
+        return self.get("LITELLM_PROXY_KEY")
+
+    # ==================== 本地直连 API Keys（未走模型网关的服务） ====================
+
+    def get_sparse_embedding_api_key(self) -> Optional[str]:
+        """获取稀疏向量 Embedding 服务 API Key（BGE-M3 本地部署，未走模型网关）"""
+        return self.get("SPARSE_EMBEDDING_API_KEY")
+
     # ==================== 第三方服务 ====================
-    
+
     def get_mineru_api_key(self) -> Optional[str]:
-        """获取MinerU API Key"""
+        """获取 MinerU 服务 API Key（PDF 解析）"""
         return self.get("MINERU_API_KEY")
     
     # ==================== 系统配置 ====================

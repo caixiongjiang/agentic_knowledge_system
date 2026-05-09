@@ -166,19 +166,97 @@ class ConfigManager:
         """获取Kafka配置"""
         return self.get_section("kafka")
     
-    # ==================== 模型配置获取 ====================
-    
+    # ==================== 模型网关（LiteLLM Proxy） ====================
+    # 同时被 LLM / Embedding / Reranker 复用
+
+    def get_proxy_config(self) -> Dict[str, Any]:
+        """获取 [proxy] 配置节（不含敏感字段）"""
+        return self.get_section("proxy")
+
+    def get_proxy_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
+        """
+        获取完整模型网关配置（合并 [proxy] + .env 中的 LITELLM_PROXY_*）
+
+        优先级：环境变量 > config.toml；空字符串视为未设置。
+
+        Returns:
+            ``{api_base, api_key, default_timeout, default_max_retries}``，
+            缺失字段为 None / 默认值。
+        """
+        proxy_cfg = self.get_proxy_config()
+
+        env_url = env_manager.get_litellm_proxy_url()
+        env_key = env_manager.get_litellm_proxy_key()
+
+        api_base = env_url or proxy_cfg.get("api_base") or None
+        if api_base == "":
+            api_base = None
+        api_key = env_key or None  # api_key 仅来自 .env（敏感）
+
+        return {
+            "api_base": api_base,
+            "api_key": api_key,
+            "default_timeout": proxy_cfg.get("default_timeout", 60),
+            "default_max_retries": proxy_cfg.get("default_max_retries", 2),
+        }
+
+    # ==================== LLM 配置获取（LiteLLM 统一接入） ====================
+
+    def get_llm_config(self) -> Dict[str, Any]:
+        """获取整个 [llm] 配置节"""
+        return self.get_section("llm")
+
+    def get_llm_presets(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有 LLM 预设（[llm.presets]）"""
+        return deepcopy(self._config.get("llm", {}).get("presets", {}) or {})
+
+    def get_llm_preset(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        获取单个 LLM preset
+
+        Args:
+            name: preset 名称（如 fast / quality / reasoning / multimodal / test）
+
+        Returns:
+            preset 字典；未配置返回 None
+        """
+        presets = self._config.get("llm", {}).get("presets", {}) or {}
+        preset = presets.get(name)
+        return deepcopy(preset) if preset else None
+
+    # ==================== Embedding / Reranker presets ====================
+
     def get_embedding_config(self) -> Dict[str, Any]:
-        """获取Embedding模型配置"""
+        """获取 [embedding] 配置节（业务约束 + default_preset）"""
         return self.get_section("embedding")
-    
+
+    def get_embedding_presets(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有 Embedding 预设（[embedding.presets]）"""
+        return deepcopy(self._config.get("embedding", {}).get("presets", {}) or {})
+
+    def get_embedding_preset(self, name: str) -> Optional[Dict[str, Any]]:
+        """获取单个 Embedding preset"""
+        presets = self._config.get("embedding", {}).get("presets", {}) or {}
+        preset = presets.get(name)
+        return deepcopy(preset) if preset else None
+
     def get_sparse_embedding_config(self) -> Dict[str, Any]:
-        """获取稀疏向量Embedding模型配置（BGE-M3）"""
+        """获取稀疏向量 Embedding 配置（BGE-M3，独立实现）"""
         return self.get_section("sparse_embedding")
-    
+
     def get_reranker_config(self) -> Dict[str, Any]:
-        """获取Reranker模型配置"""
+        """获取 [reranker] 配置节（业务约束 + default_preset）"""
         return self.get_section("reranker")
+
+    def get_reranker_presets(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有 Reranker 预设（[reranker.presets]）"""
+        return deepcopy(self._config.get("reranker", {}).get("presets", {}) or {})
+
+    def get_reranker_preset(self, name: str) -> Optional[Dict[str, Any]]:
+        """获取单个 Reranker preset"""
+        presets = self._config.get("reranker", {}).get("presets", {}) or {}
+        preset = presets.get(name)
+        return deepcopy(preset) if preset else None
     
     # ==================== 第三方服务配置获取 ====================
     
@@ -217,9 +295,11 @@ class ConfigManager:
             "storage": ["type"],
             "minio": ["endpoint", "default_bucket"],
             "kafka": ["bootstrap_servers"],
-            "embedding": ["api_base", "model_name", "dimension"],
+            "proxy": ["default_timeout"],
+            "llm": ["presets"],
+            "embedding": ["default_preset", "dimension", "presets"],
             "sparse_embedding": ["api_base", "model_name"],
-            "reranker": ["provider", "model_name"],
+            "reranker": ["default_preset", "presets"],
             "mineru": ["api_url"],
             "logging": ["level", "log_dir", "log_file"],
             "file_upload": ["supported_formats", "max_file_size", "temp_dir"],
@@ -353,39 +433,92 @@ class ConfigManager:
         
         return result
     
-    def get_embedding_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
-        """获取完整的Embedding配置（本地部署模型）"""
-        config = self.get_embedding_config()
-        
-        # 获取本地Embedding服务的API Key（如果需要认证）
-        api_key = env_manager.get_embedding_api_key()
-        if api_key:
-            config["api_key"] = api_key
-        
-        return config
-    
+    def get_embedding_full_config(
+        self,
+        env_manager: EnvManager,
+        preset_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        组装完整 Embedding 配置：``[embedding]`` 业务约束 + 选定 preset + ``[proxy]`` 兜底
+
+        Args:
+            env_manager: 用于读取 ``LITELLM_PROXY_*``
+            preset_name: 指定 preset；缺省时使用 ``[embedding].default_preset``
+
+        Returns:
+            合并后的 dict，包含 ``model / api_base / api_key / dimension /
+            batch_size / max_concurrent / timeout`` 等键
+        """
+        section = self.get_embedding_config()
+        chosen = preset_name or section.get("default_preset")
+        if not chosen:
+            raise ValueError("[embedding] 未设置 default_preset 且未传入 preset_name")
+        preset = self.get_embedding_preset(chosen)
+        if not preset:
+            available = ", ".join(sorted(self.get_embedding_presets().keys())) or "(empty)"
+            raise ValueError(f"未知 embedding preset '{chosen}'，可用: {available}")
+
+        merged: Dict[str, Any] = {
+            "dimension": section.get("dimension"),
+            "batch_size": section.get("batch_size", 32),
+            "max_concurrent": section.get("max_concurrent", 5),
+            "timeout": section.get("timeout", 60.0),
+        }
+        merged.update(preset)
+
+        proxy = self.get_proxy_full_config(env_manager)
+        if not merged.get("api_base"):
+            merged["api_base"] = proxy.get("api_base")
+        if not merged.get("api_key"):
+            merged["api_key"] = proxy.get("api_key")
+        if "timeout" not in merged or merged["timeout"] is None:
+            merged["timeout"] = proxy.get("default_timeout", 60.0)
+
+        return merged
+
     def get_sparse_embedding_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
-        """获取完整的稀疏向量Embedding配置（BGE-M3，本地部署）"""
+        """获取完整的稀疏向量 Embedding 配置（BGE-M3，独立实现，未走 LiteLLM）"""
         config = self.get_sparse_embedding_config()
-        
-        api_key = env_manager.get("SPARSE_EMBEDDING_API_KEY")
+
+        api_key = env_manager.get_sparse_embedding_api_key()
         if api_key:
             config["api_key"] = api_key
-        
+
         return config
-    
-    def get_reranker_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
-        """获取完整的Reranker配置"""
-        config = self.get_reranker_config()
-        provider = config.get("provider", "").lower()
-        
-        # 根据provider获取对应的API Key
-        if provider == "cohere":
-            config["api_key"] = env_manager.get_cohere_api_key()
-        elif provider == "jina":
-            config["api_key"] = env_manager.get_jina_api_key()
-        
-        return config
+
+    def get_reranker_full_config(
+        self,
+        env_manager: EnvManager,
+        preset_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        组装完整 Reranker 配置：``[reranker]`` 业务约束 + 选定 preset + ``[proxy]`` 兜底
+        """
+        section = self.get_reranker_config()
+        chosen = preset_name or section.get("default_preset")
+        if not chosen:
+            raise ValueError("[reranker] 未设置 default_preset 且未传入 preset_name")
+        preset = self.get_reranker_preset(chosen)
+        if not preset:
+            available = ", ".join(sorted(self.get_reranker_presets().keys())) or "(empty)"
+            raise ValueError(f"未知 reranker preset '{chosen}'，可用: {available}")
+
+        merged: Dict[str, Any] = {
+            "batch_size": section.get("batch_size", 16),
+            "top_k": section.get("top_k", 10),
+            "timeout": section.get("timeout", 30.0),
+        }
+        merged.update(preset)
+
+        proxy = self.get_proxy_full_config(env_manager)
+        if not merged.get("api_base"):
+            merged["api_base"] = proxy.get("api_base")
+        if not merged.get("api_key"):
+            merged["api_key"] = proxy.get("api_key")
+        if "timeout" not in merged or merged["timeout"] is None:
+            merged["timeout"] = proxy.get("default_timeout", 30.0)
+
+        return merged
     
     def get_mineru_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的MinerU配置"""

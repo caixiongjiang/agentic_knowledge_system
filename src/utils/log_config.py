@@ -138,8 +138,12 @@ def setup_logging(
     logging.getLogger().handlers = [InterceptHandler()]
     logging.getLogger().setLevel(0)
     
-    # 抑制第三方库的噪声 DEBUG 日志
+    # 抑制第三方库的噪声日志（含 SQLAlchemy 执行 SQL 的 INFO）
     for name in [
+        "sqlalchemy",
+        "sqlalchemy.engine",
+        "sqlalchemy.pool",
+        "sqlalchemy.dialects",
         "pymongo",
         "pymongo.topology",
         "pymongo.connection",
