@@ -196,6 +196,7 @@ class MongoDBManager:
             from src.db.mongodb.models.chunk_data import ChunkData
             from src.db.mongodb.models.section_data import SectionData
             from src.db.mongodb.models.document_data import DocumentData
+            from src.db.mongodb.models.conversation.chat_message import ChatMessage
             
             self.logger.debug("Document 模型导入完成")
             self.logger.debug("开始初始化 Beanie ODM...")
@@ -210,6 +211,7 @@ class MongoDBManager:
                         ChunkData,
                         SectionData,
                         DocumentData,
+                        ChatMessage,
                     ],
                     # 注意：如果索引创建很慢，可以设置 allow_index_dropping=False
                     # 来跳过索引的自动管理
@@ -218,7 +220,9 @@ class MongoDBManager:
             )
             
             self.logger.info("Beanie ODM 初始化成功")
-            self.logger.debug("已注册的模型: ElementData, ChunkData, SectionData, DocumentData")
+            self.logger.debug(
+                "已注册的模型: ElementData, ChunkData, SectionData, DocumentData, ChatMessage"
+            )
         
         except asyncio.TimeoutError:
             self.logger.error("Beanie 初始化超时（30秒）")

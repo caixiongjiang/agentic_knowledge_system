@@ -131,12 +131,16 @@ class ToolCallDelta(BaseModel):
 class StreamChunk(BaseModel):
     """流式输出的一个增量块
 
-    四种互斥语义（同一块只命中其一）：
+    五种互斥语义（同一块只命中其一）：
 
     1. **正文增量**：``delta`` 非空、``is_thought=False``、``tool_call_delta=None``
     2. **思考增量**：``delta`` 非空、``is_thought=True``
     3. **工具调用增量**：``tool_call_delta`` 非空（``delta`` 为空字符串）
     4. **流结束信号**：``finish_reason`` 非 None（``delta`` 为空字符串）
+    5. **usage 块**：``usage`` 非 None（OpenAI / LiteLLM 在 ``stream_options.include_usage=True``
+       时，会在流结束后再发一个 ``choices=[]`` 但携带顶层 ``usage`` 的尾块；
+       本字段用来透传该尾块，便于 ``StreamAccumulator.finalize()`` 拿到真实
+       token 计数，而不是退化为全 0）
     """
 
     delta: str = Field("", description="本块新增的文本内容（正文或思考）")
@@ -146,6 +150,10 @@ class StreamChunk(BaseModel):
         description="工具调用增量；非 None 时表示本块属于 tool_calls 流",
     )
     finish_reason: Optional[str] = Field(None, description="非 None 即流结束")
+    usage: Optional[TokenUsage] = Field(
+        None,
+        description="流尾的 usage 块（来自 stream_options.include_usage）",
+    )
     model: Optional[str] = Field(None)
 
     model_config = ConfigDict(extra="ignore")

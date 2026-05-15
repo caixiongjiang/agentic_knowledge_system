@@ -42,6 +42,7 @@ from src.client.llm.types import (
     LLMResponse,
     MessageList,
     StreamChunk,
+    TokenUsage,
     ToolCallDelta,
     ToolSchema,
     parse_litellm_response,
@@ -489,12 +490,33 @@ def _yield_stream_chunks(chunk: Any) -> Iterator[StreamChunk]:
     except Exception:
         return
     choices = data.get("choices") or []
+    model = data.get("model")
+
+    # OpenAI / LiteLLM 在 stream_options.include_usage=True 下，会在流末尾追发
+    # 一个 choices=[] 但带顶层 usage 的尾块。这里把它独立透出，让
+    # StreamAccumulator.finalize() 能拿到真实 token 计数（否则展示成全 0）。
+    usage_raw = data.get("usage") or {}
+    if usage_raw:
+        completion_details = usage_raw.get("completion_tokens_details") or {}
+        thinking_tokens = completion_details.get("reasoning_tokens")
+        usage_obj = TokenUsage(
+            prompt_tokens=int(usage_raw.get("prompt_tokens") or 0),
+            completion_tokens=int(usage_raw.get("completion_tokens") or 0),
+            thinking_tokens=(
+                int(thinking_tokens) if thinking_tokens is not None else None
+            ),
+            total_tokens=int(usage_raw.get("total_tokens") or 0),
+        )
+        yield StreamChunk(
+            delta="", is_thought=False, finish_reason=None, model=model,
+            usage=usage_obj,
+        )
+
     if not choices:
         return
     ch = choices[0]
     delta = ch.get("delta") or {}
     finish = ch.get("finish_reason")
-    model = data.get("model")
 
     text = delta.get("content")
     if text:

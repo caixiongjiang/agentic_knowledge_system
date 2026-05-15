@@ -206,7 +206,7 @@ class FileParser:
         # 懒加载：创建 PDF Parser
         pdf_parser = PDFParser(
             mineru_client=mineru_client,
-            max_pages_per_request=config.get("mineru.max_pages_per_request", 4),
+            max_pages_per_request=config.get("mineru.max_pages_per_request", 2),
             max_concurrent_requests=config.get("mineru.max_concurrent_requests", 5)
         )
         

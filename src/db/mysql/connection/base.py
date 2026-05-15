@@ -83,6 +83,7 @@ class BaseMySQLManager(ABC):
             import src.db.mysql.models.base
             import src.db.mysql.models.extract
             import src.db.mysql.models.business
+            import src.db.mysql.models.conversation
             
             Base.metadata.create_all(self.engine)
             logger.info("成功创建数据库表结构")
