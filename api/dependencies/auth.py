@@ -13,7 +13,9 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from fastapi import Header, HTTPException
+from typing import Optional
+
+from fastapi import Header, HTTPException, WebSocket, status
 
 
 async def get_current_user_id(
@@ -36,3 +38,58 @@ async def get_current_user_id(
     if not x_user_id or not x_user_id.strip():
         raise HTTPException(status_code=401, detail="缺少有效的用户标识")
     return x_user_id.strip()
+
+
+async def get_current_user_id_ws(websocket: WebSocket) -> Optional[str]:
+    """
+    从 WebSocket 握手中提取当前用户 ID
+
+    背景
+    ----
+    浏览器原生 WebSocket API **不能** 自定义 HTTP header，无法复用 HTTP 版的
+    ``X-User-Id``。生产实践有两种通用做法：
+
+    1. **query token**（首选）: 客户端 ``ws://host/api/chat/ws?token=<id>``；
+       因为 query 在握手期就到达服务端，可以在 ``accept()`` 之前完成校验。
+    2. **Sec-WebSocket-Protocol 子协议**: 把 token 拼到子协议字符串里
+       （如 ``aks-chat-v1.<token>``），也能避免暴露到 URL 上（部分 CDN 会记
+       录 URL）；本函数也兼容这种方式。
+
+    返回 ``None`` 表示鉴权失败，调用方应当 ``close(code=1008)``。本函数
+    **不直接抛 HTTPException**，因为在 ``accept()`` 之前 FastAPI 还没有
+    建立 ASGI 响应循环，抛异常的效果不可预期。
+
+    Args:
+        websocket: FastAPI WebSocket 实例（注入由路由侧完成）
+
+    Returns:
+        用户 ID 字符串；鉴权失败返回 ``None``
+    """
+    # 1) 首选：query token
+    token = websocket.query_params.get("token") or websocket.query_params.get(
+        "user_id"
+    )
+    if token and token.strip():
+        return token.strip()
+
+    # 2) 备选：Sec-WebSocket-Protocol 形如 "aks-chat-v1.<token>"
+    raw = websocket.headers.get("sec-websocket-protocol") or ""
+    for sub in [s.strip() for s in raw.split(",") if s.strip()]:
+        if "." in sub:
+            _, _, candidate = sub.partition(".")
+            if candidate:
+                return candidate
+
+    return None
+
+
+async def close_unauthorized(websocket: WebSocket, reason: str = "unauthorized") -> None:
+    """统一关闭"未鉴权"的 WS 连接
+
+    code=1008 = Policy Violation（WS 协议规范定义为"鉴权失败"的标准码）
+    """
+    try:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=reason)
+    except Exception:  # noqa: BLE001
+        # 已经断开等场景；忽略
+        pass

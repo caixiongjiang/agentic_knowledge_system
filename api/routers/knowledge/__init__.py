@@ -33,6 +33,7 @@ from api.routers.knowledge.index import router as index_router
 from api.routers.knowledge.folder import router as folder_router
 from api.routers.knowledge.file import router as file_router
 from api.routers.knowledge.trash import router as trash_router
+from api.routers.knowledge.retrieve import router as retrieve_router
 
 knowledge_router = APIRouter(prefix="/api/knowledge")
 knowledge_router.include_router(kb_router, prefix="/base")
@@ -40,5 +41,6 @@ knowledge_router.include_router(index_router, prefix="/index")
 knowledge_router.include_router(folder_router, prefix="/folder")
 knowledge_router.include_router(file_router, prefix="/file")
 knowledge_router.include_router(trash_router, prefix="/trash")
+knowledge_router.include_router(retrieve_router)
 
 __all__ = ["knowledge_router"]

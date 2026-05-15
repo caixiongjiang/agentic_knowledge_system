@@ -319,6 +319,47 @@ temperature = 0.3
 max_tokens = 2048
 timeout = 60
 
+# ==================== Chat 模块配置 ====================
+# 知识库对话服务（src/service/chat/chat_service.py）的运行参数
+# - 通过 `ChatServiceConfig.from_config_manager()` 读取
+# - LLM 选型直接引用 [llm.presets.*]；本服务不走 components.json
+#   （components.json 仅服务于 RAG 抽取 Pipeline 的 Kafka Worker 组件）
+
+[chat]
+# 主对话 LLM 的 preset（ChatRequest / ChatSession 都未指定时用该默认）
+# 如需细调 temperature / max_tokens / thinking_budget，请在 [llm.presets.*] 加自定义 preset
+agent_model_preset = "fast"
+# 异步起标题用的 preset（首轮结束后调用 1 次，性价比优先）
+title_model_preset = "fast"
+# 是否默认启用 Agent 工具循环（false 时走 RAG 单轮快路径）
+default_agent_mode = true
+# 是否默认启用思考链（仅 reasoning 类模型生效）
+default_enable_thinking = false
+# Agent 模式默认工具批次上限
+default_max_tool_rounds = 5
+# 启用思考链时的预算（tokens）；仅 enable_thinking=true 时透传给 LLMClient.astream
+thinking_budget = 4096
+# 单轮 assistant 输出 token 上限；0 / 缺省表示由模型 / preset 决定
+max_completion_tokens = 0
+
+[chat.retrieval]
+# 服务端初始检索 top_k
+top_k = 8
+# Chat 路径是否启用 LLM₂ 结果验证（默认关，省一次 LLM 调用）
+enable_validation = false
+
+[chat.history]
+# 加载历史消息上限（条数维度）
+max_messages = 40
+# 轮数滑窗上限（与 token 滑窗叠加；同时按"对话轮"为最小粒度，保 tool_calls 完整）
+max_turns = 12
+# token 滑窗预算
+max_tokens = 8000
+# 启用摘要压缩的轮数阈值；0 表示关闭摘要压缩
+summary_compress_threshold_turns = 15
+# 摘要压缩后保留的最近轮数
+summary_keep_recent_turns = 4
+
 # ==================== Embedding 配置（LiteLLM 统一接入） ====================
 # - 业务约束（dimension/batch_size/max_concurrent）在 [embedding] 节
 # - 模型路由（model 字符串）在 [embedding.presets.*] 节，可被 components.json 引用
@@ -393,7 +434,7 @@ model = "cohere/qwen3-reranker-0.6b"
 # MinerU 服务配置（PDF解析）
 [mineru]
 # API服务地址
-api_url = "http://192.168.201.14:18000"
+api_url = "http://192.168.19.232:18000"
 # 超时时间（秒）
 timeout = 300
 

@@ -91,25 +91,36 @@ async def example_4_concurrent():
         print(f"✓ 使用并发处理，速度显著提升")
 
 
-def example_5_with_retry():
-    """示例5: 启用重试机制（上下文管理器）"""
+def example_5_custom_config():
+    """示例5: custom_config 覆盖 + 通过 extra_params 透传 LiteLLM 重试参数
+
+    说明：
+        LiteLLM 改造后，HTTP 重试 / 连接池 / 超时统一由 LiteLLM + 自托管 Proxy
+        管理，``EmbeddingClient`` 不再持有 ``enable_retry / max_retries /
+        retry_strategy`` 等字段。如需调节重试，把 ``num_retries`` 放到
+        ``extra_params`` 透传给 ``litellm.embedding`` 即可（也可在 Proxy 端统一配）。
+    """
     print("\n" + "=" * 60)
-    print("示例5: 启用重试机制")
+    print("示例5: custom_config 覆盖（batch_size / timeout / num_retries）")
     print("=" * 60)
-    
-    # 创建启用重试的客户端，使用上下文管理器
+
     with create_embedding_client(custom_config={
-        "enable_retry": True,
-        "max_retries": 3,
-        "retry_strategy": "exponential"
+        "batch_size": 16,
+        "timeout": 30.0,
+        "extra_params": {"num_retries": 3},
     }) as client:
-        print(f"重试配置:")
-        print(f"  - 最大重试: {client.max_retries}次")
-        print(f"  - 重试策略: {client.retry_strategy}")
-        
-        text = "带重试保护的请求"
-        embedding = client.embed(text)
-        print(f"✓ 成功获取embedding (维度: {len(embedding)})")
+        cfg = client.get_config()
+        print("生效配置:")
+        print(f"  - model         = {cfg['model']}")
+        print(f"  - api_base      = {cfg['api_base']}")
+        print(f"  - dimension     = {cfg['dimension']}")
+        print(f"  - batch_size    = {cfg['batch_size']}")
+        print(f"  - max_concurrent= {cfg['max_concurrent']}")
+        print(f"  - timeout       = {cfg['timeout']}s")
+        print(f"  - extra_params  = {client.extra_params}")
+
+        embedding = client.embed("带重试保护的请求（重试由 LiteLLM/Proxy 处理）")
+        print(f"✓ 成功获取 embedding (维度: {len(embedding)})")
 
 
 def example_6_error_handling():
@@ -154,9 +165,9 @@ def main():
     print("=" * 60)
     
     print("\n提示: 请确保以下配置正确:")
-    print("1. config/config.toml 中的 [embedding] 配置")
-    print("2. 本地Embedding服务已启动")
-    print("3. 如需认证，在 .env 中设置 EMBEDDING_API_KEY")
+    print("1. config/config.toml 中的 [embedding] 与 [embedding.presets.*]")
+    print("2. .env 中已配置 LITELLM_PROXY_URL / LITELLM_PROXY_KEY")
+    print("3. 自托管 LiteLLM Proxy 已启动并注册了对应 embedding 模型")
     print("\n资源管理说明:")
     print("- 所有示例都使用上下文管理器（with/async with）")
     print("- 退出上下文时自动释放连接资源，无内存泄漏")
@@ -166,7 +177,7 @@ def main():
         # 同步示例
         example_1_basic_sync()
         example_2_batch_sync()
-        example_5_with_retry()
+        example_5_custom_config()
         example_6_error_handling()
         example_7_health_check()
         

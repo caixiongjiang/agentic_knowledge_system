@@ -219,3 +219,6 @@ cursor_docs/
 
 # local data
 data/
+
+# logs
+logs/

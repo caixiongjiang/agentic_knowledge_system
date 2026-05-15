@@ -57,31 +57,30 @@ class TranslationTester:
     
     def __init__(
         self,
-        provider: str = "openai",
-        model_name: str = "gpt-4o-mini",
+        model: str = "openai/gpt-4o-mini",
         temperature: float = 0.3,
         max_tokens: int = 8000,
-        timeout: int = 300
+        timeout: int = 300,
     ):
         """
         初始化翻译测试器
-        
+
         Args:
-            provider: LLM 提供商（默认 openai）
-            model_name: 模型名称（默认 gpt-4o-mini）
+            model: LiteLLM 模型字符串（'<provider>/<model>'）
             temperature: 温度参数
             max_tokens: 最大token数
-            timeout: 请求超时时间（秒），默认300秒（5分钟）
+            timeout: 请求超时时间（秒）
         """
-        self.provider = provider
-        self.model_name = model_name
+        self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
-        
+        # 兼容旧字段（部分日志用）
+        self.provider = model.split("/", 1)[0] if "/" in model else ""
+        self.model_name = model.split("/", 1)[1] if "/" in model else model
+
         logger.info(
-            f"初始化翻译测试器 - Provider: {provider}, Model: {model_name}, "
-            f"Timeout: {timeout}s"
+            f"初始化翻译测试器 - Model: {model}, Timeout: {timeout}s",
         )
     
     def load_mineru_result(self, json_path: str) -> List[Dict[str, Any]]:
@@ -208,17 +207,16 @@ class TranslationTester:
         # 创建客户端并进行翻译
         try:
             with create_llm_client(
-                provider=self.provider,
-                model_name=self.model_name,
+                model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                timeout=self.timeout
+                timeout=self.timeout,
             ) as client:
                 response = client.generate(
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ]
+                        {"role": "user", "content": user_prompt},
+                    ],
                 )
                 
                 # 提取翻译结果（移除代码块标记）
@@ -300,8 +298,7 @@ class TranslationTester:
         # 打印测试开始信息
         print("\n" + "🚀" * 40)
         print("🌐 翻译测试开始")
-        print(f"📌 提供商: {self.provider}")
-        print(f"🤖 模型: {self.model_name}")
+        print(f"🤖 模型: {self.model}")
         print(f"⏱️  超时时间: {self.timeout}秒")
         print(f"🎯 最大Token: {self.max_tokens}")
         print(f"📄 源文件: {mineru_json_path}")
@@ -393,8 +390,7 @@ class TranslationTester:
         summary_file = output_path / "translation_summary.json"
         with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump({
-                "provider": self.provider,
-                "model": self.model_name,
+                "model": self.model,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
                 "total_pages": len(pages_text),
@@ -452,13 +448,12 @@ def main():
     mineru_json_path = project_root / "tmp_results" / "parser" / "mineru" / "content_list.json"
     output_dir = project_root / "tmp_results" / "translation_test"
     
-    # 创建翻译测试器
+    # 创建翻译测试器（LiteLLM 模型字符串）
     tester = TranslationTester(
-        provider="openai",  # 使用 OpenAI
-        model_name="ali/qwen3-max",
+        model="openai/qwen3-max",
         temperature=0.3,
         max_tokens=32000,
-        timeout=600
+        timeout=600,
     )
     
     # 运行翻译测试

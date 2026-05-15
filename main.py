@@ -26,7 +26,7 @@ setup_dev_logging()
 
 import os
 
-from api.routers import knowledge_router
+from api.routers import chat_router, knowledge_router
 from src.db.kafka.connection.factory import close_kafka_manager
 from src.db.mongodb.mongodb_manager import get_mongodb_manager
 from src.db.mysql.connection.factory import get_mysql_manager
@@ -38,7 +38,7 @@ def _get_allowed_origins() -> list[str]:
     """读取允许跨域访问的前端来源地址"""
     raw_origins = os.getenv(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:4000,http://127.0.0.1:4000,http://192.168.201.14:4000",
+        "http://localhost:4001,http://127.0.0.1:4001,http://192.168.201.14:4001",
     )
     return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
@@ -68,6 +68,8 @@ def _init_milvus() -> None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理：启动时初始化所有数据库连接，关闭时统一释放"""
     logger.info("应用启动中...")
+
+    # 模型调用观测由自托管 LiteLLM Proxy 端写入 PostgreSQL，本地无需初始化。
 
     get_mysql_manager().init_db()
     logger.info("MySQL 初始化完成（自动建表）")
@@ -105,6 +107,7 @@ app.add_middleware(
 )
 
 app.include_router(knowledge_router)
+app.include_router(chat_router)
 
 
 if __name__ == "__main__":

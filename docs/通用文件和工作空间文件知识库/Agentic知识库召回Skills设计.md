@@ -2,9 +2,9 @@
 
 ## 版本信息
 
-- **版本号**: v2.0
+- **版本号**: v2.1
 - **创建日期**: 2026-02-28
-- **最后更新**: 2026-04-03
+- **最后更新**: 2026-04-07
 - **设计目标**: 在百万级文档规模下，以 **"先准后快"** 为原则，构建兼顾高效批量召回与 Agentic 自主补全的分层检索体系。
 
 ## 1. 架构理念演进
@@ -714,27 +714,300 @@ class RetrieveResponse(BaseModel):
 
 ---
 
-## 10. 实现路线图
+## 10. 分层策略：串行漏斗 + 并行精搜
 
-### 10.1 已完成
+### 10.1 设计背景
 
-- [x] 原子能力基类 `BaseCapability` + 模板方法模式
-- [x] 语义检索能力: `ChunkVectorSearch`, `EnhancedChunkVectorSearch`, `SectionVectorSearch`, `QAVectorSearch`, `SummaryVectorSearch`
-- [x] 字面检索能力: `BM25Search`, `ExactMatch`, `BooleanSearch`
-- [x] 导航能力: `ContextWindow`, `DrillDown`, `RollUp`, `Skeleton`
-- [x] 类型系统: `SemanticQuery`, `LexicalQuery`, `NavigationQuery`, `RetrieveResult`, 枚举定义
-- [x] 基础设施: `EmbeddingClient`, `SparseEmbeddingClient`, Milvus Repositories
+在 100w+ 文档规模下，纯并行召回（Phase 2 全库扫描）会面临三大问题：
 
-### 10.2 待实现
+| 问题 | 根因 | 影响 |
+|------|------|------|
+| ANN 扫描成本高 | 细粒度路由（chunk_dense 等）在千万级向量上做 HNSW ANN，延迟随数据规模增长 | Phase 2 延迟从 ~100ms 膨胀至 200-500ms |
+| Phase 3 对齐内存爆炸 | 粗粒度命中（summary/section）无条件下钻，大文档一次拉取数百 Chunk | 内存抖动，GC 压力大，对齐延迟不可控 |
+| RRF 噪声稀释 | 全库召回引入大量低相关候选，RRF 融合时噪声排名干扰高质量结果 | Reranker 负担增大，最终 Top-K 精度下降 |
 
-- [ ] **RetrieveService 编排层** — 核心 Pipeline 实现
-  - [ ] LLM₁ 路由规划模块（prompt 工程 + 结构化输出解析）
-  - [ ] 多路并行召回执行器
-  - [ ] 跨粒度对齐模块（Section/QA/Summary → Chunk 下钻 + 二次精排）
-  - [ ] RRF 融合 + 去重模块
-  - [ ] LLM₂ 结果验证 Agent（prompt 工程 + function calling）
-- [ ] **Reranker 客户端** — `src/client/reranker.py` 实现
-- [ ] **ReRetrieve 工具** — 二次召回能力
-- [ ] **HTTP API 路由** — `api/routers/knowledge/retrieve.py`
-- [ ] **Graph 检索路由** — Neo4j 实体/关系检索 Capability
-- [ ] **Knowledge Traceback** — 图谱到原文溯源 Capability
+**核心思路**：引入分层策略后，架构从 `纯并行` 升级为 **`串行漏斗 + 并行精搜`** 的混合模式。分层管"搜索空间收缩"，并行管"候选集互补"，两者互补而非冲突。
+
+### 10.2 分层策略的 3 个精准插入点
+
+| 插入位置 | 改造内容 | 作用 | 对现有架构的影响 |
+|----------|----------|------|------------------|
+| **Phase 1.5（路由输出后 / Phase 2 前）** | 增加 `Coarse Filter` 阶段：先跑 Summary/Section/Metadata 粗层，输出 `candidate_doc_ids` 与 `candidate_section_ids` | 将 100w 文档的检索空间压缩至 1~5% | 不破坏 LLM₁，仅增加一步轻量过滤 |
+| **Phase 2（多路并行执行）** | 改为 `两 Tier 级联`：Tier1 粗层并行 → 过滤 → Tier2 细层在粗层范围内并行 | 避免细层全库 ANN 扫描，Phase 3 对齐负载降 80%+ | `asyncio.gather` 拆分为两次 |
+| **Phase 3（跨粒度对齐）** | 增加 `阈值门控下钻`：仅当粗层分数 > 阈值才触发 Section → Chunk 下钻 | 防止大文档无差别拉取 Chunk，杜绝内存抖动 | 对齐逻辑加判断，无侵入性 |
+
+### 10.3 改造后的全景流程
+
+改造后的 Pipeline 在 Phase 1 和 Phase 4 之间引入分层漏斗机制，其余阶段保持不变：
+
+```
+Phase 1: LLM₁ 路由规划 (不变)
+   └─ 输出 route_plan (含 summary_dense, section_dense, chunk_dense, bm25_sparse...)
+            ▼
+[新增] Phase 1.5: 粗层并行 + 范围收敛 (~50ms)
+   ├─ 执行 summary_dense, section_dense, metadata_filter
+   ├─ 聚合输出: candidate_scope = {doc_ids: [...], section_ids: [...]}
+   └─ 若粗层命中数=0 或置信度<阈值 → 降级为全库检索 (Fallback)
+            ▼
+改造 Phase 2: Tier2 细层受限并行 (~80ms)
+   ├─ 路由 chunk_dense, bm25_sparse, qa_dense, exact_match
+   ├─ 全部追加 filter: doc_id IN candidate_scope.doc_ids
+   │                     section_id IN candidate_scope.section_ids
+   └─ asyncio.gather 并行执行 (搜索空间缩小 95%+)
+            ▼
+改造 Phase 3: 阈值门控对齐 (~30ms)
+   ├─ 仅对粗层高分 Section 执行下钻
+   ├─ 下钻 Chunk 数量硬限: 每 Section ≤ 3, 总计 ≤ 50
+   └─ 产出统一 List[ChunkItem]
+            ▼
+Phase 4/5/6: RRF → Rerank → LLM₂ 验证 (完全不变)
+```
+
+### 10.4 Phase 1.5 详设：粗层并行 + 范围收敛
+
+#### 10.4.1 触发条件
+
+Phase 1.5 在以下条件下激活：
+
+- LLM₁ 的 `route_plan` 中同时包含粗粒度路由（`summary_dense` / `section_dense`）和细粒度路由（`chunk_dense` / `bm25_sparse` 等）
+- 当前知识库文档总数 > 可配置阈值（默认 10,000 篇）
+
+当文档规模较小或 LLM₁ 仅规划了细粒度路由时，Phase 1.5 自动跳过，退化为原有的纯并行模式。
+
+#### 10.4.2 粗层路由分组
+
+LLM₁ 输出的 `route_plan` 被自动分为两个 Tier：
+
+| Tier | 包含的路由 | 特征 |
+|------|-----------|------|
+| Tier 1（粗层） | `summary_dense`, `section_dense`, `metadata_filter`（隐式） | 搜索空间覆盖文档/章节级别，结果量小、延迟低 |
+| Tier 2（细层） | `chunk_dense`, `enhanced_chunk_dense`, `bm25_sparse`, `qa_dense`, `exact_match`, `boolean_search` | 搜索空间在 Chunk 级别，全库扫描成本高 |
+
+分组规则硬编码在 Pipeline 中，LLM₁ 无需感知分层的存在。
+
+#### 10.4.3 范围收敛逻辑
+
+```python
+class CandidateScope(BaseModel):
+    """粗层收敛产生的搜索范围"""
+    doc_ids: Optional[List[str]] = None       # None 表示不限制（全库）
+    section_ids: Optional[List[str]] = None   # None 表示不限制
+    confidence: float = 0.0                   # 粗层命中的最高置信度
+
+async def _coarse_filter(
+    self,
+    route_plan: List[RouteConfig],
+    query: str,
+    filters: MetadataFilter,
+    coarse_threshold: float = 0.65,
+) -> CandidateScope:
+    """Phase 1.5: 执行粗层路由，收敛搜索范围"""
+
+    coarse_routes = [r for r in route_plan if r.route in self.TIER1_ROUTES]
+    if not coarse_routes:
+        return CandidateScope()  # 无粗层路由 → 不限制范围
+
+    coarse_results = await asyncio.gather(
+        *[self._get_capability(r.route).execute(query=build_query(r, query, filters))
+          for r in coarse_routes]
+    )
+
+    scope = self._extract_candidate_scope(coarse_results, threshold=coarse_threshold)
+
+    if not scope.doc_ids or scope.confidence < coarse_threshold:
+        # 粗层未命中或置信度不足 → 降级全库检索
+        return CandidateScope()
+
+    return scope
+
+def _extract_candidate_scope(
+    self,
+    coarse_results: List[RetrieveResult],
+    threshold: float,
+) -> CandidateScope:
+    """从粗层结果中提取候选文档/章节 ID"""
+
+    doc_ids = set()
+    section_ids = set()
+    max_score = 0.0
+
+    for result in coarse_results:
+        for item in result.items:
+            if item.score >= threshold:
+                max_score = max(max_score, item.score)
+                if item.granularity == "document":
+                    doc_ids.add(item.doc_id)
+                elif item.granularity == "section":
+                    doc_ids.add(item.doc_id)
+                    section_ids.add(item.section_id)
+
+    return CandidateScope(
+        doc_ids=list(doc_ids) if doc_ids else None,
+        section_ids=list(section_ids) if section_ids else None,
+        confidence=max_score,
+    )
+```
+
+### 10.5 Phase 2 改造：两 Tier 级联召回
+
+#### 10.5.1 级联执行流程
+
+原有的 Phase 2 单次 `asyncio.gather` 拆分为两步串行的 `gather`：
+
+```python
+async def _two_tier_recall(
+    self,
+    route_plan: List[RouteConfig],
+    query: str,
+    filters: MetadataFilter,
+) -> List[RetrieveResult]:
+    """Phase 1.5 + Phase 2: 两 Tier 级联召回"""
+
+    # ── Tier 1: 粗层并行召回 ──
+    scope = await self._coarse_filter(route_plan, query, filters)
+
+    # ── Tier 2: 细层受限并行召回 ──
+    fine_routes = [r for r in route_plan if r.route in self.TIER2_ROUTES]
+
+    scoped_filters = filters.model_copy()
+    if scope.doc_ids is not None:
+        scoped_filters.doc_ids = scope.doc_ids
+    if scope.section_ids is not None:
+        scoped_filters.section_ids = scope.section_ids
+
+    fine_results = await asyncio.gather(
+        *[self._get_capability(r.route).execute(
+            query=build_query(r, query, scoped_filters))
+          for r in fine_routes]
+    )
+
+    # 粗层结果也参与后续融合（已包含 doc/section 级命中）
+    coarse_results = await self._get_coarse_results_cache()
+    return coarse_results + fine_results
+```
+
+#### 10.5.2 过滤条件注入机制
+
+Tier 2 的每个 Capability 执行时，`scoped_filters` 会被注入到底层查询中：
+
+| 后端 | 过滤注入方式 |
+|------|------------|
+| Milvus (向量检索) | `search_params` 中追加 `filter: "doc_id in [...]"` 表达式 |
+| MongoDB (字面匹配) | `$match` 阶段追加 `{"doc_id": {"$in": [...]}}` |
+| MySQL (关系查询) | `WHERE` 子句追加 `doc_id IN (...)` |
+
+过滤条件注入对 Capability 层透明，由 `build_query` 统一处理。
+
+### 10.6 Phase 3 改造：阈值门控对齐
+
+#### 10.6.1 门控逻辑
+
+原有的 Phase 3 对所有非 Chunk 粒度结果无条件下钻，改造后增加分数阈值门控：
+
+```python
+def _align_to_chunks_with_gate(
+    self,
+    results: List[RetrieveResult],
+    query_vector: List[float],
+    gate_threshold: float = 0.72,
+    max_chunks_per_section: int = 3,
+    max_total_drilldown_chunks: int = 50,
+) -> List[ChunkItem]:
+    """Phase 3 改造: 阈值门控的跨粒度对齐"""
+
+    aligned_chunks = []
+    drilldown_budget = max_total_drilldown_chunks
+
+    for result in results:
+        for item in result.items:
+            if item.granularity == "chunk":
+                aligned_chunks.append(item)
+
+            elif item.granularity == "section" and item.score >= gate_threshold:
+                if drilldown_budget <= 0:
+                    continue
+
+                chunk_ids = self._get_section_chunks(item.section_id)
+                top_chunks = self._rerank_chunks_in_memory(
+                    chunk_ids, query_vector, top_n=min(max_chunks_per_section, drilldown_budget)
+                )
+                aligned_chunks.extend(top_chunks)
+                drilldown_budget -= len(top_chunks)
+
+            elif item.granularity == "document" and item.score >= gate_threshold:
+                if drilldown_budget <= 0:
+                    continue
+
+                sections = self._get_document_sections(item.doc_id)
+                top_sections = self._rerank_sections_in_memory(
+                    sections, query_vector, top_n=3
+                )
+                for sec in top_sections:
+                    if drilldown_budget <= 0:
+                        break
+                    chunk_ids = self._get_section_chunks(sec.section_id)
+                    top_chunks = self._rerank_chunks_in_memory(
+                        chunk_ids, query_vector, top_n=min(max_chunks_per_section, drilldown_budget)
+                    )
+                    aligned_chunks.extend(top_chunks)
+                    drilldown_budget -= len(top_chunks)
+
+            # 低于阈值的 Section/Document 结果直接丢弃，不触发下钻
+
+    return aligned_chunks
+```
+
+#### 10.6.2 门控参数说明
+
+| 参数 | 默认值 | 含义 |
+|------|--------|------|
+| `gate_threshold` | 0.72 | 粗层结果分数低于此阈值时跳过下钻 |
+| `max_chunks_per_section` | 3 | 单个 Section 下钻最多保留的 Chunk 数 |
+| `max_total_drilldown_chunks` | 50 | 全局下钻 Chunk 总预算，超出后停止下钻 |
+
+这三个参数可通过配置文件调整。`gate_threshold` 建议根据实际数据的分数分布做离线标定：过高（>0.85）会漏召回，过低（<0.55）会退化为无门控。
+
+### 10.7 降级与兜底策略
+
+分层策略的核心风险是**粗层过滤过严导致漏召回**。系统通过以下机制兜底：
+
+| 场景 | 触发条件 | 兜底行为 |
+|------|---------|---------|
+| 粗层零命中 | `scope.doc_ids` 为空 | Phase 2 退化为全库检索（与原架构等价） |
+| 粗层低置信度 | `scope.confidence < coarse_threshold` | 同上，退化为全库检索 |
+| 门控过滤后候选不足 | Phase 3 对齐后 Chunk 数 < `min_candidates`（默认 20） | 放宽 `gate_threshold` 重跑对齐，或补充无门控下钻 |
+| 长尾跨域漏召回 | LLM₂ 在 Phase 6 判定结果覆盖度不足 | LLM₂ 触发 `re_retrieve` 时自动移除 `scope` 限制，走全库召回 |
+
+降级逻辑确保分层策略是**纯增益**的：最坏情况退化为无分层的原始行为，不会比现有架构更差。
+
+### 10.8 与现有设计的兼容性
+
+| 现有设计模块 | 加入分层后的变化 | 兼容性 |
+|-------------|----------------|--------|
+| LLM₁ 路由规划 | LLM₁ 无需改动，路由计划自动被 Pipeline 按 Tier 分组 | 完全兼容 |
+| `asyncio.gather` 并行执行 | 拆为 `gather(Tier1) → filter → gather(Tier2)` | 平滑升级 |
+| RRF 融合 | 粗层与细层结果统一转 Chunk 后 RRF，公式不变 | 完全兼容 |
+| LLM₂ 验证补全 | `re_retrieve` 可自动 bypass 范围限制 | 互为兜底 |
+| 多粒度自由导航 | 导航工具 (`drill_down`/`roll_up`) 仍在 LLM₂ 阶段按需触发 | 保持原能力 |
+| `RetrieveRequest` 接口 | 新增可选字段 `enable_tiered_recall: bool = True` | 向后兼容 |
+
+### 10.9 改造后延迟预算更新
+
+| 阶段 | 原延迟 | 改造后延迟 | 变化 |
+|------|--------|-----------|------|
+| Phase 1: LLM₁ 路由规划 | 1-2s | 1-2s | 不变 |
+| Phase 1.5: 粗层收敛 | — | ~50ms | 新增 |
+| Phase 2: 细层受限召回 | 50-200ms | ~80ms | 搜索空间缩小 95%+，延迟降低 |
+| Phase 3: 阈值门控对齐 | 30-100ms | ~30ms | 下钻量大幅减少 |
+| Phase 4: RRF 融合 | < 10ms | < 5ms | 候选集更精简 |
+| Phase 5: Reranker | 200-500ms | 100-300ms | 候选数减少，精排更快 |
+| Phase 6: LLM₂ 验证 | 1-6s | 1-6s | 不变 |
+| **总计（通过）** | **~2-4s** | **~2-3.5s** | 略有缩短 |
+| **总计（补全）** | **~5-9s** | **~4-8s** | 降低约 1s |
+
+分层策略在延迟方面带来的收益并非重点（总延迟被 LLM 调用主导），其核心价值在于：
+
+1. **降低 Milvus/MongoDB 负载**：细层搜索空间缩小 95%+，集群吞吐量显著提升
+2. **提升 RRF 融合质量**：候选集噪声大幅减少，高质量结果排名更稳定
+3. **内存可控**：Phase 3 下钻 Chunk 数量受硬限约束，杜绝大文档导致的内存抖动
+4. **为未来 1000w+ 规模留出裕度**：漏斗架构的扫描成本增长远低于全库并行
