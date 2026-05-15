@@ -61,8 +61,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
@@ -759,6 +760,10 @@ class ChatService:
                     enrich_cache=enrich_cache,
                     alias_map=alias_map,
                 )
+                # 仅保留 LLM 正文中实际引用的 citations
+                citations_this_round = self._filter_cited_only(
+                    resp.content or "", citations_this_round,
+                )
                 await self._persist_assistant(
                     ctx=ctx,
                     message_id=assistant_msg_id,
@@ -799,6 +804,10 @@ class ChatService:
                     added_chunks=supplemented,
                     enrich_cache=enrich_cache,
                     alias_map=alias_map,
+                )
+                # 仅保留 LLM 正文中实际引用的 citations
+                citations_this_round = self._filter_cited_only(
+                    resp.content or "", citations_this_round,
                 )
                 await self._persist_assistant(
                     ctx=ctx,
@@ -846,6 +855,10 @@ class ChatService:
                 added_chunks=supplemented,
                 enrich_cache=enrich_cache,
                 alias_map=alias_map,
+            )
+            # 仅保留 LLM 正文中实际引用的 citations
+            citations_this_round = self._filter_cited_only(
+                resp.content or "", citations_this_round,
             )
             await self._persist_assistant(
                 ctx=ctx,
@@ -962,6 +975,10 @@ class ChatService:
                 added_chunks=supplemented,
                 enrich_cache=enrich_cache,
                 alias_map=alias_map,
+            )
+            # 仅保留 LLM 正文中实际引用的 citations
+            citations_final = self._filter_cited_only(
+                fin.content or "", citations_final,
             )
             await self._persist_assistant(
                 ctx=ctx,
@@ -1259,6 +1276,41 @@ class ChatService:
                 f"(user_id, document_id) 是否存在记录。"
             )
         return items
+
+    # 正则：提取 LLM 输出中实际引用的 alias，如 [c1]、[c12]
+    _CITED_ALIAS_RE = re.compile(r"\[c(\d{1,6})\]", re.IGNORECASE)
+
+    @staticmethod
+    def _filter_cited_only(
+        content: str,
+        citations: List[Citation],
+    ) -> List[Citation]:
+        """仅保留 LLM 正文中实际引用（``[cN]``）过的 citations。
+
+        - 扫描 ``content`` 里所有 ``[cN]`` 占位符，收集被引用的 alias 集合。
+        - 从完整 ``citations`` 中筛选 ``alias in cited_aliases``。
+        - 若 content 为空或没有任何引用，返回空列表（不再返回全部）。
+        - 保持原始顺序（被引用的 citation 按在 citations 中的出现位置排列）。
+        """
+        if not content or not citations:
+            return []
+        cited_aliases: Set[str] = set()
+        for m in ChatService._CITED_ALIAS_RE.finditer(content):
+            cited_aliases.add(f"c{m.group(1)}")
+        if not cited_aliases:
+            logger.debug(
+                "[citations] LLM 正文中未发现任何 [cN] 引用，返回空 citations"
+            )
+            return []
+        filtered = [
+            c for c in citations
+            if c.alias and c.alias.lower() in cited_aliases
+        ]
+        logger.info(
+            f"[citations] 过滤：LLM 引用了 {len(cited_aliases)} 个 alias，"
+            f"原始 {len(citations)} 条 → 保留 {len(filtered)} 条"
+        )
+        return filtered
 
     @staticmethod
     def _merge_citations_count(
