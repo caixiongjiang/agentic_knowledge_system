@@ -44,7 +44,14 @@
 =================================================="""
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
+import contextvars
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+
+# 并发安全的 tool_call_id 上下文变量：asyncio.gather 并发执行多个工具时，
+# 每个 task 有独立的 ContextVar 副本，不会互相覆盖。
+_current_tc_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_tc_id", default=""
+)
 
 from loguru import logger
 
@@ -85,13 +92,15 @@ def format_chunks_for_llm(
 
 
 def skeleton_outline_to_text(outline_tree: list) -> str:
-    """SkeletonNode 列表转可读文本（带缩进的目录树）"""
+    """SkeletonNode 列表转可读文本（带缩进的目录树，含 section_id 供 drill_down 使用）"""
     lines: List[str] = []
 
     def _walk(node: Any, depth: int = 0) -> None:
         indent = "  " * depth
-        title = getattr(node, "title", "")
-        lines.append(f"{indent}- {title}")
+        section_id = getattr(node, "section_id", "")
+        title = getattr(node, "title", "") or "(无标题)"
+        chunk_count = getattr(node, "chunk_count", 0)
+        lines.append(f"{indent}- [{section_id}] {title}（{chunk_count}个片段）")
         for child in getattr(node, "children", []):
             _walk(child, depth + 1)
 
@@ -106,7 +115,7 @@ def skeleton_outline_to_text(outline_tree: list) -> str:
 # 在 Chat 模式下默认暴露的导航工具白名单。
 # 注意：``roll_up`` 故意未列入，是 ChatService 的产品取舍——
 # 对话场景下"chunk 上溯到 section 标题"价值较低，可改用 skeleton 替代。
-DEFAULT_NAV_TOOLS: Sequence[str] = ("context_window", "drill_down", "skeleton")
+DEFAULT_NAV_TOOLS: Sequence[str] = ("context_window", "drill_down", "skeleton", "roll_up", "search_knowledge_base")
 
 
 class KnowledgeNavToolKit:
@@ -150,12 +159,23 @@ class KnowledgeNavToolKit:
         *,
         enabled_tools: Optional[Sequence[str]] = None,
         alias_map: Optional[ChunkAliasMap] = None,
+        retrieve_service: Optional[Any] = None,
+        on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        user_id: str = "",
+        knowledge_base_ids: Optional[List[str]] = None,
     ) -> None:
         self._supplemented = supplemented_items
         # capability 懒加载缓存，避免每次 import 都做一次
         self._capabilities: Dict[str, Any] = {}
         # session 级 chunk alias map（None 时回退到老行为：直接用真实 chunk_id）
         self._alias_map = alias_map
+        # search_knowledge_base 依赖
+        self._retrieve_service = retrieve_service
+        self._on_progress = on_progress
+        self._user_id = user_id
+        self._knowledge_base_ids = knowledge_base_ids or []
+        # 检索工具结果暂存：tool_call_id → (chunks_brief, params)
+        self._search_results: Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any]]] = {}
 
         # 全量注册基类内建 handler
         self._handlers: Dict[str, Callable[..., Awaitable[str]]] = {
@@ -163,6 +183,7 @@ class KnowledgeNavToolKit:
             "drill_down": self._drill_down,
             "roll_up": self._roll_up,
             "skeleton": self._skeleton,
+            "search_knowledge_base": self._search_knowledge_base,
         }
         # 给子类一个挂载额外 handler 的钩子
         self._register_extra_tools()
@@ -202,7 +223,13 @@ class KnowledgeNavToolKit:
         index = {s["function"]["name"]: s for s in all_schemas}
         return [index[name] for name in self._enabled if name in index]
 
-    async def call(self, name: str, args: Optional[Dict[str, Any]] = None) -> str:
+    async def call(
+        self,
+        name: str,
+        args: Optional[Dict[str, Any]] = None,
+        *,
+        tool_call_id: str = "",
+    ) -> str:
         """路由到对应 handler；未启用工具直接返回错误字符串。
 
         若构造时注入了 ``alias_map``，会把入参里 ``chunk_id`` 字段做一次
@@ -211,6 +238,8 @@ class KnowledgeNavToolKit:
         if name not in self._enabled:
             return f"工具未启用或不可用: {name}"
         handler = self._handlers[name]
+        # 设置当前 tool_call_id，供 search_knowledge_base 的进度回调使用
+        _current_tc_id_var.set(tool_call_id)
         unwrapped = self._unwrap_alias_in_args(args or {})
         try:
             return await handler(**unwrapped)
@@ -294,9 +323,11 @@ class KnowledgeNavToolKit:
         self,
         section_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        target: str = "chunk",
     ) -> str:
         from src.retrieve.types.enums import GranularityLevel
         from src.retrieve.types.query import NavigationQuery
+        from src.retrieve.types.result import SectionItem
 
         anchor_id = section_id or document_id or ""
         if not anchor_id:
@@ -304,51 +335,204 @@ class KnowledgeNavToolKit:
         anchor_type = (
             GranularityLevel.SECTION if section_id else GranularityLevel.DOCUMENT
         )
+
+        target_map = {
+            "section": GranularityLevel.SECTION,
+            "chunk": GranularityLevel.CHUNK,
+        }
+        target_granularity = target_map.get(target, GranularityLevel.CHUNK)
+
+        # Section → Section 无意义
+        if anchor_type == GranularityLevel.SECTION and target_granularity == GranularityLevel.SECTION:
+            return "drill_down: section_id 已经是章节级别，请指定 target=chunk"
+
         cap = self._cap("drill_down")
         query = NavigationQuery(
             anchor_id=anchor_id,
             anchor_type=anchor_type,
-            target_granularity=GranularityLevel.CHUNK,
+            target_granularity=target_granularity,
             include_content=True,
         )
         result = await cap.execute(query=query)
-        chunks = [it for it in result.items if isinstance(it, ChunkItem)]
-        self._supplemented.extend(chunks)
-        logger.debug(f"drill_down({anchor_id}) → {len(chunks)} chunks")
-        return format_chunks_for_llm(chunks, alias_map=self._alias_map)
 
-    async def _roll_up(self, chunk_id: str) -> str:
+        if target_granularity == GranularityLevel.SECTION:
+            # Document → Section：返回 section 列表
+            sections = [it for it in result.items if isinstance(it, SectionItem)]
+            if not sections:
+                return "未找到章节。"
+            lines = [f"找到 {len(sections)} 个章节:"]
+            for s in sections:
+                title = s.title or "(无标题)"
+                doc = s.document_id or "N/A"
+                lines.append(
+                    f"- section_id={s.section_id}, document_id={doc}\n  {title}"
+                )
+            logger.debug(f"drill_down({anchor_id}, target=section) → {len(sections)} sections")
+            return "\n".join(lines)
+        else:
+            # Section → Chunk / Document → Chunk：返回 chunk 列表
+            chunks = [it for it in result.items if isinstance(it, ChunkItem)]
+            self._supplemented.extend(chunks)
+            logger.debug(f"drill_down({anchor_id}, target=chunk) → {len(chunks)} chunks")
+            return format_chunks_for_llm(chunks, alias_map=self._alias_map)
+
+    async def _roll_up(
+        self,
+        chunk_id: Optional[str] = None,
+        section_id: Optional[str] = None,
+        target: str = "section",
+    ) -> str:
         from src.retrieve.types.enums import GranularityLevel
         from src.retrieve.types.query import NavigationQuery
-        from src.retrieve.types.result import SectionItem
+        from src.retrieve.types.result import DocumentItem, SectionItem
+
+        if not chunk_id and not section_id:
+            return "roll_up: 必须提供 chunk_id 或 section_id"
+        if chunk_id and section_id:
+            return "roll_up: chunk_id 和 section_id 只能传一个"
+
+        anchor_id = chunk_id or section_id
+        anchor_type = GranularityLevel.CHUNK if chunk_id else GranularityLevel.SECTION
+
+        target_map = {
+            "section": GranularityLevel.SECTION,
+            "document": GranularityLevel.DOCUMENT,
+        }
+        target_granularity = target_map.get(target, GranularityLevel.SECTION)
 
         cap = self._cap("roll_up")
         query = NavigationQuery(
-            anchor_id=chunk_id,
-            anchor_type=GranularityLevel.CHUNK,
-            target_granularity=GranularityLevel.SECTION,
+            anchor_id=anchor_id,
+            anchor_type=anchor_type,
+            target_granularity=target_granularity,
             include_content=True,
         )
         result = await cap.execute(query=query)
 
+        # 直接格式化，暴露真实 id 供下游工具使用，不走 alias 系统
+        sections: List[SectionItem] = []
+        documents: List[DocumentItem] = []
         chunks: List[ChunkItem] = []
         for item in result.items:
-            if isinstance(item, ChunkItem):
+            if isinstance(item, SectionItem):
+                sections.append(item)
+            elif isinstance(item, DocumentItem):
+                documents.append(item)
+            elif isinstance(item, ChunkItem):
                 chunks.append(item)
-            elif isinstance(item, SectionItem):
-                chunks.append(ChunkItem(
-                    chunk_id=f"rollup:{item.section_id}",
-                    score=item.score,
-                    document_id=item.document_id,
-                    text=item.title,
-                    metadata={
-                        "_source_route": "navkit_rollup",
-                        "_section_id": item.section_id,
-                    },
-                ))
-        self._supplemented.extend(chunks)
-        logger.debug(f"roll_up({chunk_id}) → {len(chunks)} items")
-        return format_chunks_for_llm(chunks, alias_map=self._alias_map)
+
+        lines: List[str] = []
+
+        if documents:
+            lines.append(f"找到 {len(documents)} 个所属文档:")
+            for d in documents:
+                title = d.title or "(无标题)"
+                summary = (d.summary or "")[:200]
+                lines.append(
+                    f"- document_id={d.document_id}, score={d.score:.4f}\n"
+                    f"  {title}" + (f"\n  {summary}" if summary else "")
+                )
+
+        if sections:
+            lines.append(f"找到 {len(sections)} 个所属章节:")
+            for s in sections:
+                title = s.title or "(无标题)"
+                doc = s.document_id or "N/A"
+                lines.append(
+                    f"- section_id={s.section_id}, document_id={doc}\n  {title}"
+                )
+
+        if chunks:
+            lines.append(format_chunks_for_llm(chunks, alias_map=self._alias_map))
+
+        logger.debug(
+            f"roll_up({anchor_id}, target={target}) → "
+            f"{len(documents)} docs, {len(sections)} sections, {len(chunks)} chunks"
+        )
+        return "\n".join(lines) if lines else "未找到上层信息。"
+
+    async def _search_knowledge_base(
+        self,
+        query_text: str,
+        top_k: int = 10,
+    ) -> str:
+        """调用完整检索管道（LLM₁ 路由规划 → 多路召回 → 融合 → 精排）"""
+        if self._retrieve_service is None:
+            return "search_knowledge_base: 检索服务不可用。"
+
+        from src.retrieve.pipeline.types import RetrieveRequest
+        from src.retrieve.types.query import MetadataFilter
+
+        filters = MetadataFilter(user_id=self._user_id)
+        if self._knowledge_base_ids:
+            filters.knowledge_base_id = self._knowledge_base_ids[0]
+
+        # 构建对话历史上下文，注入路由规划器以增强查询生成
+        conversation_context = self._build_conversation_context_for_search()
+
+        request = RetrieveRequest(
+            query_text=query_text,
+            filters=filters,
+            top_k=top_k,
+            enable_validation=False,
+            conversation_context=conversation_context,
+        )
+
+        # 进度回调：通过 kit 的 on_progress 传递 tool_call_id
+        async def on_progress(stage: str) -> None:
+            if self._on_progress is not None:
+                try:
+                    # tool_call_id 在 call() 中通过 _current_tc_id_var 设置
+                    tc_id = _current_tc_id_var.get()
+                    await self._on_progress(tc_id, stage)
+                except Exception:
+                    pass
+
+        try:
+            response = await self._retrieve_service.retrieve(
+                request, on_progress=on_progress,
+            )
+            items = list(response.items or [])
+            self._supplemented.extend(items)
+            logger.debug(
+                f"search_knowledge_base({query_text!r}) → {len(items)} chunks"
+            )
+
+            # 存储检索结果，供 _exec_tools_parallel 消费后传给前端
+            tc_id = _current_tc_id_var.get()
+            if tc_id:
+                chunks_brief = [
+                    {
+                        "chunk_id": c.chunk_id,
+                        "document_id": c.document_id,
+                        "score": c.score,
+                        "preview": (c.text or "")[:200],
+                    }
+                    for c in items
+                ]
+                params: Dict[str, Any] = {
+                    "query_text": query_text,
+                    "top_k": top_k,
+                }
+                if response.route_plan:
+                    params["route_plan"] = response.route_plan.model_dump(
+                        exclude_none=True,
+                    )
+                self._search_results[tc_id] = (chunks_brief, params)
+
+            return format_chunks_for_llm(items, alias_map=self._alias_map)
+        except Exception as e:
+            logger.warning(f"search_knowledge_base 执行异常: {e}")
+            return f"检索失败: {e}"
+
+    def _build_conversation_context_for_search(self) -> Optional[str]:
+        """从最近的 tool 消息中提取对话上下文（如果有）。
+
+        search_knowledge_base 在工具循环中被调用时，messages 里已有历史。
+        但 kit 不直接持有 messages，这里返回 None，
+        让 RetrieveService 的路由规划器使用默认上下文。
+        """
+        return None
 
     async def _skeleton(self, document_id: str) -> str:
         from src.retrieve.types.enums import GranularityLevel
@@ -417,14 +601,21 @@ _BUILTIN_NAV_SCHEMAS: List[ToolSchema] = [
         "function": {
             "name": "drill_down",
             "description": (
-                "从 section 或 document 级别向下钻取到子 chunk 列表。"
-                "适用于需要查看某个章节或文档下的完整内容。"
+                "从 document 或 section 级别向下钻取。"
+                "支持 document→section、document→chunk、section→chunk 三种路径。"
+                "返回真实 id，可继续用于后续导航工具。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "section_id": {"type": "string", "description": "目标 section 的 ID"},
-                    "document_id": {"type": "string", "description": "目标 document 的 ID"},
+                    "section_id": {"type": "string", "description": "起始 section 的 ID（与 document_id 二选一）"},
+                    "document_id": {"type": "string", "description": "起始 document 的 ID（与 section_id 二选一）"},
+                    "target": {
+                        "type": "string",
+                        "description": "目标粒度：section 或 chunk。document→section 返回章节列表，其余路径返回片段列表",
+                        "enum": ["section", "chunk"],
+                        "default": "chunk",
+                    },
                 },
             },
         },
@@ -434,21 +625,28 @@ _BUILTIN_NAV_SCHEMAS: List[ToolSchema] = [
         "function": {
             "name": "roll_up",
             "description": (
-                "从 chunk 上溯到所属 section 的标题和摘要，提供全局视角。"
-                "适用于需要了解某个 chunk 在文档中所处的位置和上层结构。"
+                "从 chunk 或 section 向上回溯。"
+                "支持 chunk→section、chunk→document、section→document 三种路径。"
+                "返回真实 id，可继续用于后续导航工具。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "chunk_id": {
                         "type": "string",
-                        "description": (
-                            "目标 chunk 的引用号（参考片段里显示的 alias，"
-                            "形如 c1 / c2 / c10；不是 UUID）。"
-                        ),
+                        "description": "起始 chunk 的引用号（如 c1 / c2），与 section_id 二选一",
+                    },
+                    "section_id": {
+                        "type": "string",
+                        "description": "起始 section 的 ID（真实 id），与 chunk_id 二选一",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "目标粒度：section 或 document",
+                        "enum": ["section", "document"],
+                        "default": "section",
                     },
                 },
-                "required": ["chunk_id"],
             },
         },
     },
@@ -466,6 +664,35 @@ _BUILTIN_NAV_SCHEMAS: List[ToolSchema] = [
                     "document_id": {"type": "string", "description": "目标 document 的 ID"},
                 },
                 "required": ["document_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge_base",
+            "description": (
+                "在知识库中检索与查询相关的文档片段。"
+                "内部会经过大模型路由规划、多路召回、融合和精排，返回最相关的结果。"
+                "当已有片段不足以回答用户问题，或需要更多信息时可以调用。"
+                "可以用不同的查询文本多次调用以获取不同角度的信息。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_text": {
+                        "type": "string",
+                        "description": "检索查询文本，描述需要查找的信息",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "返回结果数量",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 30,
+                    },
+                },
+                "required": ["query_text"],
             },
         },
     },

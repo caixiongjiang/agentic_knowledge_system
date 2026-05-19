@@ -33,28 +33,43 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "name": "drill_down",
-        "description": "从 section 或 document 级别向下钻取到子 chunk 列表",
+        "description": "从 document 或 section 级别向下钻取，支持 document→section、document→chunk、section→chunk",
         "parameters": {
             "section_id": {
                 "type": "string",
-                "description": "目标 section 的 ID",
+                "description": "起始 section 的 ID（与 document_id 二选一）",
                 "required": False,
             },
             "document_id": {
                 "type": "string",
-                "description": "目标 document 的 ID（与 section_id 二选一）",
+                "description": "起始 document 的 ID（与 section_id 二选一）",
+                "required": False,
+            },
+            "target": {
+                "type": "string",
+                "description": "目标粒度：section 或 chunk，默认 chunk",
                 "required": False,
             },
         },
     },
     {
         "name": "roll_up",
-        "description": "从 chunk 上溯到所属 section 的标题和摘要，提供全局视角",
+        "description": "从 chunk 或 section 向上回溯，支持 chunk→section、chunk→document、section→document",
         "parameters": {
             "chunk_id": {
                 "type": "string",
-                "description": "目标 chunk 的 ID",
-                "required": True,
+                "description": "起始 chunk 的 ID（与 section_id 二选一）",
+                "required": False,
+            },
+            "section_id": {
+                "type": "string",
+                "description": "起始 section 的 ID（与 chunk_id 二选一）",
+                "required": False,
+            },
+            "target": {
+                "type": "string",
+                "description": "目标粒度：section 或 document，默认 section",
+                "required": False,
             },
         },
     },

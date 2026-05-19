@@ -18,19 +18,16 @@
     两种执行路径
     ------------
     1. **RAG 单轮（``agent_mode=False``）**：
-        - 服务端先做一次知识库检索（``RetrieveService.retrieve``）；
-        - 把命中片段以 ``role=user`` 形式注入到最新 user 之前；
         - 一次性 ``LLMClient.astream`` 拉流，**不暴露 tools**；
         - 适合简单问答、低成本、低延迟。
     2. **Agent 工具循环（``agent_mode=True``）**：
-        - 服务端先做一次"种子检索"，结果作为最初引用；
-        - 以 ``KnowledgeNavToolKit`` 暴露 3 个导航工具
-          （``context_window`` / ``drill_down`` / ``skeleton``）；
+        - Agent 拥有完整工具集（``search_knowledge_base`` + 4 个导航工具）；
+        - Agent 自主决定何时检索、用什么查询、是否需要导航补充；
         - 每轮 ``astream`` 流出文本/思考/tool_call 增量；
         - 若收到 tool_calls，并行 ``asyncio.gather`` 执行后把结果以
           ``role=tool`` 拼回 messages，进入下一轮；
         - 工具循环上限 ``max_tool_rounds`` 由 ``ChatSession`` / 请求覆盖；
-        - 达上限后做一次**收尾轮**强制纯文本（参考 ``ResultValidator``）。
+        - 达上限后做一次**收尾轮**强制纯文本。
 
     与现有模块的协作
     ----------------
@@ -98,8 +95,6 @@ from src.prompts.chat import (
     drop_assistant_tool_dangling,
     estimate_history_tokens,
 )
-from src.retrieve.pipeline.types import RetrieveRequest
-from src.retrieve.types.query import MetadataFilter
 from src.retrieve.types.result import ChunkItem
 from src.service.chat.session_service import (
     ChatSessionService,
@@ -351,7 +346,7 @@ class ChatService:
             request.custom_system_prompt
             or session.system_prompt
             or build_chat_system_prompt(
-                enabled_tools=("context_window", "drill_down", "skeleton")
+                enabled_tools=("search_knowledge_base", "context_window", "drill_down", "skeleton", "roll_up")
                 if (request.agent_mode if request.agent_mode is not None else session.agent_mode)
                 else None,
             )
@@ -397,11 +392,9 @@ class ChatService:
         事件顺序（典型路径）::
 
             SESSION_READY
-            RETRIEVAL_STARTED
-            RETRIEVAL_DONE
             ( CONTENT_DELTA | THINKING_DELTA | TOOL_CALL_* ... )*
             MESSAGE_DONE             # 每轮 assistant 落库后
-            ( TOOL_CALL_COMPLETED ... TOOL_ROUND_DONE )*   # Agent 才有
+            ( RETRIEVAL_PROGRESS* TOOL_CALL_COMPLETED ... TOOL_ROUND_DONE )*   # Agent 才有
             TURN_DONE
 
         异常路径会在对应阶段透出 ``ERROR``，主流程继续直到 ``TURN_DONE``。
@@ -435,10 +428,9 @@ class ChatService:
         is_first_turn = (session.message_count or 0) == 0
 
         # turn 级 chunk 元数据缓存：同 chunk_id 在本 turn 内只查 4 张表 1 次。
-        # 三个使用点：
-        #   1) retrieval.done 帧（方案 B：种子 chunks 提前 enrich 下发）
-        #   2) _build_citations_for_round（每轮 assistant 落库 + message.done 下发）
-        #   3) tool_call.completed（如未来扩展到工具补充 chunks 也要 enrich）
+        # 使用点：
+        #   1) _build_citations_for_round（每轮 assistant 落库 + message.done 下发）
+        #   2) tool_call.completed（如未来扩展到工具补充 chunks 也要 enrich）
         enrich_cache = TurnEnrichCache(
             user_id=ctx.user_id,
             knowledge_base_id=(
@@ -470,6 +462,19 @@ class ChatService:
                 {"phase": "persist_user", "error": str(e)},
             )
             return
+
+        # ---- 2a) 首条消息：锁定模式到 session ----
+        if is_first_turn:
+            try:
+                self._session_service.update_session_mode(
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    agent_mode=ctx.agent_mode,
+                    enable_thinking=ctx.enable_thinking,
+                    max_tool_rounds=ctx.max_tool_rounds,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"锁定会话模式失败（忽略）: {e}")
 
         yield ChatEvent(
             ChatEventType.SESSION_READY,
@@ -505,56 +510,18 @@ class ChatService:
             logger.warning(f"alias_map 重建失败（按空 map 继续）: {e}")
             alias_map = ChunkAliasMap()
 
-        # ---- 4) 检索 ----
-        retrieved_hits: List[ChunkItem] = []
-        if not ctx.skip_retrieval:
-            yield ChatEvent(
-                ChatEventType.RETRIEVAL_STARTED,
-                {"query": ctx.query, "top_k": ctx.retrieve_top_k},
-            )
-            retrieval_start = time.perf_counter()
-            try:
-                retrieved_hits = await self._do_retrieve(ctx)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"检索失败，按空命中继续: {e}")
-                yield ChatEvent(
-                    ChatEventType.ERROR,
-                    {"phase": "retrieve", "error": str(e)},
-                )
-            result.retrieval_time_ms = (time.perf_counter() - retrieval_start) * 1000
+        # 从历史 assistant 消息中恢复 citations，供跨 turn 引用解析。
+        # alias_map 已从 alias_additions 重建，这里把历史 citations 也加载进
+        # turn_citations，这样当 LLM 在新 turn 引用历史 [cN] 时，
+        # _build_citations_for_round 能通过 extra_citations 找到对应 chunk。
+        turn_citations: Dict[str, Citation] = {}
+        for m in history:
+            if m.role == "assistant" and m.citations:
+                for c in m.citations:
+                    if c.chunk_id:
+                        turn_citations[c.chunk_id] = c
 
-            # 方案 B：把种子 chunks 提前 enrich，让前端 LLM 一吐引用就能渲染彩色 chip。
-            # enrich 失败不阻塞主流程——chunks 仍然能下发，只是没有 file_name 等扩展字段。
-            try:
-                await enrich_cache.ensure(retrieved_hits)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"enrich 种子 chunks 失败（忽略，按裸数据下发）: {e}")
-
-            # 提前给种子 chunks 分配 alias（必须先于 retrieval.done 帧；前端要靠
-            # alias 把 LLM 输出里的 [cN] chip 解析回 citation）。后续
-            # compose_chat_messages 渲染参考片段时这些 alias 命中缓存，不会重复分配。
-            seed_aliases: Dict[str, str] = {}
-            for c in retrieved_hits:
-                if c.chunk_id:
-                    seed_aliases[c.chunk_id] = alias_map.alias_for(c.chunk_id)
-
-            yield ChatEvent(
-                ChatEventType.RETRIEVAL_DONE,
-                {
-                    "hit_count": len(retrieved_hits),
-                    "time_ms": result.retrieval_time_ms,
-                    "chunks": [
-                        self._chunk_brief(
-                            c,
-                            meta=enrich_cache.get(c.chunk_id),
-                            alias=seed_aliases.get(c.chunk_id),
-                        )
-                        for c in retrieved_hits
-                    ],
-                },
-            )
-
-        # ---- 5) 收敛历史（轮 → token → 摘要） ----
+        # ---- 4) 收敛历史（轮 → token → 摘要） ----
         client = self._get_llm_client(ctx.model_preset)
         history = drop_assistant_tool_dangling(history)
         history = apply_history_window(
@@ -580,24 +547,139 @@ class ChatService:
                     keep_recent_turns=self._cfg.summary_keep_recent_turns,
                 )
 
-        # ---- 6) 组装首轮 messages ----
+        # ---- 6) Chat 模式：固定初始检索 ----
+        seed_hits: List[ChunkItem] = []
+
+        if not ctx.agent_mode and not ctx.skip_retrieval:
+            yield ChatEvent(ChatEventType.RETRIEVAL_STARTED, {})
+            retrieval_start = time.perf_counter()
+            try:
+                from src.retrieve.pipeline.types import RetrieveRequest
+                from src.retrieve.types.query import MetadataFilter
+
+                filters = MetadataFilter(user_id=ctx.user_id)
+                if ctx.knowledge_base_ids:
+                    filters.knowledge_base_id = ctx.knowledge_base_ids[0]
+
+                retrieve_request = RetrieveRequest(
+                    query_text=ctx.query,
+                    filters=filters,
+                    top_k=ctx.retrieve_top_k or self._cfg.retrieve_top_k,
+                    enable_validation=False,
+                )
+
+                # 用 queue polling 模式消费检索进度，与 Agent 模式一致
+                progress_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+                async def _on_chat_progress(stage: str) -> None:
+                    await progress_queue.put(stage)
+
+                retrieve_task = asyncio.create_task(
+                    self._get_retrieve_service().retrieve(
+                        retrieve_request, on_progress=_on_chat_progress,
+                    )
+                )
+                while not retrieve_task.done():
+                    try:
+                        stage = await asyncio.wait_for(
+                            progress_queue.get(), timeout=0.1,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    if stage is None:
+                        continue
+                    yield ChatEvent(
+                        ChatEventType.RETRIEVAL_PROGRESS,
+                        {"stage": stage},
+                    )
+                # drain remaining items
+                while not progress_queue.empty():
+                    try:
+                        stage = progress_queue.get_nowait()
+                        if stage is not None:
+                            yield ChatEvent(
+                                ChatEventType.RETRIEVAL_PROGRESS,
+                                {"stage": stage},
+                            )
+                    except asyncio.QueueEmpty:
+                        break
+                retrieve_resp = await retrieve_task
+                seed_hits = list(retrieve_resp.items or [])
+            except Exception as e:
+                logger.warning(f"Chat 模式初始检索失败（忽略，继续回答）: {e}")
+
+            retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
+
+            # enrich + alias 分配
+            meta_map: Dict[str, ChunkMeta] = {}
+            if seed_hits:
+                meta_map = await enrich_cache.ensure(seed_hits)
+                for c in seed_hits:
+                    alias_map.alias_for(c.chunk_id)
+
+            # 构建 retrieval.done 帧的 chunks 预览
+            chunk_previews = []
+            for c in seed_hits:
+                meta = meta_map.get(c.chunk_id)
+                chunk_previews.append(self._chunk_brief(
+                    c, meta=meta, alias=alias_map.alias_of(c.chunk_id),
+                ))
+
+            result.retrieval_time_ms = retrieval_ms
+            yield ChatEvent(
+                ChatEventType.RETRIEVAL_DONE,
+                {
+                    "hit_count": len(seed_hits),
+                    "time_ms": round(retrieval_ms, 1),
+                    "chunks": chunk_previews,
+                },
+            )
+
+            # ---- 6a) 持久化检索元数据到 user 消息 ----
+            if seed_hits:
+                await self._update_user_retrieval_metadata(
+                    user_msg_id=user_msg_id,
+                    updater=ctx.user_id,
+                    hit_count=len(seed_hits),
+                    time_ms=retrieval_ms,
+                    chunk_previews=chunk_previews,
+                    params={
+                        "query_text": ctx.query,
+                        "top_k": ctx.retrieve_top_k or self._cfg.retrieve_top_k,
+                        "time_ms": round(retrieval_ms, 1),
+                    },
+                )
+
+        # ---- 7) 组装首轮 messages ----
+        # Chat 模式：检索结果以"参考片段"形式注入 user 消息之前
+        # （compose_chat_messages 内部处理格式化 + alias 替换）
         messages: List[Dict[str, Any]] = compose_chat_messages(
             system_prompt=ctx.system_prompt,
             history=history,
             user_message=ctx.query,
-            retrieved_chunks=retrieved_hits,
+            retrieved_chunks=seed_hits,
             alias_map=alias_map,
         )
         if summary_dict is not None:
             messages.insert(1, summary_dict)
 
-        # ---- 7) 进入执行路径 ----
+        # ---- 8) 进入执行路径 ----
         supplemented: List[ChunkItem] = []
         kit: Optional[KnowledgeNavToolKit] = None
         if ctx.agent_mode:
+            # 检索工具进度回调：通过 Queue 桥接到 async generator yield
+            search_progress_queue: asyncio.Queue[Optional[Tuple[str, str]]] = asyncio.Queue()
+
+            async def _on_search_progress(tool_call_id: str, stage: str) -> None:
+                await search_progress_queue.put((tool_call_id, stage))
+
             kit = KnowledgeNavToolKit(
                 supplemented_items=supplemented,
                 alias_map=alias_map,
+                retrieve_service=self._get_retrieve_service(),
+                on_progress=_on_search_progress,
+                user_id=ctx.user_id,
+                knowledge_base_ids=ctx.knowledge_base_ids,
             )
 
         assistant_msg_ids: List[str] = []
@@ -618,7 +700,7 @@ class ChatService:
                 client=client,
                 kit=kit,
                 messages=messages,
-                seed_hits=retrieved_hits,
+                seed_hits=seed_hits,
                 supplemented=supplemented,
                 assistant_msg_ids=assistant_msg_ids,
                 tool_msg_ids=tool_msg_ids,
@@ -628,6 +710,8 @@ class ChatService:
                 max_rounds=max_rounds,
                 tools_schema=tools_schema,
                 thinking_budget=thinking_budget,
+                search_progress_queue=search_progress_queue if ctx.agent_mode else None,
+                turn_citations=turn_citations,
             ):
                 yield ev
         except asyncio.CancelledError:
@@ -671,7 +755,7 @@ class ChatService:
                 logger.debug(f"调度起标题任务失败（忽略）: {e}")
 
         result.total_time_ms = (time.perf_counter() - total_start) * 1000
-        result.citations_count = self._merge_citations_count(retrieved_hits, supplemented)
+        result.citations_count = self._merge_citations_count([], supplemented)
         yield ChatEvent(
             ChatEventType.TURN_DONE,
             {
@@ -713,6 +797,8 @@ class ChatService:
         max_rounds: int,
         tools_schema: Optional[List[Dict[str, Any]]],
         thinking_budget: Optional[int],
+        search_progress_queue: Optional[asyncio.Queue[Optional[Tuple[str, str]]]] = None,
+        turn_citations: Optional[Dict[str, Citation]] = None,
     ) -> AsyncIterator[ChatEvent]:
         """RAG 单轮 / Agent 工具循环 + 收尾轮的统一执行体"""
 
@@ -753,23 +839,32 @@ class ChatService:
 
             # ---- 分支 A: 无 tool_calls → 直接持久化 + message.done + 退出 ----
             if not resp.tool_calls:
-                # 种子 + 本 turn 内工具已累计补充的 chunk（多轮时后续轮仍可能引用 [c1]）
+                # 本 turn 内工具已累计补充的 chunk（多轮时后续轮仍可能引用 [c1]）
                 citations_this_round = await self._build_citations_for_round(
                     seed_hits=seed_hits,
                     added_chunks=supplemented,
                     enrich_cache=enrich_cache,
                     alias_map=alias_map,
+                    extra_citations=list((turn_citations or {}).values()),
                 )
-                # 仅保留 LLM 正文中实际引用的 citations
-                citations_this_round = self._filter_cited_only(
+                # 累计跨轮引用（保留全量，供后续 turn 解析 [cN]）
+                if turn_citations is not None:
+                    for c in citations_this_round:
+                        if c.chunk_id:
+                            turn_citations[c.chunk_id] = c
+                # 持久化全量 citations（含未引用的 chunk，供跨 turn 解析），
+                # 仅 message.done 事件做 _filter 给前端渲染用。
+                all_citations_for_persist = citations_this_round
+                citations_for_display = self._filter_cited_only(
                     resp.content or "", citations_this_round,
                 )
                 await self._persist_assistant(
                     ctx=ctx,
                     message_id=assistant_msg_id,
                     resp=resp,
-                    citations=citations_this_round,
+                    citations=all_citations_for_persist,
                     alias_map=alias_map,
+                    kit=kit,
                 )
                 assistant_msg_ids.append(assistant_msg_id)
                 yield ChatEvent(
@@ -780,8 +875,8 @@ class ChatService:
                         "round": round_idx,
                         "finish_reason": resp.finish_reason,
                         "tool_calls_count": 0,
-                        "citations_count": len(citations_this_round),
-                        "citations": [c.model_dump() for c in citations_this_round],
+                        "citations_count": len(citations_for_display),
+                        "citations": [c.model_dump() for c in citations_for_display],
                         "has_thinking": bool(resp.thinking),
                         "usage": {
                             "prompt_tokens": resp.usage.prompt_tokens,
@@ -804,17 +899,23 @@ class ChatService:
                     added_chunks=supplemented,
                     enrich_cache=enrich_cache,
                     alias_map=alias_map,
+                    extra_citations=list((turn_citations or {}).values()),
                 )
-                # 仅保留 LLM 正文中实际引用的 citations
-                citations_this_round = self._filter_cited_only(
+                if turn_citations is not None:
+                    for c in citations_this_round:
+                        if c.chunk_id:
+                            turn_citations[c.chunk_id] = c
+                all_citations_for_persist = citations_this_round
+                citations_for_display = self._filter_cited_only(
                     resp.content or "", citations_this_round,
                 )
                 await self._persist_assistant(
                     ctx=ctx,
                     message_id=assistant_msg_id,
                     resp=resp,
-                    citations=citations_this_round,
+                    citations=all_citations_for_persist,
                     alias_map=alias_map,
+                    kit=kit,
                 )
                 assistant_msg_ids.append(assistant_msg_id)
                 yield ChatEvent(
@@ -825,8 +926,8 @@ class ChatService:
                         "round": round_idx,
                         "finish_reason": resp.finish_reason,
                         "tool_calls_count": len(resp.tool_calls),
-                        "citations_count": len(citations_this_round),
-                        "citations": [c.model_dump() for c in citations_this_round],
+                        "citations_count": len(citations_for_display),
+                        "citations": [c.model_dump() for c in citations_for_display],
                         "has_thinking": bool(resp.thinking),
                         "usage": {
                             "prompt_tokens": resp.usage.prompt_tokens,
@@ -847,26 +948,89 @@ class ChatService:
             result.tool_rounds += 1
             result.tool_calls_count += len(resp.tool_calls)
             tool_t0 = time.perf_counter()
-            tool_results = await self._exec_tools_parallel(kit, resp.tool_calls)
+            # 启动工具并行执行，同时消费检索进度队列
+            tool_task = asyncio.create_task(
+                self._exec_tools_parallel(kit, resp.tool_calls)
+            )
+            if search_progress_queue is not None:
+                while not tool_task.done():
+                    try:
+                        item = await asyncio.wait_for(
+                            search_progress_queue.get(), timeout=0.1,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    if item is None:
+                        continue
+                    tc_id, stage = item
+                    yield ChatEvent(
+                        ChatEventType.RETRIEVAL_PROGRESS,
+                        {"stage": stage, "tool_call_id": tc_id},
+                    )
+                # drain remaining items
+                while not search_progress_queue.empty():
+                    try:
+                        item = search_progress_queue.get_nowait()
+                        if item is not None:
+                            tc_id, stage = item
+                            yield ChatEvent(
+                                ChatEventType.RETRIEVAL_PROGRESS,
+                                {"stage": stage, "tool_call_id": tc_id},
+                            )
+                    except asyncio.QueueEmpty:
+                        break
+            tool_results = await tool_task
             result.tool_time_ms += (time.perf_counter() - tool_t0) * 1000
+
+            # enrich 检索工具的 chunks_brief（补充 file_name / section_title 等渲染元数据）
+            if kit and kit._search_results:
+                all_brief_chunks: List[ChunkItem] = []
+                for cb_list, _ in kit._search_results.values():
+                    for cb in cb_list:
+                        all_brief_chunks.append(ChunkItem(
+                            chunk_id=cb["chunk_id"],
+                            score=cb.get("score", 0.0),
+                            document_id=cb.get("document_id"),
+                        ))
+                if all_brief_chunks:
+                    try:
+                        await enrich_cache.ensure(all_brief_chunks)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"enrich search chunks 失败: {e}")
+                # 把 enrich 后的元数据写回 chunks_brief
+                for cb_list, _ in kit._search_results.values():
+                    for cb in cb_list:
+                        meta = enrich_cache.get(cb["chunk_id"])
+                        if meta:
+                            cb["section_title"] = meta.section_title
+                            cb["page_index"] = meta.page_index
+                            cb["chunk_type"] = meta.chunk_type
+                            cb["file_id"] = meta.file_id
+                            cb["file_name"] = meta.file_name
 
             citations_this_round = await self._build_citations_for_round(
                 seed_hits=seed_hits,
                 added_chunks=supplemented,
                 enrich_cache=enrich_cache,
                 alias_map=alias_map,
+                extra_citations=list((turn_citations or {}).values()),
             )
-            # 仅保留 LLM 正文中实际引用的 citations
-            citations_this_round = self._filter_cited_only(
+            if turn_citations is not None:
+                for c in citations_this_round:
+                    if c.chunk_id:
+                        turn_citations[c.chunk_id] = c
+            all_citations_for_persist = citations_this_round
+            citations_for_display = self._filter_cited_only(
                 resp.content or "", citations_this_round,
             )
             await self._persist_assistant(
                 ctx=ctx,
                 message_id=assistant_msg_id,
                 resp=resp,
-                citations=citations_this_round,
+                citations=all_citations_for_persist,
                 tool_results=tool_results,
                 alias_map=alias_map,
+                kit=kit,
             )
             assistant_msg_ids.append(assistant_msg_id)
 
@@ -878,8 +1042,8 @@ class ChatService:
                     "round": round_idx,
                     "finish_reason": resp.finish_reason,
                     "tool_calls_count": len(resp.tool_calls),
-                    "citations_count": len(citations_this_round),
-                    "citations": [c.model_dump() for c in citations_this_round],
+                    "citations_count": len(citations_for_display),
+                    "citations": [c.model_dump() for c in citations_for_display],
                     "has_thinking": bool(resp.thinking),
                     "usage": {
                         "prompt_tokens": resp.usage.prompt_tokens,
@@ -914,17 +1078,24 @@ class ChatService:
                     "items_added": items_added,
                     "time_ms": time_ms,
                 })
+                completed_event: Dict[str, Any] = {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "args": tc.arguments,
+                    "result_brief": brief,
+                    "items_added": items_added,
+                    "time_ms": time_ms,
+                    "tool_message_id": tool_msg_id,
+                }
+                # 检索工具：附加 chunks 数据供前端渲染"查看"按钮
+                if kit and tc.name == "search_knowledge_base":
+                    search_result = kit._search_results.get(tc.id)
+                    if search_result:
+                        completed_event["retrieval_chunks"] = search_result[0]
+                        completed_event["retrieval_params"] = search_result[1]
                 yield ChatEvent(
                     ChatEventType.TOOL_CALL_COMPLETED,
-                    {
-                        "id": tc.id,
-                        "name": tc.name,
-                        "args": tc.arguments,
-                        "result_brief": brief,
-                        "items_added": items_added,
-                        "time_ms": time_ms,
-                        "tool_message_id": tool_msg_id,
-                    },
+                    completed_event,
                 )
 
             yield ChatEvent(
@@ -975,17 +1146,23 @@ class ChatService:
                 added_chunks=supplemented,
                 enrich_cache=enrich_cache,
                 alias_map=alias_map,
+                extra_citations=list((turn_citations or {}).values()),
             )
-            # 仅保留 LLM 正文中实际引用的 citations
-            citations_final = self._filter_cited_only(
+            if turn_citations is not None:
+                for c in citations_final:
+                    if c.chunk_id:
+                        turn_citations[c.chunk_id] = c
+            all_citations_for_persist = citations_final
+            citations_for_display = self._filter_cited_only(
                 fin.content or "", citations_final,
             )
             await self._persist_assistant(
                 ctx=ctx,
                 message_id=final_msg_id,
                 resp=fin,
-                citations=citations_final,
+                citations=all_citations_for_persist,
                 alias_map=alias_map,
+                kit=kit,
             )
             assistant_msg_ids.append(final_msg_id)
             yield ChatEvent(
@@ -996,8 +1173,8 @@ class ChatService:
                     "round": "final",
                     "finish_reason": fin.finish_reason,
                     "tool_calls_count": 0,
-                    "citations_count": len(citations_final),
-                    "citations": [c.model_dump() for c in citations_final],
+                    "citations_count": len(citations_for_display),
+                    "citations": [c.model_dump() for c in citations_for_display],
                     "has_thinking": bool(fin.thinking),
                     "usage": {
                         "prompt_tokens": fin.usage.prompt_tokens,
@@ -1007,29 +1184,6 @@ class ChatService:
                 },
             )
             result.final_finish_reason = fin.finish_reason
-
-    # ============================================================
-    # 子功能：检索
-    # ============================================================
-
-    async def _do_retrieve(self, ctx: ChatTurnContext) -> List[ChunkItem]:
-        """调用 ``RetrieveService`` 做种子检索"""
-        rs = self._get_retrieve_service()
-        # MetadataFilter：限定到会话允许的 KB
-        filters = MetadataFilter(
-            user_id=ctx.user_id,
-        )
-        if ctx.knowledge_base_ids:
-            # MetadataFilter 没有原生 list 字段，按首个 KB 过滤 + Phase 4 再扩展
-            filters.knowledge_base_id = ctx.knowledge_base_ids[0]
-        request = RetrieveRequest(
-            query_text=ctx.query,
-            filters=filters,
-            top_k=ctx.retrieve_top_k,
-            enable_validation=self._cfg.enable_validation_for_chat,
-        )
-        response = await rs.retrieve(request)
-        return list(response.items or [])
 
     # ============================================================
     # 子功能：工具并行执行
@@ -1048,7 +1202,7 @@ class ChatService:
             if not kit.has(tc.name):
                 text = f"未知工具或未启用: {tc.name}"
             else:
-                text = await kit.call(tc.name, tc.arguments)
+                text = await kit.call(tc.name, tc.arguments, tool_call_id=tc.id)
             elapsed = (time.perf_counter() - t0) * 1000
             added = max(0, len(kit._supplemented) - before)  # noqa: SLF001
             return tc, text, added, elapsed
@@ -1095,6 +1249,7 @@ class ChatService:
         citations: List[Citation],
         tool_results: Optional[List[Tuple[ToolCall, str, int, float]]] = None,
         alias_map: Optional[ChunkAliasMap] = None,
+        kit: Optional[KnowledgeNavToolKit] = None,
     ) -> None:
         """落 assistant 消息到 MongoDB（thinking / tool_calls / citations / usage 全保留）
 
@@ -1109,17 +1264,18 @@ class ChatService:
                 （Mongo 里保存语义稳定的真实 id，前端历史回放就不必依赖 alias）。
         """
         try:
-            # tc.id → (result_brief, items_added)
-            results_by_id: Dict[str, Tuple[str, int]] = {}
-            for tr_tc, tr_content, tr_items_added, _ in (tool_results or []):
+            # tc.id → (result_brief, items_added, time_ms)
+            results_by_id: Dict[str, Tuple[str, int, Optional[float]]] = {}
+            for tr_tc, tr_content, tr_items_added, tr_time_ms in (tool_results or []):
                 results_by_id[tr_tc.id] = (
                     (tr_content or "")[:200],
                     tr_items_added,
+                    tr_time_ms,
                 )
 
             tool_call_records = []
             for tc in (resp.tool_calls or []):
-                brief, items_added = results_by_id.get(tc.id, (None, 0))
+                brief, items_added, tc_time_ms = results_by_id.get(tc.id, (None, 0, None))
                 # 落库前把入参里的 alias 还原回真实 id（仅 chunk_id 字段；
                 # section_id / document_id 本来就不走 alias）
                 args = dict(tc.arguments or {})
@@ -1129,6 +1285,14 @@ class ChatService:
                         real = alias_map.resolve_alias(raw)
                         if real:
                             args["chunk_id"] = real
+                extra_kwargs: Dict[str, Any] = {}
+                if kit and tc.name == "search_knowledge_base":
+                    sr = kit._search_results.get(tc.id)
+                    if sr:
+                        extra_kwargs["retrieval_chunks"] = sr[0]
+                        extra_kwargs["retrieval_params"] = sr[1]
+                if tc_time_ms is not None:
+                    extra_kwargs["time_ms"] = tc_time_ms
                 tool_call_records.append(
                     ToolCallRecord(
                         id=tc.id,
@@ -1136,6 +1300,7 @@ class ChatService:
                         arguments=args,
                         result_brief=brief,
                         items_added=items_added,
+                        **extra_kwargs,
                     )
                 )
             usage = TokenUsageRecord(
@@ -1171,6 +1336,33 @@ class ChatService:
             )
 
     @staticmethod
+    async def _update_user_retrieval_metadata(
+        *,
+        user_msg_id: str,
+        updater: str,
+        hit_count: int,
+        time_ms: float,
+        chunk_previews: List[Dict[str, Any]],
+        params: Dict[str, Any],
+    ) -> None:
+        """把 Chat 模式固定检索结果写入 user 消息的 metadata.retrieval，便于历史回放。"""
+        try:
+            await chat_message_repo.update(
+                user_msg_id,
+                updater=updater,
+                metadata={
+                    "retrieval": {
+                        "hit_count": hit_count,
+                        "time_ms": round(time_ms, 1),
+                        "chunks": chunk_previews,
+                        "params": params,
+                    },
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"写入 user 检索元数据失败（忽略）: {e}")
+
+    @staticmethod
     async def _persist_tool_message(
         *,
         ctx: ChatTurnContext,
@@ -1204,12 +1396,13 @@ class ChatService:
         added_chunks: List[ChunkItem],
         enrich_cache: TurnEnrichCache,
         alias_map: Optional[ChunkAliasMap] = None,
+        extra_citations: Optional[List[Citation]] = None,
     ) -> List[Citation]:
         """构造 assistant 落库 / message.done 用的 citations，并把渲染元数据 enrich。
 
         调用方应传入本 user turn 内需要覆盖的 chunk 集合，典型为::
 
-            seed_hits + supplemented   # 种子 + 工具链路上累计补充（去重由本函数完成）
+            seed_hits + supplemented   # 工具链路上累计补充（去重由本函数完成）
 
         这样任意一轮 assistant 的正文里引用 ``[c1]``（种子）或工具返回的
         ``[cN]``，同一条消息的 ``citations`` 都能带上 ``alias``，刷新后前端可解析。
@@ -1218,6 +1411,8 @@ class ChatService:
         - 元数据通过 ``enrich_cache`` 共享，相同 chunk_id 跨轮不会重复查表。
         - ``alias_map`` 若提供则给每条 Citation 填 ``alias``（``alias_for`` 须在
           更早阶段已为相关 chunk 分配过）。
+        - ``extra_citations``：来自更早 assistant 段的已 enrich citations（跨 turn 引用），
+          直接合并到结果中（不重新 enrich）。
         """
         seen: set = set()
         unique_chunks: List[ChunkItem] = []
@@ -1227,14 +1422,22 @@ class ChatService:
             seen.add(c.chunk_id)
             unique_chunks.append(c)
 
-        if not unique_chunks:
+        # extra_citations 已经是 enriched 的 Citation，无需再走 enrich 流程
+        # 先收集它们的 chunk_id，后续去重合并
+        extra_by_id: Dict[str, Citation] = {}
+        for ec in (extra_citations or []):
+            if ec.chunk_id and ec.chunk_id not in seen:
+                extra_by_id[ec.chunk_id] = ec
+
+        if not unique_chunks and not extra_by_id:
             return []
 
         # 触发本轮所需 chunks 的 enrich（命中缓存的部分零成本）
-        try:
-            await enrich_cache.ensure(unique_chunks)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"enrich citations 失败（按裸数据落库）: {e}")
+        if unique_chunks:
+            try:
+                await enrich_cache.ensure(unique_chunks)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"enrich citations 失败（按裸数据落库）: {e}")
 
         items: List[Citation] = []
         # 调试统计：本轮 chunks 的 file_id / file_name / section_title 命中率
@@ -1247,8 +1450,6 @@ class ChatService:
             if meta and meta.section_title:
                 hit_section += 1
             preview = (c.text or "").strip()
-            if preview:
-                preview = preview[:200]
             items.append(Citation(
                 chunk_id=c.chunk_id,
                 document_id=c.document_id,
@@ -1263,10 +1464,15 @@ class ChatService:
                 preview=preview or None,
             ))
         total = len(unique_chunks)
-        logger.info(
-            f"[citations] 本轮 enrich 命中：file_id {hit_file}/{total}，"
-            f"section_title {hit_section}/{total}（缓存 size={enrich_cache.size}）"
-        )
+        if total:
+            logger.info(
+                f"[citations] 本轮 enrich 命中：file_id {hit_file}/{total}，"
+                f"section_title {hit_section}/{total}（缓存 size={enrich_cache.size}）"
+            )
+        # 合并跨 turn 的已 enrich citations
+        if extra_by_id:
+            items.extend(extra_by_id.values())
+            logger.debug(f"[citations] 合并跨 turn citations: {len(extra_by_id)} 条")
         if hit_file == 0 and total > 0:
             sample_cids = ", ".join(c.chunk_id for c in unique_chunks[:3])
             sample_dids = ", ".join((c.document_id or "?") for c in unique_chunks[:3])
@@ -1341,7 +1547,7 @@ class ChatService:
             "chunk_id": c.chunk_id,
             "document_id": c.document_id,
             "score": c.score,
-            "preview": ((c.text or "")[:120]),
+            "preview": (c.text or ""),
         }
         if alias:
             brief["alias"] = alias

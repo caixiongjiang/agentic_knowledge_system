@@ -117,6 +117,9 @@ def _to_message_item(m: ChatMessage) -> ChatMessageItem:
                 arguments=dict(tc.arguments or {}),
                 result_brief=tc.result_brief,
                 items_added=int(tc.items_added or 0),
+                retrieval_chunks=tc.retrieval_chunks,
+                retrieval_params=tc.retrieval_params,
+                time_ms=tc.time_ms,
             )
             for tc in (m.tool_calls or [])
         ],

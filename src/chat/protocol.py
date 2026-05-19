@@ -137,6 +137,7 @@ class ServerFrameKind(str, Enum):
     # 来自 ChatEventType（值与之保持一致）
     SESSION_READY = "session.ready"
     RETRIEVAL_STARTED = "retrieval.started"
+    RETRIEVAL_PROGRESS = "retrieval.progress"
     RETRIEVAL_DONE = "retrieval.done"
     THINKING_DELTA = "thinking.delta"
     CONTENT_DELTA = "content.delta"
@@ -169,6 +170,7 @@ class ServerFrame(BaseModel):
 _CHAT_EVENT_TO_FRAME: Dict[ChatEventType, ServerFrameKind] = {
     ChatEventType.SESSION_READY: ServerFrameKind.SESSION_READY,
     ChatEventType.RETRIEVAL_STARTED: ServerFrameKind.RETRIEVAL_STARTED,
+    ChatEventType.RETRIEVAL_PROGRESS: ServerFrameKind.RETRIEVAL_PROGRESS,
     ChatEventType.RETRIEVAL_DONE: ServerFrameKind.RETRIEVAL_DONE,
     ChatEventType.THINKING_DELTA: ServerFrameKind.THINKING_DELTA,
     ChatEventType.CONTENT_DELTA: ServerFrameKind.CONTENT_DELTA,

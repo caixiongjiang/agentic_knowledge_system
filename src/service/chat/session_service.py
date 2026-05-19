@@ -194,6 +194,27 @@ class ChatSessionService:
         with manager.get_session() as db:
             return self._session_repo.touch(db, session_id, delta=delta)
 
+    def update_session_mode(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        agent_mode: Optional[bool] = None,
+        enable_thinking: Optional[bool] = None,
+        max_tool_rounds: Optional[int] = None,
+    ) -> bool:
+        """首条消息发出后，把用户选择的运行参数回写到 session。"""
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            return self._session_repo.update_mode(
+                db,
+                session_id,
+                agent_mode=agent_mode,
+                enable_thinking=enable_thinking,
+                max_tool_rounds=max_tool_rounds,
+                updater=user_id,
+            )
+
     # ============================================================
     # 删除
     # ============================================================

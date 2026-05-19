@@ -120,6 +120,16 @@ class ToolCallRecord(PydanticBaseModel):
     items_added: int = Field(
         0, description="本次工具补全到 supplemented_items 的数量",
     )
+    # 检索工具专用：持久化检索结果，供历史回放时前端渲染"查看"按钮
+    retrieval_chunks: Optional[List[Dict[str, Any]]] = Field(
+        None, description="检索命中的 chunk 简要列表（chunk_id, score, preview 等）",
+    )
+    retrieval_params: Optional[Dict[str, Any]] = Field(
+        None, description="检索参数（query_text, top_k, route_plan 等）",
+    )
+    time_ms: Optional[float] = Field(
+        None, description="工具执行耗时（毫秒）",
+    )
 
     model_config = ConfigDict(extra="ignore")
 

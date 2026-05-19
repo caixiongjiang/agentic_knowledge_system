@@ -73,6 +73,7 @@ class RoutePlanner:
         filters: Optional[MetadataFilter] = None,
         top_k: int = 10,
         route_hints: Optional[List[str]] = None,
+        conversation_context: Optional[str] = None,
     ) -> RoutePlan:
         """生成路由计划
 
@@ -81,6 +82,7 @@ class RoutePlanner:
             filters: 元数据过滤条件
             top_k: 最终需要的结果数量
             route_hints: 路由提示
+            conversation_context: 对话历史上下文（最近几轮消息摘要）
 
         Returns:
             RoutePlan 路由计划
@@ -95,7 +97,12 @@ class RoutePlanner:
         if route_hints:
             hints_desc = f"建议路由: {', '.join(route_hints)}"
 
+        context_desc = ""
+        if conversation_context:
+            context_desc = f"对话历史上下文:\n{conversation_context}\n\n"
+
         user_msg = ROUTE_PLANNER_USER.format(
+            conversation_context=context_desc,
             query_text=query_text,
             filters_desc=filters_desc,
             top_k=top_k,

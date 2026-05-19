@@ -13,7 +13,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -112,15 +112,25 @@ class RetrieveService:
 
     # ==================== 完整 Pipeline ====================
 
-    async def retrieve(self, request: RetrieveRequest) -> RetrieveResponse:
+    async def retrieve(
+        self,
+        request: RetrieveRequest,
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> RetrieveResponse:
         """智能检索（完整 Pipeline）
 
         Phase 1: LLM₁ 路由规划
         Phase 2-5: 多路并行召回 → 跨粒度对齐 → RRF 融合 → Rerank
         Phase 6: LLM₂ 结果验证 + 自主补全
+
+        Args:
+            on_progress: 可选的进度回调，接收阶段名称字符串
+                ("planning" / "searching" / "reranking")
         """
         total_start = time.perf_counter()
         timings = PhaseTimings()
+
+        await self._emit_progress(on_progress, "planning")
 
         # Phase 1: LLM₁ 路由规划
         t = time.perf_counter()
@@ -131,6 +141,7 @@ class RetrieveService:
                 filters=request.filters,
                 top_k=request.top_k,
                 route_hints=request.route_hints,
+                conversation_context=request.conversation_context,
             )
         except Exception as e:
             logger.warning(f"LLM₁ 路由规划失败，回退默认路由: {e}")
@@ -148,6 +159,7 @@ class RetrieveService:
             top_k=request.top_k,
             enable_rerank=request.enable_rerank,
             rerank_score_threshold=request.rerank_score_threshold,
+            on_progress=on_progress,
         )
         timings.recall_ms = phase_timings_partial.recall_ms
         timings.alignment_ms = phase_timings_partial.alignment_ms
@@ -252,9 +264,12 @@ class RetrieveService:
         top_k: int,
         enable_rerank: bool,
         rerank_score_threshold: Optional[float] = None,
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> tuple[List[ChunkItem], PhaseTimings]:
         """执行 Phase 2-5 确定性管道"""
         timings = PhaseTimings()
+
+        await self._emit_progress(on_progress, "searching")
 
         # Phase 2: 并行多路召回
         t = time.perf_counter()
@@ -298,6 +313,7 @@ class RetrieveService:
             return [], timings
 
         # Phase 5: Rerank（可选）
+        await self._emit_progress(on_progress, "reranking")
         if enable_rerank:
             t = time.perf_counter()
             items = await self._rerank_stage.rerank(
@@ -321,6 +337,19 @@ class RetrieveService:
                 )
 
         return items, timings
+
+    @staticmethod
+    async def _emit_progress(
+        callback: Optional[Callable[[str], Awaitable[None]]],
+        stage: str,
+    ) -> None:
+        """安全调用进度回调，异常不阻断主流程"""
+        if callback is None:
+            return
+        try:
+            await callback(stage)
+        except Exception:
+            logger.debug(f"进度回调异常 (stage={stage})，忽略")
 
     @staticmethod
     def _default_route_plan(request: RetrieveRequest) -> RoutePlan:

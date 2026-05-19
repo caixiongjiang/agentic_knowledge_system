@@ -72,6 +72,7 @@ class ChatEventType(str, Enum):
 
     # 检索阶段
     RETRIEVAL_STARTED = "retrieval.started"
+    RETRIEVAL_PROGRESS = "retrieval.progress"
     RETRIEVAL_DONE = "retrieval.done"
 
     # LLM 流式

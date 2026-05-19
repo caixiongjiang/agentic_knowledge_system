@@ -90,6 +90,10 @@ class ToolCallItem(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict)
     result_brief: Optional[str] = None
     items_added: int = 0
+    # 检索工具专用：持久化检索结果，供历史回放时前端渲染"查看"按钮
+    retrieval_chunks: Optional[List[Dict[str, Any]]] = None
+    retrieval_params: Optional[Dict[str, Any]] = None
+    time_ms: Optional[float] = None
 
     model_config = ConfigDict(extra="ignore")
 

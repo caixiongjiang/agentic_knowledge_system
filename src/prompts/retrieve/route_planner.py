@@ -57,6 +57,7 @@ ROUTE_PLANNER_SYSTEM = """\
 """
 
 ROUTE_PLANNER_USER = """\
+{conversation_context}\
 查询: {query_text}
 过滤条件: {filters_desc}
 最终需要 top_k={top_k} 条结果

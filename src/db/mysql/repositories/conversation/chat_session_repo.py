@@ -150,6 +150,46 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
             logger.error(f"刷新会话计数失败: {e}")
             return False
 
+    # ==================== 模式锁定 ====================
+
+    def update_mode(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        agent_mode: Optional[bool] = None,
+        enable_thinking: Optional[bool] = None,
+        max_tool_rounds: Optional[int] = None,
+        updater: str = "",
+    ) -> bool:
+        """首条消息发出后，把用户选择的运行参数回写到 session。"""
+        try:
+            updates: dict = {}
+            if agent_mode is not None:
+                updates[self.model.agent_mode] = agent_mode
+            if enable_thinking is not None:
+                updates[self.model.enable_thinking] = enable_thinking
+            if max_tool_rounds is not None:
+                updates[self.model.max_tool_rounds] = max_tool_rounds
+            if not updates:
+                return True
+            if updater:
+                updates[self.model.updater] = updater
+            updated = (
+                session.query(self.model)
+                .filter(
+                    self.model.session_id == session_id,
+                    self.model.deleted == 0,
+                )
+                .update(updates, synchronize_session=False)
+            )
+            session.commit()
+            return updated > 0
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"更新会话模式失败: {e}")
+            return False
+
     # ==================== 重命名 ====================
 
     def rename(

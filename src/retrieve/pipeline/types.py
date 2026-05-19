@@ -147,6 +147,10 @@ class RetrieveRequest(BaseModel):
         default=None,
         description="路由提示（可选，建议激活的路由名称列表）",
     )
+    conversation_context: Optional[str] = Field(
+        default=None,
+        description="对话历史上下文（最近几轮 user/assistant 消息摘要），用于指代消解和查询增强",
+    )
     max_validation_rounds: int = Field(
         default=3,
         description="LLM₂ 含并行工具批次的「调整」轮数上限（每轮可一次并行多工具，非 LangGraph 步数）",
