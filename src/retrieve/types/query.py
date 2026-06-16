@@ -35,6 +35,7 @@ class MetadataFilter(BaseModel):
     knowledge_base_name: Optional[str] = None
     label_id: Optional[str] = None
     source_type: Optional[str] = None
+    chunk_type: Optional[str] = None
     date_range: Optional[Tuple[str, str]] = None
 
     def to_milvus_filter_expr(self) -> Optional[str]:
@@ -55,6 +56,8 @@ class MetadataFilter(BaseModel):
             parts.append(f"knowledge_base_id == '{self.knowledge_base_id}'")
         if self.label_id:
             parts.append(f"label_id == '{self.label_id}'")
+        if self.chunk_type:
+            parts.append(f"type == '{self.chunk_type}'")
         return " and ".join(parts) if parts else None
 
 

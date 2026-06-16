@@ -108,19 +108,25 @@ class ChunkDataRepository(BaseRepository[ChunkData]):
     ) -> List[ChunkData]:
         """
         文本模糊搜索
-        
+
         Args:
             keyword: 搜索关键词
             limit: 限制数量
-            
+
         Returns:
             ChunkData 列表
         """
+        regex = {"$regex": keyword, "$options": "i"}
         results = await ChunkData.find({
             "deleted": 0,
-            "text": {"$regex": keyword, "$options": "i"}  # 不区分大小写
+            "$or": [
+                {"search_text": regex},
+                {"text_meta.image_caption": regex},
+                {"text_meta.table_caption": regex},
+                {"text_meta.text": regex},
+            ],
         }).limit(limit).to_list()
-        
+
         return results
     
     async def get_by_ids(

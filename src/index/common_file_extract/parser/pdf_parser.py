@@ -114,7 +114,7 @@ class PDFParser:
                             {
                                 "id": "uuid",
                                 "type": "text/image/table",
-                                "bbox": [x, y, w, h],
+                                "bbox": [x0, y0, x1, y1],
                                 "element_index": 0,
                                 ...
                             }

@@ -62,9 +62,17 @@ class ChatSession(BaseModel):
     上下文绑定
         - ``knowledge_base_ids``: JSON list，本会话允许检索的知识库 ID
           （多 KB 场景下 ChatService 会按此过滤；空列表表示用户全量 KB）
+        - ``folder_id``: 可选，会话绑定的文件夹 ID（来自 ``workspace_folder.folder_id``）。
+          NULL 表示 KB scope；非 NULL 表示 folder scope，每轮检索范围限定在该
+          文件夹下的所有文档（``include_subfolders`` 决定是否含子文件夹）。
+        - ``include_subfolders``: folder scope 下是否递归包含子文件夹的文档，默认 True。
+          仅当 ``folder_id`` 非空时有意义。
 
     模型与策略
-        - ``model_preset``: 引用 ``[llm.presets.<name>]``，默认 ``fast``
+        - ``model_preset``: 引用 ``[llm.presets.<name>]``，默认 ``fast``；
+          后台 agent / 起标题 / 摘要等仍由 preset 驱动
+        - ``model``: LiteLLM 模型字符串（如 ``openai/gpt-4o-mini``）；前端从
+          ``/api/chat/models`` 选定后写回，``None`` 表示由 ``model_preset`` 决定
         - ``agent_mode``: 是否启用 Agent 工具循环（``True`` 默认）；为 ``False``
           时走 RAG 单轮快路径
         - ``enable_thinking``: 是否启用思考链（``deepseek-reasoner`` 等）
@@ -115,12 +123,41 @@ class ChatSession(BaseModel):
         comment="本会话允许检索的知识库 ID 列表（JSON array of str；空表示用户全量 KB）",
     )
 
+    folder_id = Column(
+        String(64),
+        nullable=True,
+        comment=(
+            "会话绑定的文件夹 ID（关联 workspace_folder.folder_id）。"
+            "NULL 表示 KB scope；非 NULL 表示 folder scope，"
+            "检索范围限定在该文件夹下文档（含/不含子文件夹由 include_subfolders 决定）"
+        ),
+    )
+
+    include_subfolders = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment=(
+            "folder scope 下是否递归包含子文件夹的文档，默认 True。"
+            "仅当 folder_id 非空时有意义"
+        ),
+    )
+
     # ========== 模型与策略 ==========
     model_preset = Column(
         String(64),
         nullable=False,
         default="fast",
         comment="LLM preset 名称，引用 config.toml [llm.presets.*]",
+    )
+
+    model = Column(
+        String(255),
+        nullable=True,
+        comment=(
+            "LiteLLM 模型字符串（如 'openai/gpt-4o-mini'），由前端从 "
+            "/api/chat/models 选定后写回；NULL 表示由 model_preset 决定"
+        ),
     )
 
     agent_mode = Column(
@@ -135,6 +172,13 @@ class ChatSession(BaseModel):
         nullable=False,
         default=False,
         comment="是否启用思考链（仅 reasoning 类模型生效）",
+    )
+
+    enable_multimodal = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否启用多模态读图（仅支持多模态的模型生效）",
     )
 
     max_tool_rounds = Column(

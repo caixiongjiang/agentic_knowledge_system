@@ -37,6 +37,7 @@ from src.db.mysql.repositories.base.section_meta_info_repo import (
 )
 from src.retrieve.capabilities.base import BaseCapability, CapabilityDescriptor
 from src.retrieve.types.enums import GranularityLevel
+from src.types.utils.chunk_search_text import resolve_chunk_display_text
 from src.retrieve.types.query import NavigationQuery
 from src.retrieve.types.result import (
     ChunkItem,
@@ -164,7 +165,7 @@ class RollUp(BaseCapability):
         if query.include_content:
             chunk_ids = [item.chunk_id for item in items]
             chunk_data_list = await self._chunk_data_repo.get_by_ids(chunk_ids)
-            data_map = {str(cd.id): cd.text for cd in chunk_data_list}
+            data_map = {str(cd.id): resolve_chunk_display_text(cd) for cd in chunk_data_list}
             for item in items:
                 item.text = data_map.get(item.chunk_id)
 
@@ -194,6 +195,14 @@ class RollUp(BaseCapability):
             section_meta = self._section_meta_repo.get_by_id(
                 session, chunk_rel.section_id,
             )
+            try:
+                sec_chunk_count = len(
+                    self._chunk_rel_repo.get_by_section_id(
+                        session, chunk_rel.section_id,
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                sec_chunk_count = 0
             items.append(SectionItem(
                 section_id=chunk_rel.section_id,
                 score=1.0,
@@ -202,6 +211,7 @@ class RollUp(BaseCapability):
                 metadata={
                     "source_element_id": query.anchor_id,
                     "text_level": section_meta.text_level if section_meta else None,
+                    "chunk_count": sec_chunk_count,
                 },
             ))
 
@@ -246,6 +256,13 @@ class RollUp(BaseCapability):
         section_id = chunk_rel.section_id
         section_meta = self._section_meta_repo.get_by_id(session, section_id)
 
+        try:
+            sec_chunk_count = len(
+                self._chunk_rel_repo.get_by_section_id(session, section_id)
+            )
+        except Exception:  # noqa: BLE001
+            sec_chunk_count = 0
+
         item = SectionItem(
             section_id=section_id,
             score=1.0,
@@ -255,6 +272,7 @@ class RollUp(BaseCapability):
                 "source_chunk_id": query.anchor_id,
                 "text_level": section_meta.text_level if section_meta else None,
                 "parent_section_id": None,
+                "chunk_count": sec_chunk_count,
             },
         )
 
@@ -318,14 +336,35 @@ class RollUp(BaseCapability):
         item = DocumentItem(
             document_id=document_id,
             score=1.0,
-            metadata=extra_metadata or {},
+            metadata=dict(extra_metadata or {}),
         )
+
+        # section_count：用 SectionDocumentRepository 即时聚合，
+        # 让上层 Agent 能粗略判断文档规模。失败不致命。
+        manager = self._get_mysql_manager()
+        try:
+            with manager.get_session() as session:
+                section_rels = self._section_doc_repo.get_by_document_id(
+                    session, document_id,
+                )
+                item.section_count = len(section_rels)
+        except Exception:  # noqa: BLE001
+            item.section_count = 0
 
         if include_content:
             doc_data = await self._document_data_repo.get_by_id(document_id)
             if doc_data:
                 item.summary = doc_data.summary_zh or doc_data.summary_en
-                item.title = doc_data.metadata.get("title") if doc_data.metadata else None
+                if doc_data.metadata:
+                    item.title = doc_data.metadata.get("title")
+                    # 从 metadata 透传若存在的 source_type / file_name 等可读字段，
+                    # 给 Agent 一个直观的"这是 PDF / Markdown / 文件名"信号。
+                    src_type = doc_data.metadata.get("source_type") or doc_data.metadata.get("file_type")
+                    if src_type:
+                        item.source_type = src_type
+                    file_name = doc_data.metadata.get("file_name") or doc_data.metadata.get("name")
+                    if file_name and "file_name" not in item.metadata:
+                        item.metadata["file_name"] = file_name
 
         return RetrieveResult(items=[item], total_count=1)
 

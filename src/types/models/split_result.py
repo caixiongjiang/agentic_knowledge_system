@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 import uuid
 
+from src.types.utils.image_chunk_text import format_image_chunk_embed_text
+
 
 class ChunkType(str, Enum):
     """Chunk类型枚举"""
@@ -182,15 +184,34 @@ class ChunkInfo(BaseModel):
         description="表格脚注（table类型）"
     )
     
-    # ========== 向量化源文本字段 ==========
+    # ========== 检索 / 展示文本（split 阶段产出） ==========
     vector_text: Optional[str] = Field(
         default=None,
-        description="用于向量化的源文本（发送到Kafka，由Embedding服务处理）"
+        description=(
+            "检索文本：Milvus chunk_store 向量化源，对应 MongoDB search_text。"
+            "image/table 为去包装语义文本；text/code 为原文。"
+        )
     )
-    
+
+    display_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "展示文本：MongoDB text 字段，供 read_chunks / LLM 预览。"
+            "image/table 保留结构化包装。"
+        )
+    )
+
     enhanced_vector_text: Optional[str] = Field(
         default=None,
-        description="用于增强向量化的源文本（可选，由Embedding服务处理）"
+        description=(
+            "增强检索文本（Section 标题 + vector_text）；"
+            "Milvus enhanced_chunk_store 向量化源。"
+        )
+    )
+
+    enhanced_display_text: Optional[str] = Field(
+        default=None,
+        description="增强展示文本（Section 标题 + display_text），对应 MongoDB enhanced_text。",
     )
     
     # ========== 后续处理字段（后续填充） ==========
@@ -285,46 +306,84 @@ class ChunkInfo(BaseModel):
     def to_mongodb_dict(self) -> Dict[str, Any]:
         """
         转换为 MongoDB chunk_data 表的字典格式
-        
+
+        - search_text   ↔ chunk_store 向量化源（vector_text）
+        - text_meta     结构化内容元数据（JSON），按 chunk_type 存储不同字段
+        - enhanced_text ↔ 增强展示（enhanced_display_text）
+
         Returns:
             MongoDB 表字段字典
         """
-        return {
+        enhanced_display = self.enhanced_display_text or self.enhanced_vector_text
+        data: Dict[str, Any] = {
             "_id": self.chunk_id,
             "type": self.chunk_type,
-            "text": self.get_text_content(),
+            "search_text": self.vector_text,
+            "text_meta": self._build_text_meta(),
+            "enhanced_text": enhanced_display,
             "translation": self.content.get("translations", []),
-            "summary": None,  # 后续填充
             "atomic_qa": [],  # 后续填充
         }
-    
-    def to_embedding_message_dict(self) -> Dict[str, Any]:
+        return data
+
+    def _build_text_meta(self) -> Dict[str, Any]:
         """
-        转换为发送到 db_write.embedding.start 的消息格式
-        
+        按 chunk_type 构建 text_meta JSON 结构。
+
         Returns:
-            Embedding 消息字典（包含原始文本，不包含向量）
+            text_meta 字典
         """
+        if self.is_text() or self.is_code_block():
+            return {"text": self.get_text_content() or ""}
+
+        if self.is_image():
+            meta: Dict[str, Any] = {}
+            if self.image_caption:
+                meta["image_caption"] = self.image_caption
+            if self.image_footnote:
+                meta["image_footnote"] = self.image_footnote
+            # section_title 从 section_id 关联的 section content 获取
+            # 这里先留空，由上层调用时补充
+            return meta
+
+        if self.is_table():
+            meta: Dict[str, Any] = {}
+            if self.table_caption:
+                meta["table_caption"] = self.table_caption
+            if self.table_body:
+                meta["table_body"] = self.table_body
+            if self.table_footnote:
+                meta["table_footnote"] = self.table_footnote
+            return meta
+
+        # 兜底：当作 text 处理
+        return {"text": self.get_text_content() or ""}
+
+    def to_embedding_message_dict(self) -> Optional[Dict[str, Any]]:
+        """
+        转换为发送到 db_write.embedding.start 的消息格式（chunk_store）。
+
+        统一从 ``vector_text`` 取向量化源文本；为空时返回 None。
+        """
+        if not self.vector_text:
+            return None
         return {
             "chunk_id": self.chunk_id,
-            "text": self.get_text_content(),
+            "text": self.vector_text,
             "language": self.language,
-            "collection_type": "chunk",  # chunk_store_zh / chunk_store_en
+            "collection_type": "chunk",  # chunk_store
             "metadata": {
                 "chunk_type": self.chunk_type,
                 "page_index": self.page_index,
             }
         }
-    
+
     def to_enhanced_embedding_message_dict(self) -> Optional[Dict[str, Any]]:
         """
-        转换为 enhanced_chunk_store 的 Embedding 消息格式
-        
-        使用 enhanced_vector_text（Section标题 + Chunk文本）作为向量化源文本。
-        如果 enhanced_vector_text 为空则返回 None。
-        
-        Returns:
-            Enhanced Embedding 消息字典，或 None
+        转换为 enhanced_chunk_store 的 Embedding 消息格式。
+
+        使用 ``enhanced_vector_text``（Section 标题 + 正文/占位符）作为向量化源文本；
+        为空时返回 None。
         """
         if not self.enhanced_vector_text:
             return None
@@ -338,17 +397,53 @@ class ChunkInfo(BaseModel):
                 "page_index": self.page_index,
             }
         }
-    
+
     def get_text_content(self) -> Optional[str]:
         """
-        获取文本内容（用于向量化）
-        
-        Returns:
-            文本内容字符串
+        获取 split 解析出的「原始正文」（text/table/code 的 original.content）。
+
+        仅作为 split 阶段构造 ``vector_text`` 的输入；图片 chunk 无正文，返回 None。
+        消费端请统一使用 ``vector_text`` / MongoDB.text。
         """
+        if self.is_image():
+            return None
         if "original" in self.content and "content" in self.content["original"]:
             return self.content["original"]["content"]
         return None
+
+    def build_image_embedding_text(
+        self,
+        section_title: Optional[str] = None,
+    ) -> str:
+        """
+        组装图片 Chunk 检索文本（写入 vector_text / MongoDB.search_text）。
+
+        Args:
+            section_title: 所属 Section 标题（无 caption 时的 fallback）
+
+        Returns:
+            去包装的向量化源文本
+        """
+        return format_image_chunk_embed_text(
+            image_caption=self.image_caption,
+            image_footnote=self.image_footnote,
+            section_title=section_title,
+            page_index=self.page_index,
+        )
+
+    def build_image_display_text(
+        self,
+        section_title: Optional[str] = None,
+    ) -> str:
+        """组装图片 Chunk 展示文本（写入 display_text / MongoDB.text）。"""
+        from src.types.utils.chunk_search_text import format_image_display_text
+
+        return format_image_display_text(
+            image_caption=self.image_caption,
+            image_footnote=self.image_footnote,
+            section_title=section_title,
+            page_index=self.page_index,
+        )
 
 
 class SectionInfo(BaseModel):
@@ -406,7 +501,7 @@ class SectionInfo(BaseModel):
     
     page_position: Optional[List[float]] = Field(
         default=None,
-        description="Section在页面中的位置 [x, y, width, height]"
+        description="MinerU bbox [x0, y0, x1, y1]，0~1000 归一化，左上角原点",
     )
     
     # ========== 子Chunk列表 ==========
@@ -703,10 +798,11 @@ class SplitResult(BaseModel):
         """
         messages = []
         
-        # 只发送文本类型和表格类型的Chunk（图片的向量化在ImageUnderstand阶段）
         for chunk in self.chunks:
-            if chunk.is_text() or chunk.is_table() or chunk.is_code_block():
-                messages.append(chunk.to_embedding_message_dict())
+            if chunk.is_text() or chunk.is_table() or chunk.is_code_block() or chunk.is_image():
+                msg = chunk.to_embedding_message_dict()
+                if msg is not None:
+                    messages.append(msg)
         
         return messages
     
@@ -740,7 +836,12 @@ class SplitResult(BaseModel):
         """
         messages = []
         for chunk in self.chunks:
-            if chunk.is_text() or chunk.is_table() or chunk.is_code_block():
+            if (
+                chunk.is_text()
+                or chunk.is_table()
+                or chunk.is_code_block()
+                or chunk.is_image()
+            ):
                 msg = chunk.to_enhanced_embedding_message_dict()
                 if msg is not None:
                     messages.append(msg)

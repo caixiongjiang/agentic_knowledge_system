@@ -74,7 +74,17 @@ class ChatRequestPayload(BaseModel):
     enable_thinking: Optional[bool] = Field(
         None, description="是否启用思考链；None 表示沿用 session 默认",
     )
-    model_preset: Optional[str] = Field(None, description="LLM preset 名称")
+    enable_multimodal: Optional[bool] = Field(
+        None, description="是否启用多模态读图；None 表示沿用 session 默认",
+    )
+    model_preset: Optional[str] = Field(None, description="LLM preset 名名称")
+    model: Optional[str] = Field(
+        None,
+        description=(
+            "LiteLLM 模型字符串（如 'openai/gpt-4o-mini'），优先级高于 "
+            "model_preset"
+        ),
+    )
     max_tool_rounds: Optional[int] = Field(
         None, ge=1, description="Agent 工具循环上限",
     )
@@ -86,7 +96,22 @@ class ChatRequestPayload(BaseModel):
     )
     skip_retrieval: bool = Field(False, description="是否跳过初始检索")
 
-    model_config = ConfigDict(extra="ignore")
+    folder_id: Optional[str] = Field(
+        None,
+        description=(
+            "请求级临时覆盖 folder scope；None 表示沿用 session.folder_id。"
+            "若与 session 不同，必须满足 folder 所属 KB ∈ session.knowledge_base_ids"
+        ),
+    )
+    include_subfolders: Optional[bool] = Field(
+        None,
+        description=(
+            "请求级临时覆盖 include_subfolders；None 表示沿用 session 默认"
+        ),
+    )
+
+    # 含 ``model`` 字段，需要解除 Pydantic v2 的保护命名空间
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
 
 
 class ClientFrame(BaseModel):
@@ -143,6 +168,7 @@ class ServerFrameKind(str, Enum):
     CONTENT_DELTA = "content.delta"
     TOOL_CALL_STARTED = "tool_call.started"
     TOOL_CALL_ARGS_DELTA = "tool_call.args_delta"
+    TOOL_PROGRESS = "tool.progress"
     TOOL_CALL_COMPLETED = "tool_call.completed"
     TOOL_ROUND_DONE = "tool_round.done"
     MESSAGE_DONE = "message.done"
@@ -176,6 +202,7 @@ _CHAT_EVENT_TO_FRAME: Dict[ChatEventType, ServerFrameKind] = {
     ChatEventType.CONTENT_DELTA: ServerFrameKind.CONTENT_DELTA,
     ChatEventType.TOOL_CALL_STARTED: ServerFrameKind.TOOL_CALL_STARTED,
     ChatEventType.TOOL_CALL_ARGS_DELTA: ServerFrameKind.TOOL_CALL_ARGS_DELTA,
+    ChatEventType.TOOL_PROGRESS: ServerFrameKind.TOOL_PROGRESS,
     ChatEventType.TOOL_CALL_COMPLETED: ServerFrameKind.TOOL_CALL_COMPLETED,
     ChatEventType.TOOL_ROUND_DONE: ServerFrameKind.TOOL_ROUND_DONE,
     ChatEventType.MESSAGE_DONE: ServerFrameKind.MESSAGE_DONE,

@@ -26,6 +26,15 @@ ROUTE_PLANNER_SYSTEM = """\
 - 专有名词 / 型号 / 代码片段等，可考虑是否加 `exact_match`；偏问答可思是否加 `qa_dense`；偏概览/结构可思是否加 `section_dense` / `summary_dense`；上下文重、需细粒度语义时可思 `enhanced_chunk_dense`——均为**可选启发**，由你判断。
 - `params` 只填各路由说明里出现的键（如 `score_threshold`、`keywords`、`match_mode`、`bool_expression`、`query_text`、`filters` 等），无需要的键可省略或给空对象 `{{}}`。
 
+## chunk_type 过滤对路由策略的影响
+
+当过滤条件中包含「chunk类型限定」时，需根据类型调整路由选择：
+
+- **image（图片）**：图片 chunk 的 `search_text` 主要是图片标题（caption）和脚注（footnote），文本较短。可侧重 `bm25_sparse` 和 `exact_match` 在 caption 文本上召回；稠密向量路仍可保留用于语义匹配（如"关于XX原理的示意图"），但可适当降低 `top_k`。
+- **table（表格）**：若查询包含具体表格名、列名、数值等精确关键词，侧重 `exact_match` / `boolean_search`；若查询是对表格内容的语义理解（如"哪个季度营收最高"），稠密向量路更有效。两者可按查询意图组合使用。
+- **text / code_block**：标准文本检索，所有路由均可正常工作，按常规策略规划。
+- **未指定 chunk_type**：不限制类型，按常规策略规划，无需特殊处理。
+
 ## 强制约束（必须遵守）
 
 1. **过滤条件必须透传到每一路**：用户输入中的「过滤条件」（如知识库 ID、文档 ID、标签等）必须解析为 JSON 对象，**严格、完整地**填入**每一条** `route_plan` 元素的 `params.filters` 字段中，**禁止任何一路遗漏**。若用户未提供过滤条件（即「过滤条件」为空 / 无 / `{{}}`），则可省略 `filters` 键。漏填会导致跨知识库越权检索或召回大量无关数据。

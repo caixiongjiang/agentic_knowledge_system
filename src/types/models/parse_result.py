@@ -70,7 +70,7 @@ class ElementInfo(BaseModel):
     
     page_position: Optional[List[float]] = Field(
         default=None,
-        description="元素在页面中的位置 [x, y, width, height]"
+        description="MinerU bbox [x0, y0, x1, y1]，0~1000 归一化，左上角原点",
     )
     
     # ========== 文本元素字段（element_type=text） ==========
@@ -161,6 +161,10 @@ class ElementInfo(BaseModel):
     def is_table(self) -> bool:
         """判断是否为表格元素"""
         return self.element_type == ElementType.TABLE
+
+    def is_equation(self) -> bool:
+        """判断是否为公式元素"""
+        return self.element_type == ElementType.EQUATION
     
     def to_mysql_dict(self) -> Dict[str, Any]:
         """

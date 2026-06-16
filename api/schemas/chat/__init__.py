@@ -12,6 +12,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
+from api.schemas.chat.models import ChatModelItem, ChatModelListResponse
 from api.schemas.chat.session import (
     ChatMessageItem,
     ChatMessageListResponse,
@@ -38,4 +39,6 @@ __all__ = [
     "CitationItem",
     "ToolCallItem",
     "TokenUsageItem",
+    "ChatModelItem",
+    "ChatModelListResponse",
 ]

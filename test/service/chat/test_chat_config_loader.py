@@ -86,7 +86,7 @@ def test_from_config_manager_full_load() -> bool:
             "default_max_tool_rounds": 8,
             "thinking_budget": 8192,
             "max_completion_tokens": 1024,
-            "retrieval": {"top_k": 16, "enable_validation": True},
+            "retrieval": {"top_k": 16},
             "history": {
                 "max_messages": 60,
                 "max_turns": 20,
@@ -105,7 +105,6 @@ def test_from_config_manager_full_load() -> bool:
     assert cfg.thinking_budget == 8192
     assert cfg.max_completion_tokens == 1024
     assert cfg.retrieve_top_k == 16
-    assert cfg.enable_validation_for_chat is True
     assert cfg.max_history_messages == 60
     assert cfg.max_history_turns == 20
     assert cfg.max_context_tokens == 12000

@@ -67,11 +67,14 @@ def _build_chunk_meta_map(
 
 
 async def _build_chunk_summary_map(chunk_ids: List[str]) -> Dict[str, Optional[str]]:
-    """从 MongoDB ChunkData 批量获取 summary 字段"""
+    """从 MongoDB ChunkData 批量获取 summary 字段（text_meta.summary）"""
     from src.db.mongodb.repositories.chunk_data_repository import ChunkDataRepository
     repo = ChunkDataRepository()
     data_list = await repo.get_by_ids(chunk_ids)
-    return {str(cd.id): cd.summary for cd in data_list}
+    return {
+        str(cd.id): (cd.text_meta or {}).get("summary")
+        for cd in data_list
+    }
 
 
 def _format_element_content(element_type: Optional[str], raw_content: Optional[str]) -> str:

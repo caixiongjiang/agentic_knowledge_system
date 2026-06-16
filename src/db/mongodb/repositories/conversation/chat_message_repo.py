@@ -69,6 +69,38 @@ class ChatMessageRepository(BaseRepository[ChatMessage]):
             logger.error(f"拉取会话历史失败: {e}", exc_info=True)
             return []
 
+    async def list_recent_by_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        include_deleted: bool = False,
+    ) -> List[ChatMessage]:
+        """拉取会话内**最近** ``limit`` 条消息（按 create_time 正序返回）。
+
+        Chat 主流程应使用本方法而非 ``list_by_session(skip=0)``：
+        Agent 一轮可能产生 user + 多组 (assistant/tool_calls + tool×N)，
+        若只取**最早**的 N 条，会在工具链中间截断，导致 LLM 报
+        "insufficient tool messages following tool_calls"。
+        """
+        if limit <= 0:
+            return []
+        try:
+            total = await self.count_by_session(session_id)
+            if total <= 0:
+                return []
+            skip = max(0, total - limit)
+            return await self.list_by_session(
+                session_id,
+                limit=limit,
+                skip=skip,
+                ascending=True,
+                include_deleted=include_deleted,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"拉取会话最近历史失败: {e}", exc_info=True)
+            return []
+
     # ==================== 计数 ====================
 
     async def count_by_session(self, session_id: str) -> int:

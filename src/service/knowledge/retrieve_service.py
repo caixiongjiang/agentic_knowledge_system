@@ -5,9 +5,9 @@
 @File    : retrieve_service.py
 @Author  : caixiongjiang
 @Date    : 2026/01/21 10:00
-@Function: 
+@Function:
     Knowledge 检索编排服务
-    三阶段 Pipeline: LLM₁ 路由规划 → 确定性多路召回 → LLM₂ 结果验证
+    Pipeline: LLM₁ 路由规划 → 多路召回 → 跨粒度对齐 → 融合 → Rerank
 @Modify History:
     2026/04/03 - 实现核心骨架 (Phase 2-5) + 完整 retrieve() 方法
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
@@ -36,7 +36,6 @@ from src.retrieve.pipeline.types import (
     RetrieveResponse,
     RouteConfig,
     RoutePlan,
-    ValidationResult,
 )
 from src.retrieve.types.enums import SearchMode
 from src.retrieve.types.query import MetadataFilter
@@ -46,15 +45,14 @@ from src.retrieve.types.result import ChunkItem, RetrieveResult
 class RetrieveService:
     """检索编排服务
 
-    三阶段 Pipeline:
+    Pipeline:
     - Phase 1: LLM₁ 路由规划 (RoutePlanner)
-    - Phase 2-5: 确定性执行 (ParallelRecall → Alignment → Fusion → Rerank)
-    - Phase 6: LLM₂ 结果验证 (ResultValidator)
+    - Phase 2-5: ParallelRecall → Alignment → Fusion → Rerank
 
     提供三种调用模式:
-    - retrieve(): 完整 Pipeline（含 LLM₁ + LLM₂）
-    - retrieve_custom(): 自定义路由组合（跳过 LLM₁，直接执行 Phase 2-6）
-    - retrieve_single(): 直接调用单个原子能力（旁路模式）
+    - retrieve(): 完整 Pipeline
+    - retrieve_custom(): 自定义路由组合（跳过 LLM₁）
+    - retrieve_single(): 直接调用单个原子能力
     """
 
     def __init__(
@@ -69,9 +67,7 @@ class RetrieveService:
         self._aligner = GranularityAligner()
         self._rerank_stage = RerankStage()
 
-        # LLM 组件 — 延迟初始化
         self._planner = None
-        self._validator = None
 
     def _get_embedding_client(self) -> EmbeddingClient:
         if self._embedding_client is None:
@@ -85,31 +81,6 @@ class RetrieveService:
             self._planner = RoutePlanner(registry=self._registry)
         return self._planner
 
-    def _get_validator(self):
-        """延迟加载 LLM₂ 结果验证 Agent（LiteLLM 客户端）"""
-        if self._validator is None:
-            from src.retrieve.validator.result_validator import ResultValidator
-            client = self._create_validation_client()
-            self._validator = ResultValidator(
-                model=client,
-                registry=self._registry,
-            )
-        return self._validator
-
-    @staticmethod
-    def _create_validation_client():
-        """从组件配置创建验证 Agent 使用的 LiteLLM 客户端"""
-        try:
-            from src.utils.component_config_manager import get_component_config_manager
-            mgr = get_component_config_manager()
-            client = mgr.get_llm_client_for_component("result_validator")
-        except Exception as e:
-            logger.warning(f"加载 result_validator 配置失败，回退 fast 预设: {e}")
-            from src.client.llm import create_llm_client_from_preset
-            client = create_llm_client_from_preset("fast")
-        logger.debug(f"创建验证 Agent 模型: {client.model}")
-        return client
-
     # ==================== 完整 Pipeline ====================
 
     async def retrieve(
@@ -121,7 +92,6 @@ class RetrieveService:
 
         Phase 1: LLM₁ 路由规划
         Phase 2-5: 多路并行召回 → 跨粒度对齐 → RRF 融合 → Rerank
-        Phase 6: LLM₂ 结果验证 + 自主补全
 
         Args:
             on_progress: 可选的进度回调，接收阶段名称字符串
@@ -147,11 +117,9 @@ class RetrieveService:
             logger.warning(f"LLM₁ 路由规划失败，回退默认路由: {e}")
             route_plan = self._default_route_plan(request)
 
-        # 按 SearchMode 裁剪 route_plan（语义 / 字面 / 混合）
         route_plan = self._apply_search_mode(route_plan, request.search_mode, request)
         timings.planning_ms = (time.perf_counter() - t) * 1000
 
-        # Phase 2-5: 确定性 Pipeline
         items, phase_timings_partial = await self._execute_pipeline(
             route_plan=route_plan,
             query_text=request.query_text,
@@ -166,30 +134,22 @@ class RetrieveService:
         timings.fusion_ms = phase_timings_partial.fusion_ms
         timings.rerank_ms = phase_timings_partial.rerank_ms
 
-        # Phase 6: LLM₂ 结果验证
-        validation_result = None
-        if request.enable_validation and items:
-            t = time.perf_counter()
-            try:
-                validator = self._get_validator()
-                items, validation_result = await validator.validate(
-                    query_text=request.query_text,
-                    items=items,
-                    max_rounds=request.max_validation_rounds,
-                )
-            except Exception as e:
-                logger.warning(f"LLM₂ 结果验证失败，跳过: {e}")
-            timings.validation_ms = (time.perf_counter() - t) * 1000
-
         total_ms = (time.perf_counter() - total_start) * 1000
+
+        # 记录查询转化使用的 LLM₁ 模型名称
+        planner_model = None
+        try:
+            planner_model = planner._llm_client.model
+        except Exception:
+            pass
 
         return RetrieveResponse(
             items=items[:request.top_k],
             total_count=len(items),
             route_plan=route_plan,
-            validation_result=validation_result,
             execution_time_ms=total_ms,
             phase_timings=timings,
+            planner_model=planner_model,
         )
 
     # ==================== 自定义路由 ====================
@@ -201,11 +161,9 @@ class RetrieveService:
         filters: Optional[MetadataFilter] = None,
         top_k: int = 10,
         enable_rerank: bool = True,
-        enable_validation: bool = False,
-        max_validation_rounds: int = 3,
         rerank_score_threshold: Optional[float] = None,
     ) -> RetrieveResponse:
-        """自定义路由组合（跳过 LLM₁ 规划，直接执行 Phase 2-6）"""
+        """自定义路由组合（跳过 LLM₁ 规划，直接执行 Phase 2-5）"""
         total_start = time.perf_counter()
         filters = filters or MetadataFilter()
 
@@ -220,27 +178,12 @@ class RetrieveService:
             rerank_score_threshold=rerank_score_threshold,
         )
 
-        validation_result = None
-        if enable_validation and items:
-            t = time.perf_counter()
-            try:
-                validator = self._get_validator()
-                items, validation_result = await validator.validate(
-                    query_text=query_text,
-                    items=items,
-                    max_rounds=max_validation_rounds,
-                )
-            except Exception as e:
-                logger.warning(f"LLM₂ 结果验证失败，跳过: {e}")
-            timings.validation_ms = (time.perf_counter() - t) * 1000
-
         total_ms = (time.perf_counter() - total_start) * 1000
 
         return RetrieveResponse(
             items=items[:top_k],
             total_count=len(items),
             route_plan=route_plan,
-            validation_result=validation_result,
             execution_time_ms=total_ms,
             phase_timings=timings,
         )

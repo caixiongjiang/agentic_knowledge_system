@@ -1,0 +1,12 @@
+{
+  "_comment": "支持 thinking / reasoning 的模型白名单。模型名与 LiteLLM Proxy /v1/models 返回的 id 一致（不含 litellm_proxy/ 前缀）。新增模型时直接追加即可。",
+  "models": [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "glm-4.5-air",
+    "glm-4.7",
+    "glm-5.1",
+    "qwen3.6-flash",
+    "qwen3.7-plus"
+  ]
+}

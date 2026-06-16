@@ -159,6 +159,7 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         *,
         agent_mode: Optional[bool] = None,
         enable_thinking: Optional[bool] = None,
+        enable_multimodal: Optional[bool] = None,
         max_tool_rounds: Optional[int] = None,
         updater: str = "",
     ) -> bool:
@@ -169,6 +170,8 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
                 updates[self.model.agent_mode] = agent_mode
             if enable_thinking is not None:
                 updates[self.model.enable_thinking] = enable_thinking
+            if enable_multimodal is not None:
+                updates[self.model.enable_multimodal] = enable_multimodal
             if max_tool_rounds is not None:
                 updates[self.model.max_tool_rounds] = max_tool_rounds
             if not updates:
@@ -188,6 +191,58 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         except SQLAlchemyError as e:
             session.rollback()
             logger.error(f"更新会话模式失败: {e}")
+            return False
+
+    # ==================== 偏好回写（model / preset / thinking） ====================
+
+    def update_settings(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        model: Optional[str] = None,
+        model_preset: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        enable_multimodal: Optional[bool] = None,
+        updater: str = "",
+    ) -> bool:
+        """轻量偏好回写：``model`` / ``model_preset`` / ``enable_thinking`` / ``enable_multimodal``。
+
+        与 ``update_mode`` 的分工：``update_mode`` 是"会话首条消息后锁定"的
+        模式参数（``agent_mode`` / ``max_tool_rounds``）；本方法是"用户每轮
+        可调整的偏好"——选了哪个模型、是否开思考链等，每次都允许改。
+
+        所有参数都是 ``Optional``：``None`` 表示"不动这一项"。返回 ``True``
+        表示找到记录（即便 updates 为空也算成功）。
+        """
+        try:
+            updates: dict = {}
+            if model is not None:
+                # 允许传空字符串 → NULL 来清除前端的模型选择，回退到 preset
+                updates[self.model.model] = model or None
+            if model_preset is not None:
+                updates[self.model.model_preset] = model_preset
+            if enable_thinking is not None:
+                updates[self.model.enable_thinking] = enable_thinking
+            if enable_multimodal is not None:
+                updates[self.model.enable_multimodal] = enable_multimodal
+            if not updates:
+                return True
+            if updater:
+                updates[self.model.updater] = updater
+            updated = (
+                session.query(self.model)
+                .filter(
+                    self.model.session_id == session_id,
+                    self.model.deleted == 0,
+                )
+                .update(updates, synchronize_session=False)
+            )
+            session.commit()
+            return updated > 0
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"更新会话偏好失败: {e}")
             return False
 
     # ==================== 重命名 ====================

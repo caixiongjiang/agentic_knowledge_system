@@ -11,7 +11,7 @@
     验证从 ParallelRecall → GranularityAlignment → RRFFusion → Rerank
     的完整确定性管道在真实基础设施上端到端跑通。
 
-    调用方式: RetrieveService.retrieve_custom(enable_validation=False)
+    调用方式: RetrieveService.retrieve_custom()
     不依赖 LLM，这是最优先要跑通的测试。
 
     测试用例:
@@ -316,7 +316,6 @@ async def test_1_1_dual_route(service, kb_id: Optional[str]) -> bool:
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=True,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  ❌ 执行异常: {e}")
@@ -367,7 +366,6 @@ async def test_1_2_three_route_with_section(
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=True,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  ❌ 执行异常: {e}")
@@ -416,7 +414,6 @@ async def test_1_3_with_exact_match(service, kb_id: Optional[str]) -> bool:
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=True,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  ❌ 执行异常: {e}")
@@ -454,7 +451,6 @@ async def test_1_4_skip_rerank(service, kb_id: Optional[str]) -> bool:
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=False,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  ❌ 执行异常: {e}")
@@ -509,7 +505,6 @@ async def test_1_5_metadata_filter(service, kb_id: Optional[str]) -> bool:
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=True,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  ❌ 执行异常: {e}")
@@ -558,7 +553,6 @@ async def test_1_6_chunk_enhanced_mixed(
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=True,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  ❌ 执行异常: {e}")

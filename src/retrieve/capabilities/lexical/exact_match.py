@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from src.db.mongodb.models.chunk_data import ChunkData
 from src.retrieve.capabilities.base import BaseCapability, CapabilityDescriptor
+from src.types.utils.chunk_search_text import resolve_chunk_display_text
 from src.retrieve.capabilities.lexical._filter_helper import (
     filter_has_chunk_scope,
     resolve_chunk_ids_from_filters,
@@ -103,7 +104,12 @@ class ExactMatch(BaseCapability):
         for keyword in keywords:
             pattern = self._build_regex_pattern(keyword, mode)
             conditions.append({
-                "text": {"$regex": pattern, "$options": "i"},
+                "$or": [
+                    {"search_text": {"$regex": pattern, "$options": "i"}},
+                    {"text_meta.image_caption": {"$regex": pattern, "$options": "i"}},
+                    {"text_meta.table_caption": {"$regex": pattern, "$options": "i"}},
+                    {"text_meta.text": {"$regex": pattern, "$options": "i"}},
+                ],
             })
 
         query: Dict[str, Any] = {"deleted": 0}
@@ -118,13 +124,21 @@ class ExactMatch(BaseCapability):
     def _build_result_items(docs: List[ChunkData]) -> List[ChunkItem]:
         items: List[ChunkItem] = []
         for doc in docs:
+            meta: Dict[str, Any] = {"chunk_type": doc.chunk_type}
+            text_meta = doc.text_meta or {}
+            if text_meta.get("image_caption"):
+                meta["image_caption"] = text_meta["image_caption"]
+            if text_meta.get("image_footnote"):
+                meta["image_footnote"] = text_meta["image_footnote"]
+            if text_meta.get("table_caption"):
+                meta["table_caption"] = text_meta["table_caption"]
+            if text_meta.get("table_footnote"):
+                meta["table_footnote"] = text_meta["table_footnote"]
             items.append(ChunkItem(
                 chunk_id=str(doc.id),
                 score=1.0,
-                text=doc.text,
-                metadata={
-                    "chunk_type": doc.chunk_type,
-                },
+                text=resolve_chunk_display_text(doc),
+                metadata=meta,
             ))
         return items
 

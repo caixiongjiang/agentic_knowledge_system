@@ -59,23 +59,12 @@
     "enabled": true,
     "llm_preset": "reasoning",
     "llm": {
-      "model": "deepseek/deepseek-reasoner",
+      "model": "litellm_proxy/deepseek-v4-flash",
       "temperature": 0.1,
-      "max_tokens": 1024,
+      "max_tokens": 8192,
       "thinking_budget": 2048
     },
-    "comment": "LLM₁ 路由规划器（推理型；llm 字段优先于 llm_preset）"
-  },
-
-  "result_validator": {
-    "enabled": true,
-    "llm_preset": "fast",
-    "llm": {
-      "model": "deepseek/deepseek-chat",
-      "temperature": 0.3,
-      "max_tokens": 2048
-    },
-    "comment": "LLM₂ 结果验证 Agent（OpenAI 原生 tool calling，由 LiteLLM 统一收敛）"
+    "comment": "LLM₁ 路由规划器（推理型；llm 字段优先于 llm_preset）。model 必须是 LiteLLM Proxy 上真实可路由的模型，推荐显式 ``litellm_proxy/<alias>`` 走透传分支"
   },
 
   "mysql_writer": {

@@ -454,7 +454,7 @@ class FileParserService:
         document_id: str = ""
     ) -> Dict:
         """构建 MySQL 插入消息"""
-        # 构建位置信息
+        # MinerU bbox 原样入库：[x0,y0,x1,y1]，0~1000 归一化，左上角原点
         page_position = None
         if bbox and len(bbox) == 4:
             page_position = json.dumps(bbox)

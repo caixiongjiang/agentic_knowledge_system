@@ -133,12 +133,9 @@ class ChatServiceConfig:
     retrieve_top_k: int = 8
     """初始服务端检索 top_k"""
 
-    enable_validation_for_chat: bool = False
-    """RAG 单轮路径是否启用 LLM₂ 结果验证（默认关，省一次 LLM 调用）"""
-
     # ---------- 上下文 ----------
     max_history_messages: int = 40
-    """加载历史消息上限（条数维度，先按轮再按 token 滑窗收紧）"""
+    """加载历史消息上限（条数维度）；取**最近** N 条，再按轮/token 滑窗收紧"""
 
     max_context_tokens: int = 8000
     """``apply_token_window`` 的预算上限"""
@@ -165,6 +162,15 @@ class ChatServiceConfig:
 
     title_model_preset: str = "fast"
     """异步起标题的 preset 名（一次性短调用，性价比优先）"""
+
+    user_chat_template_preset: str = "fast"
+    """用户从前端 ``/api/chat/models`` 选定具体 ``model`` 时，作为采样参数模板的 preset 名
+
+    业务语义：preset 仍然是后台抽取/起标题/摘要的真相源（model + 调好的
+    temperature / max_tokens / thinking_budget 等）；当用户在前端选了某个
+    具体模型字符串时，``model`` 由用户提供，但 temperature 之类继续从这个
+    template preset 里读，保持 RAG 单轮 / Agent 单轮的体验稳定。
+    """
 
     # ---------- session 默认（仅当 ChatRequest 与 ChatSession 都未指定时使用） ----------
     default_agent_mode: bool = True
@@ -212,6 +218,11 @@ class ChatServiceConfig:
         inst.title_model_preset = str(
             chat_cfg.get("title_model_preset", inst.title_model_preset),
         )
+        inst.user_chat_template_preset = str(
+            chat_cfg.get(
+                "user_chat_template_preset", inst.user_chat_template_preset,
+            ),
+        )
         inst.default_agent_mode = bool(
             chat_cfg.get("default_agent_mode", inst.default_agent_mode),
         )
@@ -224,9 +235,6 @@ class ChatServiceConfig:
 
         # [chat.retrieval]
         inst.retrieve_top_k = int(retrieval.get("top_k", inst.retrieve_top_k))
-        inst.enable_validation_for_chat = bool(
-            retrieval.get("enable_validation", inst.enable_validation_for_chat),
-        )
 
         # [chat.history]
         inst.max_history_messages = int(
@@ -307,28 +315,59 @@ class ChatService:
             self._retrieve_service = RetrieveService()
         return self._retrieve_service
 
-    def _get_llm_client(self, model_preset: str) -> LLMClient:
-        """按 ``model_preset`` 取 LLMClient（按 preset 名缓存）。
+    def _get_llm_client(
+        self,
+        *,
+        model: Optional[str] = None,
+        model_preset: Optional[str] = None,
+    ) -> LLMClient:
+        """获取 LLMClient（按"最终 model 字符串"缓存）。
+
+        分发逻辑
+        --------
+        - ``model`` 非空：用户在前端显式选定了具体模型字符串，走
+          ``create_llm_client_from_model``——以 ``user_chat_template_preset``
+          作为采样参数模板，``model`` 字段被入参覆盖。
+        - 否则：按 ``model_preset`` 走 ``create_llm_client_from_preset``，
+          与历史行为完全一致。
+
+        缓存键统一用最终的 ``client.model`` 字符串：preset 路径上多个 preset
+        指向同一 model 时也能命中同一个 client；用户 model 路径上不同 preset
+        模板 + 同 model 时缓存粒度按 model 区分（业务上够用）。
 
         chat 模块**不走 ``components.json``**：``components.json`` 是 RAG 抽取
         Pipeline（Kafka Worker）的中央配置簿，与 chat 这种在线请求路径无关。
-
-        如需对主对话 / 起标题做细调（``temperature`` / ``max_tokens`` /
-        ``thinking_budget`` / ``api_base`` 等），运维在
-        ``config.toml [llm.presets.<name>]`` 加自定义 preset，再把
-        ``[chat].agent_model_preset`` / ``[chat].title_model_preset`` 指向
-        ``<name>`` 即可，无需改代码。
         """
-        cached = self._client_cache.get(model_preset)
+        from src.client.llm import (
+            create_llm_client_from_model,
+            create_llm_client_from_preset,
+        )
+
+        if model:
+            cache_key = f"model::{model}"
+            cached = self._client_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            client = create_llm_client_from_model(
+                model=model,
+                chat_template_preset=self._cfg.user_chat_template_preset,
+            )
+            self._client_cache[cache_key] = client
+            logger.debug(
+                f"ChatService LLMClient: explicit model={client.model}, "
+                f"template_preset={self._cfg.user_chat_template_preset}"
+            )
+            return client
+
+        preset = model_preset or self._cfg.agent_model_preset
+        cache_key = f"preset::{preset}"
+        cached = self._client_cache.get(cache_key)
         if cached is not None:
             return cached
-
-        from src.client.llm import create_llm_client_from_preset
-
-        client = create_llm_client_from_preset(model_preset)
-        self._client_cache[model_preset] = client
+        client = create_llm_client_from_preset(preset)
+        self._client_cache[cache_key] = client
         logger.debug(
-            f"ChatService LLMClient: preset={model_preset}, model={client.model}"
+            f"ChatService LLMClient: preset={preset}, model={client.model}"
         )
         return client
 
@@ -342,15 +381,67 @@ class ChatService:
         session,
     ) -> ChatTurnContext:
         """把请求级覆盖与会话默认合并成一份"本轮有效配置"。"""
+        # ===== scope 摘要（v0.8.0）=====
+        # 注意：sys_prompt 构造在 scope 解析之前，但 scope dict 构造需要解析结果。
+        # 所以这里先把 sys_prompt 的最终构造放到 scope 解析之后；上面只准备 desc。
+        _agent_mode = (
+            request.agent_mode if request.agent_mode is not None else session.agent_mode
+        )
+        _enabled_tools = (
+            ("search_knowledge_base", "grep_chunks", "context_window", "drill_down",
+             "skeleton", "roll_up", "read_chunks", "read_image_chunks")
+            if _agent_mode else None
+        )
+        # model 字段优先级：request > session > None（None 时由 model_preset 决定）
+        # 注意：``model`` 与 ``model_preset`` 并存——``model`` 选定具体模型，
+        # ``model_preset`` 仍作为采样参数模板（temperature / max_tokens 等）。
+        effective_model = request.model or session.model or None
+
+        # ===== scope 解析（v0.8.0 引入）=====
+        # 优先级：request.folder_id > session.folder_id；任一存在则 folder scope。
+        effective_folder_id: Optional[str] = (
+            request.folder_id
+            if request.folder_id is not None
+            else getattr(session, "folder_id", None)
+        )
+        effective_include_subfolders: bool = (
+            request.include_subfolders
+            if request.include_subfolders is not None
+            else bool(getattr(session, "include_subfolders", True))
+        )
+        scope_kind: str = "folder" if effective_folder_id else "kb"
+        scope_document_ids: List[str] = []
+        folder_label: Optional[str] = None
+        if effective_folder_id:
+            resolved = self._resolve_folder_document_ids(
+                user_id=session.user_id,
+                folder_id=effective_folder_id,
+                include_subfolders=effective_include_subfolders,
+                knowledge_base_ids=list(session.knowledge_base_ids or []),
+            )
+            scope_document_ids = resolved.get("document_ids", [])
+            folder_label = resolved.get("folder_label")
+
+        # 现在 scope 已解析完，构造 scope dict 给 system prompt
+        scope_dict: Optional[Dict[str, Any]] = None
+        if scope_kind == "folder":
+            scope_dict = {
+                "kind": "folder",
+                "folder_id": effective_folder_id,
+                "label": folder_label,
+                "include_subfolders": effective_include_subfolders,
+                "document_count": len(scope_document_ids),
+                "knowledge_base_ids": list(session.knowledge_base_ids or []),
+            }
         sys_prompt = (
             request.custom_system_prompt
             or session.system_prompt
             or build_chat_system_prompt(
-                enabled_tools=("search_knowledge_base", "context_window", "drill_down", "skeleton", "roll_up")
-                if (request.agent_mode if request.agent_mode is not None else session.agent_mode)
-                else None,
+                enabled_tools=_enabled_tools,
+                scope=scope_dict,
             )
         )
+
         return ChatTurnContext(
             session_id=session.session_id,
             user_id=session.user_id,
@@ -368,6 +459,7 @@ class ChatService:
                 or session.model_preset
                 or self._cfg.agent_model_preset
             ),
+            model=effective_model,
             max_tool_rounds=(
                 request.max_tool_rounds
                 if request.max_tool_rounds is not None
@@ -377,7 +469,99 @@ class ChatService:
             system_prompt=sys_prompt,
             knowledge_base_ids=list(session.knowledge_base_ids or []),
             skip_retrieval=request.skip_retrieval,
+            scope_kind=scope_kind,
+            folder_id=effective_folder_id,
+            folder_label=folder_label,
+            include_subfolders=effective_include_subfolders,
+            scope_document_ids=scope_document_ids,
         )
+
+    def _resolve_folder_document_ids(
+        self,
+        *,
+        user_id: str,
+        folder_id: str,
+        include_subfolders: bool,
+        knowledge_base_ids: List[str],
+    ) -> Dict[str, Any]:
+        """folder scope → document_ids 解析（v0.8.0）
+
+        每轮即时解析（不缓存到 session），保证文件夹增删能即时反映。
+
+        Args:
+            user_id: 当前用户
+            folder_id: 起始文件夹 ID
+            include_subfolders: 是否递归含子文件夹
+            knowledge_base_ids: 用于附加 KB 过滤；空表示不限 KB
+
+        Returns:
+            ``{"document_ids": [...], "folder_label": "..."}``。
+            folder 不存在 / 无权限 → ``document_ids = []`` + ``folder_label = None``
+            （上游做软降级；提示词层会注入"空 folder"提示）。
+        """
+        from src.db.mysql.connection.factory import get_mysql_manager
+        from src.db.mysql.repositories.business.workspace_file_system_repo import (
+            WorkspaceFileSystemRepository,
+        )
+        from src.db.mysql.repositories.business.workspace_folder_repo import (
+            workspace_folder_repo,
+        )
+
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            folder = db.query(workspace_folder_repo.model).filter(
+                workspace_folder_repo.model.folder_id == folder_id,
+                workspace_folder_repo.model.user_id == user_id,
+                workspace_folder_repo.model.deleted == 0,
+            ).first()
+            if not folder:
+                logger.warning(
+                    f"_resolve_folder_document_ids: folder_id={folder_id} "
+                    f"不存在或无权限（user={user_id}）；返回空 scope（软降级）"
+                )
+                return {"document_ids": [], "folder_label": None}
+
+            # 收集"目标文件夹 + 后代（如启用）"全部 folder_id
+            folder_ids: List[str] = [folder_id]
+            if include_subfolders:
+                descendants = workspace_folder_repo.get_descendants(
+                    db, user_id, folder.full_path,
+                )
+                folder_ids.extend(
+                    f.folder_id for f in descendants
+                    if f.folder_id != folder_id
+                )
+
+            file_repo = WorkspaceFileSystemRepository()
+            kb_filter = knowledge_base_ids[0] if knowledge_base_ids else None
+            files = file_repo.get_by_folder_ids(
+                db, user_id, folder_ids, knowledge_base_id=kb_filter,
+            )
+            # WorkspaceFileSystem.document_id 可空（文件可能尚未完成索引）
+            doc_ids = [f.document_id for f in files if f.document_id]
+            # 去重保序
+            seen: set = set()
+            unique: List[str] = []
+            for did in doc_ids:
+                if did not in seen:
+                    seen.add(did)
+                    unique.append(did)
+            # 给 LLM 看的可读 label：优先用 folder_name，其次取 full_path 末段
+            label: Optional[str] = (
+                getattr(folder, "folder_name", None)
+                or (
+                    folder.full_path.strip("/").split("/")[-1]
+                    if getattr(folder, "full_path", None)
+                    else None
+                )
+            )
+            logger.debug(
+                f"folder scope 解析: folder_id={folder_id}, "
+                f"include_subfolders={include_subfolders}, "
+                f"folders={len(folder_ids)}, files={len(files)}, "
+                f"unique_documents={len(unique)}, label={label}"
+            )
+            return {"document_ids": unique, "folder_label": label}
 
     # ============================================================
     # 主入口：流式对话
@@ -476,6 +660,35 @@ class ChatService:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"锁定会话模式失败（忽略）: {e}")
 
+        # ---- 2b) 每轮：把"轻偏好"回写到 session ----
+        # 与首轮"锁模式"互补：``model`` / ``enable_thinking`` / ``model_preset``
+        # 是用户每轮可调整的项；只要本轮 ctx 与 session 当前值不同就 update，
+        # 让用户下次进同一会话时 chip 默认选项跟随其上次选择。
+        try:
+            updates_payload: Dict[str, Any] = {}
+            if (request.model is not None) and ((session.model or None) != request.model):
+                updates_payload["model"] = request.model
+            if (
+                request.model_preset is not None
+                and session.model_preset != request.model_preset
+            ):
+                updates_payload["model_preset"] = request.model_preset
+            # 非首轮（首轮已被 update_session_mode 写过 enable_thinking）才写
+            if (
+                not is_first_turn
+                and request.enable_thinking is not None
+                and bool(session.enable_thinking) != bool(request.enable_thinking)
+            ):
+                updates_payload["enable_thinking"] = request.enable_thinking
+            if updates_payload:
+                self._session_service.update_session_settings(
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    **updates_payload,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"写回会话偏好失败（忽略）: {e}")
+
         yield ChatEvent(
             ChatEventType.SESSION_READY,
             {
@@ -483,6 +696,7 @@ class ChatService:
                 "user_message_id": user_msg_id,
                 "agent_mode": ctx.agent_mode,
                 "model_preset": ctx.model_preset,
+                "model": ctx.model,
             },
         )
 
@@ -522,7 +736,7 @@ class ChatService:
                         turn_citations[c.chunk_id] = c
 
         # ---- 4) 收敛历史（轮 → token → 摘要） ----
-        client = self._get_llm_client(ctx.model_preset)
+        client = self._get_llm_client(model=ctx.model, model_preset=ctx.model_preset)
         history = drop_assistant_tool_dangling(history)
         history = apply_history_window(
             history, max_turns=self._cfg.max_history_turns, keep_system=False,
@@ -550,7 +764,14 @@ class ChatService:
         # ---- 6) Chat 模式：固定初始检索 ----
         seed_hits: List[ChunkItem] = []
 
-        if not ctx.agent_mode and not ctx.skip_retrieval:
+        # folder scope 但 scope 为空（空文件夹/文件夹被删/文件未索引完）→
+        # 软降级：直接跳过初始检索，让 LLM 仅基于历史 + system_prompt 回答。
+        # 此处不抛错；§6 提示词层会通过 scope_summary 告知 LLM"当前范围为空"。
+        scope_is_empty = (
+            ctx.scope_kind == "folder" and not ctx.scope_document_ids
+        )
+
+        if not ctx.agent_mode and not ctx.skip_retrieval and not scope_is_empty:
             yield ChatEvent(ChatEventType.RETRIEVAL_STARTED, {})
             retrieval_start = time.perf_counter()
             try:
@@ -560,12 +781,15 @@ class ChatService:
                 filters = MetadataFilter(user_id=ctx.user_id)
                 if ctx.knowledge_base_ids:
                     filters.knowledge_base_id = ctx.knowledge_base_ids[0]
+                if ctx.scope_document_ids:
+                    # folder scope：把 document_ids 灌入 filters，召回层会按
+                    # ``document_id in [...]`` 把 Milvus + 字面检索全部圈死。
+                    filters.document_ids = list(ctx.scope_document_ids)
 
                 retrieve_request = RetrieveRequest(
                     query_text=ctx.query,
                     filters=filters,
                     top_k=ctx.retrieve_top_k or self._cfg.retrieve_top_k,
-                    enable_validation=False,
                 )
 
                 # 用 queue polling 模式消费检索进度，与 Agent 模式一致
@@ -668,10 +892,20 @@ class ChatService:
         kit: Optional[KnowledgeNavToolKit] = None
         if ctx.agent_mode:
             # 检索工具进度回调：通过 Queue 桥接到 async generator yield
-            search_progress_queue: asyncio.Queue[Optional[Tuple[str, str]]] = asyncio.Queue()
+            search_progress_queue: asyncio.Queue[
+                Optional[Tuple[str, str, Optional[str], str]]
+            ] = asyncio.Queue()
 
-            async def _on_search_progress(tool_call_id: str, stage: str) -> None:
-                await search_progress_queue.put((tool_call_id, stage))
+            async def _on_search_progress(
+                tool_call_id: str,
+                stage: str,
+                *,
+                model: Optional[str] = None,
+                channel: str = "retrieval",
+            ) -> None:
+                await search_progress_queue.put(
+                    (tool_call_id, stage, model, channel),
+                )
 
             kit = KnowledgeNavToolKit(
                 supplemented_items=supplemented,
@@ -680,6 +914,9 @@ class ChatService:
                 on_progress=_on_search_progress,
                 user_id=ctx.user_id,
                 knowledge_base_ids=ctx.knowledge_base_ids,
+                scope_document_ids=ctx.scope_document_ids,
+                scope_kind=ctx.scope_kind,
+                scope_label=ctx.folder_id,
             )
 
         assistant_msg_ids: List[str] = []
@@ -691,7 +928,11 @@ class ChatService:
         else:
             tools_schema = None
             max_rounds = 1
-        thinking_budget = self._cfg.thinking_budget if ctx.enable_thinking else None
+        # 业务"开/关" → LLMClient 的三态 thinking_budget：
+        #   ctx.enable_thinking=True  → cfg.thinking_budget（>0 → reasoning_effort 档位）
+        #   ctx.enable_thinking=False → 0（显式 reasoning_effort="none"）
+        # Provider 差异由 LiteLLM 翻译，应用侧不再发 extra_body.thinking。
+        thinking_budget = self._cfg.thinking_budget if ctx.enable_thinking else 0
 
         llm_start = time.perf_counter()
         try:
@@ -797,7 +1038,9 @@ class ChatService:
         max_rounds: int,
         tools_schema: Optional[List[Dict[str, Any]]],
         thinking_budget: Optional[int],
-        search_progress_queue: Optional[asyncio.Queue[Optional[Tuple[str, str]]]] = None,
+        search_progress_queue: Optional[
+            asyncio.Queue[Optional[Tuple[str, str, Optional[str], str]]]
+        ] = None,
         turn_citations: Optional[Dict[str, Citation]] = None,
     ) -> AsyncIterator[ChatEvent]:
         """RAG 单轮 / Agent 工具循环 + 收尾轮的统一执行体"""
@@ -962,21 +1205,45 @@ class ChatService:
                         continue
                     if item is None:
                         continue
-                    tc_id, stage = item
-                    yield ChatEvent(
-                        ChatEventType.RETRIEVAL_PROGRESS,
-                        {"stage": stage, "tool_call_id": tc_id},
-                    )
+                    tc_id, stage, model, channel = item
+                    if channel == "tool":
+                        payload: Dict[str, Any] = {
+                            "stage": stage,
+                            "tool_call_id": tc_id,
+                        }
+                        if model:
+                            payload["model"] = model
+                        yield ChatEvent(ChatEventType.TOOL_PROGRESS, payload)
+                    else:
+                        yield ChatEvent(
+                            ChatEventType.RETRIEVAL_PROGRESS,
+                            {"stage": stage, "tool_call_id": tc_id},
+                        )
                 # drain remaining items
                 while not search_progress_queue.empty():
                     try:
                         item = search_progress_queue.get_nowait()
                         if item is not None:
-                            tc_id, stage = item
-                            yield ChatEvent(
-                                ChatEventType.RETRIEVAL_PROGRESS,
-                                {"stage": stage, "tool_call_id": tc_id},
-                            )
+                            tc_id, stage, model, channel = item
+                            if channel == "tool":
+                                payload = {
+                                    "stage": stage,
+                                    "tool_call_id": tc_id,
+                                }
+                                if model:
+                                    payload["model"] = model
+                                yield ChatEvent(
+                                    ChatEventType.TOOL_PROGRESS,
+                                    payload,
+                                )
+                            else:
+                                yield ChatEvent(
+                                    ChatEventType.RETRIEVAL_PROGRESS,
+                                    {
+                                        "stage": stage,
+                                        "tool_call_id": tc_id,
+                                    },
+                                )
                     except asyncio.QueueEmpty:
                         break
             tool_results = await tool_task
@@ -1069,7 +1336,7 @@ class ChatService:
                 )
                 tool_msg_ids.append(tool_msg_id)
 
-                brief = (content or "")[:200]
+                brief = content or ""
                 tool_round_brief.append({
                     "id": tc.id,
                     "name": tc.name,
@@ -1093,6 +1360,10 @@ class ChatService:
                     if search_result:
                         completed_event["retrieval_chunks"] = search_result[0]
                         completed_event["retrieval_params"] = search_result[1]
+                if kit:
+                    execution_model = kit.execution_model_for(tc.id)
+                    if execution_model:
+                        completed_event["execution_model"] = execution_model
                 yield ChatEvent(
                     ChatEventType.TOOL_CALL_COMPLETED,
                     completed_event,
@@ -1198,13 +1469,12 @@ class ChatService:
 
         async def _one(tc: ToolCall) -> Tuple[ToolCall, str, int, float]:
             t0 = time.perf_counter()
-            before = len(kit._supplemented)  # noqa: SLF001 (intentional)
             if not kit.has(tc.name):
                 text = f"未知工具或未启用: {tc.name}"
             else:
                 text = await kit.call(tc.name, tc.arguments, tool_call_id=tc.id)
             elapsed = (time.perf_counter() - t0) * 1000
-            added = max(0, len(kit._supplemented) - before)  # noqa: SLF001
+            added = kit.items_added_for(tc.id)  # noqa: SLF001
             return tc, text, added, elapsed
 
         return await asyncio.gather(*[_one(tc) for tc in tool_calls])
@@ -1264,18 +1534,28 @@ class ChatService:
                 （Mongo 里保存语义稳定的真实 id，前端历史回放就不必依赖 alias）。
         """
         try:
-            # tc.id → (result_brief, items_added, time_ms)
-            results_by_id: Dict[str, Tuple[str, int, Optional[float]]] = {}
+            # tc.id → (result_brief, items_added, time_ms, execution_model)
+            results_by_id: Dict[
+                str, Tuple[str, int, Optional[float], Optional[str]]
+            ] = {}
             for tr_tc, tr_content, tr_items_added, tr_time_ms in (tool_results or []):
+                execution_model = (
+                    kit._execution_models.get(tr_tc.id)
+                    if kit is not None
+                    else None
+                )
                 results_by_id[tr_tc.id] = (
-                    (tr_content or "")[:200],
+                    tr_content or "",
                     tr_items_added,
                     tr_time_ms,
+                    execution_model,
                 )
 
             tool_call_records = []
             for tc in (resp.tool_calls or []):
-                brief, items_added, tc_time_ms = results_by_id.get(tc.id, (None, 0, None))
+                brief, items_added, tc_time_ms, execution_model = results_by_id.get(
+                    tc.id, (None, 0, None, None),
+                )
                 # 落库前把入参里的 alias 还原回真实 id（仅 chunk_id 字段；
                 # section_id / document_id 本来就不走 alias）
                 args = dict(tc.arguments or {})
@@ -1293,6 +1573,8 @@ class ChatService:
                         extra_kwargs["retrieval_params"] = sr[1]
                 if tc_time_ms is not None:
                     extra_kwargs["time_ms"] = tc_time_ms
+                if execution_model:
+                    extra_kwargs["execution_model"] = execution_model
                 tool_call_records.append(
                     ToolCallRecord(
                         id=tc.id,
@@ -1559,6 +1841,14 @@ class ChatService:
                 "file_id": meta.file_id,
                 "file_name": meta.file_name,
             })
+            # 图片 chunk：传递存储路径，前端可按需请求 presigned URL
+            if (
+                meta.chunk_type == "image"
+                and meta.image_file_path
+                and meta.bucket_name
+            ):
+                brief["image_file_path"] = meta.image_file_path
+                brief["bucket_name"] = meta.bucket_name
         return brief
 
     # ============================================================
@@ -1576,7 +1866,7 @@ class ChatService:
 
         async def _summarize(early_history) -> str:
             try:
-                client = self._get_llm_client(summarize_preset)
+                client = self._get_llm_client(model_preset=summarize_preset)
             except Exception:  # noqa: BLE001
                 from src.client.llm import create_llm_client_from_preset
 

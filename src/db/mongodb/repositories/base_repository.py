@@ -406,25 +406,28 @@ class BaseRepository(Generic[DocumentType]):
             if not ids:
                 return 0
             
-            # 类型转换：确保所有ID都是ObjectId类型
-            object_ids = []
+            # 类型转换：支持 ObjectId 和字符串 ID（如 "element-xxx"）
+            query_ids = []
             for id_val in ids:
                 if isinstance(id_val, str):
-                    try:
-                        object_ids.append(PydanticObjectId(id_val))
-                    except Exception:
-                        self.logger.warning(f"跳过无效的ObjectId: {id_val}")
-                        continue
+                    # 尝试判断是否为 ObjectId 格式（24字符十六进制）
+                    if len(id_val) == 24 and all(c in '0123456789abcdef' for c in id_val.lower()):
+                        try:
+                            query_ids.append(PydanticObjectId(id_val))
+                        except Exception:
+                            query_ids.append(id_val)
+                    else:
+                        query_ids.append(id_val)
                 elif isinstance(id_val, (ObjectId, PydanticObjectId)):
-                    object_ids.append(id_val)
-            
-            if not object_ids:
+                    query_ids.append(id_val)
+
+            if not query_ids:
                 self.logger.warning("没有有效的ID进行批量删除")
                 return 0
-            
+
             # 使用 update_many 批量软删除
             result = await self.model.find(
-                {"_id": {"$in": object_ids}, "deleted": 0}
+                {"_id": {"$in": query_ids}, "deleted": 0}
             ).update({
                 "$set": {
                     "deleted": 1,

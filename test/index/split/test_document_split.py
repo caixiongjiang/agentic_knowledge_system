@@ -331,20 +331,22 @@ def write_markdown(data: Dict[str, Any], output_path: Path) -> None:
                 lines.append(f"<summary>{' | '.join(summary_parts)}</summary>")
                 lines.append("")
 
-                if chunk_data and chunk_data.text:
-                    text = chunk_data.text
+                text_meta = chunk_data.text_meta if chunk_data else {}
+                display_text = (text_meta or {}).get("text", "") if chunk_data else ""
+                if display_text:
                     if chunk_type in ("table", "code_block"):
                         lines.append("```")
-                        lines.append(text)
+                        lines.append(display_text)
                         lines.append("```")
                     else:
-                        lines.append(text)
+                        lines.append(display_text)
                 else:
                     lines.append("*(无文本内容)*")
 
-                if chunk_data and hasattr(chunk_data, "summary") and chunk_data.summary:
+                chunk_summary = (text_meta or {}).get("summary") if chunk_data else None
+                if chunk_summary:
                     lines.append("")
-                    lines.append(f"> **摘要**: {chunk_data.summary}")
+                    lines.append(f"> **摘要**: {chunk_summary}")
 
                 lines.append("")
                 lines.append("</details>")

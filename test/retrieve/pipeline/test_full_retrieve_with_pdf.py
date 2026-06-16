@@ -14,16 +14,14 @@
         Phase 3: GranularityAligner
         Phase 4: 融合（RRF / WeightedSum）  ← 修复后：可按策略切换
         Phase 5: RerankStage
-        Phase 6: LLM₂ ResultValidator       ← LangChain 自动上报 LangSmith
 
     用例覆盖（按 3.3 节修复点对应验证）:
-        T1  HYBRID + RRF + 全 Pipeline (LLM₁/₂ 全开)
+        T1  HYBRID + RRF + 完整 Pipeline
         T2  SEARCH_MODE=SEMANTIC （仅保留语义路由）
         T3  SEARCH_MODE=LEXICAL  （仅保留字面路由 + 字面 filter 透传）
         T4  FusionStrategy.WEIGHTED_SUM （加权融合，enhanced 上权重）
         T5  ExactMatch + MetadataFilter(document_id=FRT075) 字面过滤透传
-        T6  retrieve_custom 含 section_dense → re_retrieve 工具兼容性
-            （间接验证 ParallelRecall 跳过 / 索引修复 + re_retrieve 类型修复）
+        T6  retrieve_custom 含 section_dense（间接验证 ParallelRecall 跳过 / 索引修复）
 
     LangSmith:
         - 在 .env 设置 LANGSMITH_API_KEY 即自动启用追踪
@@ -69,7 +67,6 @@ PDF_PATH = "tmp_files/pdf/FRT075-33F.pdf"
 # 全测试集只用一个能确定文档命中的 query，后面会按需 override
 PRIMARY_QUERY = "FRT075-33F 的保持电流、触发电流和最大电压分别是多少？"
 
-# 各用例的查询（来自 test_result_validator 已验证可命中的集合）
 QUERIES = {
     "T1_HYBRID":    PRIMARY_QUERY,
     "T2_SEMANTIC":  "FRT 系列可恢复保险丝适用于哪些应用场景？工作温度范围是多少？",
@@ -135,7 +132,7 @@ def print_phase_timings(response) -> None:
         f"  ── 阶段耗时 ── total={response.execution_time_ms:.0f}ms "
         f"| plan={t.planning_ms:.0f} recall={t.recall_ms:.0f} "
         f"align={t.alignment_ms:.0f} fuse={t.fusion_ms:.0f} "
-        f"rerank={t.rerank_ms:.0f} validate={t.validation_ms:.0f}"
+        f"rerank={t.rerank_ms:.0f}"
     )
 
 
@@ -254,7 +251,7 @@ async def locate_frt075_document() -> Optional[Tuple[str, Optional[str]]]:
     rows = await ChunkData.find(
         {
             "deleted": 0,
-            "text": {"$regex": "FRT075-33F", "$options": "i"},
+            "text_meta.text": {"$regex": "FRT075-33F", "$options": "i"},
         },
     ).limit(20).to_list()
     if not rows:
@@ -297,7 +294,7 @@ async def locate_frt075_document() -> Optional[Tuple[str, Optional[str]]]:
 # ---------------------------------------------------------------------------
 
 
-def assert_basic_response(response, label: str, *, expect_validation: bool) -> List[str]:
+def assert_basic_response(response, label: str) -> List[str]:
     failures: List[str] = []
     if response is None:
         return [f"{label}: response 为 None"]
@@ -318,8 +315,6 @@ def assert_basic_response(response, label: str, *, expect_validation: bool) -> L
                 f"{label}: score 非降序 (#{i}={scores[i]:.4f} < #{i+1}={scores[i+1]:.4f})"
             )
             break
-    if expect_validation and response.validation_result is None:
-        failures.append(f"{label}: 启用了 validation 但 validation_result 为 None")
     return failures
 
 
@@ -349,7 +344,7 @@ def assert_routes_filtered(plan, allowed_predicate, label: str) -> List[str]:
 
 
 async def t1_hybrid_full(service, kb_id: Optional[str], doc_id: str) -> bool:
-    label = "T1 HYBRID 全 Pipeline (LLM₁/₂ 全开)"
+    label = "T1 HYBRID 完整 Pipeline"
     query = QUERIES["T1_HYBRID"]
     print_header(label, query, knowledge_base_id=kb_id, document_id=doc_id)
 
@@ -363,8 +358,6 @@ async def t1_hybrid_full(service, kb_id: Optional[str], doc_id: str) -> bool:
         top_k=FINAL_TOP_K,
         search_mode=SearchMode.HYBRID,
         enable_rerank=True,
-        enable_validation=True,
-        max_validation_rounds=2,
     )
 
     try:
@@ -377,15 +370,8 @@ async def t1_hybrid_full(service, kb_id: Optional[str], doc_id: str) -> bool:
     print_route_plan(resp.route_plan)
     print_phase_timings(resp)
     print_items(resp.items, "Final Items")
-    if resp.validation_result:
-        vr = resp.validation_result
-        print(
-            f"  ── Validation ── passed={vr.passed} rounds={vr.rounds} "
-            f"adjustment_rounds={vr.adjustment_rounds} "
-            f"tools={vr.tool_calls_count} 补全={len(vr.supplemented_items)}"
-        )
 
-    failures = assert_basic_response(resp, label, expect_validation=True)
+    failures = assert_basic_response(resp, label)
     failures += assert_token_hit(resp, label, EXPECTED_TOKENS["T1_HYBRID"])
     return _emit(label, failures)
 
@@ -406,7 +392,6 @@ async def t2_semantic_mode(service, kb_id: Optional[str], doc_id: str) -> bool:
         top_k=FINAL_TOP_K,
         search_mode=SearchMode.SEMANTIC,
         enable_rerank=True,
-        enable_validation=False,
     )
 
     try:
@@ -420,7 +405,7 @@ async def t2_semantic_mode(service, kb_id: Optional[str], doc_id: str) -> bool:
     print_phase_timings(resp)
     print_items(resp.items, "Final Items")
 
-    failures = assert_basic_response(resp, label, expect_validation=False)
+    failures = assert_basic_response(resp, label)
     failures += assert_routes_filtered(resp.route_plan, is_semantic_route, label)
     failures += assert_token_hit(resp, label, EXPECTED_TOKENS["T2_SEMANTIC"])
     return _emit(label, failures)
@@ -445,7 +430,6 @@ async def t3_lexical_mode(service, kb_id: Optional[str], doc_id: str) -> bool:
         top_k=FINAL_TOP_K,
         search_mode=SearchMode.LEXICAL,
         enable_rerank=True,
-        enable_validation=False,
     )
 
     try:
@@ -459,7 +443,7 @@ async def t3_lexical_mode(service, kb_id: Optional[str], doc_id: str) -> bool:
     print_phase_timings(resp)
     print_items(resp.items, "Final Items")
 
-    failures = assert_basic_response(resp, label, expect_validation=False)
+    failures = assert_basic_response(resp, label)
     failures += assert_routes_filtered(resp.route_plan, is_lexical_route, label)
     failures += assert_token_hit(resp, label, EXPECTED_TOKENS["T3_LEXICAL"])
     return _emit(label, failures)
@@ -553,7 +537,6 @@ async def t5_lexical_filter_pushdown(service, kb_id: Optional[str], doc_id: str)
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=False,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  EXCEPTION: {e}")
@@ -618,7 +601,6 @@ async def t6_custom_with_section(service, kb_id: Optional[str], doc_id: str) -> 
             filters=filters,
             top_k=FINAL_TOP_K,
             enable_rerank=True,
-            enable_validation=False,
         )
     except Exception as e:
         print(f"  EXCEPTION: {e}")
@@ -628,7 +610,7 @@ async def t6_custom_with_section(service, kb_id: Optional[str], doc_id: str) -> 
     print_phase_timings(resp)
     print_items(resp.items, "Final Items")
 
-    failures = assert_basic_response(resp, label, expect_validation=False)
+    failures = assert_basic_response(resp, label)
     failures += assert_token_hit(resp, label, EXPECTED_TOKENS["T6_RECUSTOM"])
     return _emit(label, failures)
 

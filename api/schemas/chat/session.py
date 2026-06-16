@@ -40,13 +40,40 @@ class ChatSessionCreateRequest(BaseModel):
         default_factory=list,
         description="本会话允许检索的知识库 ID 列表；空表示用户全量 KB",
     )
+    folder_id: Optional[str] = Field(
+        None,
+        description=(
+            "可选：会话绑定的文件夹 ID（来自 workspace_folder.folder_id）。"
+            "传入后启用 folder scope，每轮检索范围限定在该文件夹下文档；"
+            "session 创建时会校验 folder 所属 KB 必须在 knowledge_base_ids 中"
+        ),
+    )
+    include_subfolders: bool = Field(
+        True,
+        description=(
+            "folder scope 下是否递归包含子文件夹的文档，默认 True；"
+            "仅当 folder_id 非空时有意义"
+        ),
+    )
     model_preset: str = Field("fast", description="LLM preset 名称")
+    model: Optional[str] = Field(
+        None,
+        description=(
+            "LiteLLM 模型字符串（如 'openai/gpt-4o-mini'）；优先级高于 "
+            "model_preset。None 表示由 model_preset 决定"
+        ),
+    )
     agent_mode: bool = Field(True, description="是否默认启用 Agent 工具循环")
     enable_thinking: bool = Field(False, description="是否默认启用思考链")
+    enable_multimodal: bool = Field(False, description="是否默认启用多模态读图")
     max_tool_rounds: int = Field(5, ge=1, le=20, description="Agent 工具批次上限")
     system_prompt: Optional[str] = Field(
         None, description="用户自定义 system_prompt；None 表示用模块默认",
     )
+
+    # Pydantic v2 默认把 ``model_*`` 视作受保护命名空间；我们需要一个真叫
+    # ``model`` 的字段，所以这里手动放空 protected_namespaces
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class ChatSessionRenameRequest(BaseModel):
@@ -94,6 +121,7 @@ class ToolCallItem(BaseModel):
     retrieval_chunks: Optional[List[Dict[str, Any]]] = None
     retrieval_params: Optional[Dict[str, Any]] = None
     time_ms: Optional[float] = None
+    execution_model: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -121,9 +149,24 @@ class ChatSessionInfo(BaseModel):
     user_id: str
     title: str
     knowledge_base_ids: List[str] = Field(default_factory=list)
+    folder_id: Optional[str] = Field(
+        None,
+        description="会话绑定的文件夹 ID；NULL=KB scope，非 NULL=folder scope",
+    )
+    include_subfolders: bool = Field(
+        True,
+        description="folder scope 下是否递归含子文件夹（仅当 folder_id 非空时生效）",
+    )
     model_preset: str = "fast"
+    model: Optional[str] = Field(
+        None,
+        description=(
+            "LiteLLM 模型字符串；用户在前端选定后写回。NULL → 走 model_preset"
+        ),
+    )
     agent_mode: bool = True
     enable_thinking: bool = False
+    enable_multimodal: bool = False
     max_tool_rounds: int = 5
     system_prompt: Optional[str] = None
     message_count: int = 0
@@ -131,7 +174,10 @@ class ChatSessionInfo(BaseModel):
     create_time: Optional[datetime] = None
     update_time: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True, extra="ignore")
+    # 含 ``model`` 字段，需要解除 Pydantic v2 的保护命名空间
+    model_config = ConfigDict(
+        from_attributes=True, extra="ignore", protected_namespaces=(),
+    )
 
 
 class ChatSessionUpdateResponse(BaseModel):
@@ -153,13 +199,19 @@ class ChatSessionListItem(BaseModel):
     session_id: str
     title: str
     knowledge_base_ids: List[str] = Field(default_factory=list)
+    folder_id: Optional[str] = None
+    include_subfolders: bool = True
     model_preset: str = "fast"
+    model: Optional[str] = None
     agent_mode: bool = True
     message_count: int = 0
     last_message_at: Optional[datetime] = None
     create_time: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True, extra="ignore")
+    # 含 ``model`` 字段，需要解除 Pydantic v2 的保护命名空间
+    model_config = ConfigDict(
+        from_attributes=True, extra="ignore", protected_namespaces=(),
+    )
 
 
 class ChatSessionListResponse(BaseModel):

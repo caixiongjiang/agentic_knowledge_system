@@ -13,13 +13,14 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
 from src.client.reranker import RerankerClient, RerankResult, create_reranker_client
 from src.retrieve.pipeline.types import FusedCandidate
 from src.retrieve.types.result import ChunkItem
+from src.types.utils.chunk_search_text import resolve_chunk_display_text
 
 
 class RerankStage:
@@ -60,11 +61,14 @@ class RerankStage:
 
         start = time.perf_counter()
 
-        # 确保所有候选都有文本内容
+        # 补全展示文本与检索文本
         await self._ensure_texts(candidates)
 
-        # 提取文本用于 rerank
-        documents = [c.text or "" for c in candidates]
+        # Rerank 使用 search_text（去包装），不用展示 text
+        documents = [
+            (c.metadata or {}).get("_search_text") or c.text or ""
+            for c in candidates
+        ]
         non_empty_indices = [i for i, d in enumerate(documents) if d.strip()]
 
         if not non_empty_indices:
@@ -108,13 +112,12 @@ class RerankStage:
         return items
 
     async def _ensure_texts(self, candidates: List[FusedCandidate]) -> None:
-        """对缺少文本内容的候选，从 MongoDB 批量获取"""
-        missing_ids = [
+        """从 MongoDB 批量补全展示文本与检索文本。"""
+        chunk_ids = [
             c.chunk_id for c in candidates
-            if not c.text and not c.chunk_id.startswith(("section:", "qa:", "summary:"))
+            if not c.chunk_id.startswith(("section:", "qa:", "summary:"))
         ]
-
-        if not missing_ids:
+        if not chunk_ids:
             return
 
         try:
@@ -122,18 +125,49 @@ class RerankStage:
                 ChunkDataRepository,
             )
             repo = ChunkDataRepository()
-            chunk_data_list = await repo.get_by_ids(missing_ids)
+            chunk_data_list = await repo.get_by_ids(chunk_ids)
 
-            text_map: Dict[str, str] = {}
+            display_map: Dict[str, str] = {}
+            search_map: Dict[str, str] = {}
+            meta_map: Dict[str, Dict[str, Any]] = {}
             for cd in chunk_data_list:
-                text_map[str(cd.id)] = cd.text or ""
+                cid = str(cd.id)
+                # 展示文本：从 text_meta 拼接
+                display_map[cid] = resolve_chunk_display_text(cd)
+                # 检索文本：直接使用 MongoDB 中的 search_text 字段
+                if cd.search_text and cd.search_text.strip():
+                    search_map[cid] = cd.search_text.strip()
+                extra: Dict[str, Any] = {}
+                if cd.chunk_type:
+                    extra["chunk_type"] = cd.chunk_type
+                # 从 text_meta 提取元数据用于 format_chunks_for_llm 展示
+                text_meta = cd.text_meta or {}
+                if text_meta.get("image_caption"):
+                    extra["image_caption"] = text_meta["image_caption"]
+                if text_meta.get("image_footnote"):
+                    extra["image_footnote"] = text_meta["image_footnote"]
+                if text_meta.get("table_caption"):
+                    extra["table_caption"] = text_meta["table_caption"]
+                if text_meta.get("table_footnote"):
+                    extra["table_footnote"] = text_meta["table_footnote"]
+                if extra:
+                    meta_map[cid] = extra
 
             for c in candidates:
-                if not c.text and c.chunk_id in text_map:
-                    c.text = text_map[c.chunk_id]
+                cid = c.chunk_id
+                if cid in display_map:
+                    c.text = display_map[cid]
+                if cid in search_map:
+                    c.metadata["_search_text"] = search_map[cid]
+                else:
+                    c.metadata["_search_text"] = c.text or ""
+                if cid in meta_map:
+                    c.metadata.update(meta_map[cid])
 
         except Exception as e:
             logger.warning(f"批量获取 Chunk 文本失败: {e}")
+            for c in candidates:
+                c.metadata["_search_text"] = c.text or ""
 
     @staticmethod
     def _candidates_to_items(candidates: List[FusedCandidate]) -> List[ChunkItem]:

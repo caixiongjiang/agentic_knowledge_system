@@ -20,7 +20,13 @@ from src.client.llm.client import (
     LLMClient,
     LLMClientConfig,
     create_llm_client,
+    create_llm_client_from_model,
     create_llm_client_from_preset,
+)
+from src.client.llm.registry import (
+    LLMModelInfo,
+    LiteLLMRegistry,
+    get_litellm_registry,
 )
 from src.client.llm.types import (
     LLMResponse,
@@ -39,6 +45,7 @@ __all__ = [
     "LLMClientConfig",
     "create_llm_client",
     "create_llm_client_from_preset",
+    "create_llm_client_from_model",
     "LLMResponse",
     "TokenUsage",
     "ThinkingContent",
@@ -48,4 +55,7 @@ __all__ = [
     "MessageDict",
     "MessageList",
     "ToolSchema",
+    "LLMModelInfo",
+    "LiteLLMRegistry",
+    "get_litellm_registry",
 ]

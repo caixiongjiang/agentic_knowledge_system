@@ -34,6 +34,9 @@ from src.prompts.retrieve.route_planner import (
 )
 from src.retrieve.types.query import MetadataFilter
 
+# LLM₁ 路由规划 JSON 输出较长，需足够 completion 预算避免截断
+ROUTE_PLANNER_MAX_TOKENS: int = 8192
+
 
 class RoutePlanner:
     """LLM₁ 路由规划器
@@ -115,10 +118,14 @@ class RoutePlanner:
         ]
 
         try:
+            max_tokens = max(
+                self._llm_client.config.max_tokens or ROUTE_PLANNER_MAX_TOKENS,
+                ROUTE_PLANNER_MAX_TOKENS,
+            )
             response = await self._llm_client.agenerate(
                 messages=messages,
                 temperature=0.1,
-                max_tokens=1024,
+                max_tokens=max_tokens,
             )
             raw_text = response.content or ""
             self.last_llm_raw_text = raw_text  # 测试 / 调试用
@@ -208,6 +215,21 @@ class RoutePlanner:
             parts.append(f"知识库: {filters.knowledge_base_id}")
         if filters.document_id:
             parts.append(f"文档: {filters.document_id}")
+        # v0.8.0：folder scope 时 chat_service / KnowledgeNavToolKit 会注入
+        # document_ids；要让 LLM₁ 知道范围已限定，避免它再生成"先 BM25 圈范围"
+        # 这种多余的工具步骤。展示数量+前 3 个 ID 即可，不暴露全量列表。
+        if filters.document_ids:
+            preview = ", ".join(filters.document_ids[:3])
+            suffix = "..." if len(filters.document_ids) > 3 else ""
+            parts.append(
+                f"文档集合(共{len(filters.document_ids)}篇): [{preview}{suffix}]"
+            )
         if filters.source_type:
             parts.append(f"来源类型: {filters.source_type}")
+        if filters.chunk_type:
+            type_label = {
+                "text": "文本", "image": "图片",
+                "table": "表格", "code_block": "代码块",
+            }.get(filters.chunk_type, filters.chunk_type)
+            parts.append(f"chunk类型限定: {type_label}（只返回该类型的结果）")
         return ", ".join(parts) if parts else "无"

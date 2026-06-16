@@ -97,36 +97,6 @@ class FusedCandidate(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-# ==================== LLM₂ 验证 ====================
-
-
-class ValidationResult(BaseModel):
-    """LLM₂ 验证的完整结果（Agent 模式）"""
-    passed: bool = Field(
-        default=True,
-        description="验证是否通过：已结束工具阶段，且 [验证状态]/结论为可可靠回答",
-    )
-    rounds: int = Field(
-        default=0,
-        description="LLM 调用次数（每次 bind_tools 推理计 1 次，含最终结论）",
-    )
-    adjustment_rounds: int = Field(
-        default=0,
-        description="含并行工具批次的「调整」轮数（每轮内可同时执行多工具，上限由 max_rounds 控制）",
-    )
-    tool_calls_count: int = Field(default=0, description="工具调用总次数")
-    tool_calls_summary: List[str] = Field(
-        default_factory=list,
-        description="工具调用摘要, 如 ['context_window(chunk_id=xxx)', 're_retrieve(query=...)']",
-    )
-    supplemented_items: List[ChunkItem] = Field(
-        default_factory=list,
-        description="补全过程中新增的 Chunk",
-    )
-    reasoning: str = Field(default="", description="Agent 最终的验证结论")
-    total_validation_time_ms: float = 0.0
-
-
 # ==================== 顶层输入/输出 ====================
 
 
@@ -140,9 +110,6 @@ class RetrieveRequest(BaseModel):
         description="检索模式 (SEMANTIC / LEXICAL / HYBRID)",
     )
     enable_rerank: bool = Field(default=True, description="是否启用 Reranker 精排")
-    enable_validation: bool = Field(
-        default=True, description="是否启用 LLM₂ 结果验证",
-    )
     route_hints: Optional[List[str]] = Field(
         default=None,
         description="路由提示（可选，建议激活的路由名称列表）",
@@ -150,10 +117,6 @@ class RetrieveRequest(BaseModel):
     conversation_context: Optional[str] = Field(
         default=None,
         description="对话历史上下文（最近几轮 user/assistant 消息摘要），用于指代消解和查询增强",
-    )
-    max_validation_rounds: int = Field(
-        default=3,
-        description="LLM₂ 含并行工具批次的「调整」轮数上限（每轮可一次并行多工具，非 LangGraph 步数）",
     )
     rerank_score_threshold: Optional[float] = Field(
         default=None,
@@ -168,7 +131,6 @@ class PhaseTimings(BaseModel):
     alignment_ms: float = 0.0
     fusion_ms: float = 0.0
     rerank_ms: float = 0.0
-    validation_ms: float = 0.0
 
 
 class RetrieveResponse(BaseModel):
@@ -178,8 +140,8 @@ class RetrieveResponse(BaseModel):
     route_plan: Optional[RoutePlan] = Field(
         default=None, description="LLM₁ 的路由计划（可审计）",
     )
-    validation_result: Optional[ValidationResult] = Field(
-        default=None, description="LLM₂ 的验证结果（可审计）",
-    )
     execution_time_ms: float = Field(default=0.0, description="总耗时")
     phase_timings: PhaseTimings = Field(default_factory=PhaseTimings)
+    planner_model: Optional[str] = Field(
+        default=None, description="查询转化使用的 LLM₁ 模型名称",
+    )

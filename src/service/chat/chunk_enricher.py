@@ -58,6 +58,9 @@ class ChunkMeta(BaseModel):
     document_id: Optional[str] = None
     file_id: Optional[str] = None
     file_name: Optional[str] = None
+    # 图片 chunk 专用：用于按需生成 presigned URL
+    image_file_path: Optional[str] = None
+    bucket_name: Optional[str] = None
 
 
 async def enrich_chunks(
@@ -131,6 +134,10 @@ async def enrich_chunks(
                     continue
                 meta.chunk_type = m.chunk_type
                 meta.page_index = m.page_index
+                # 图片 chunk 的存储路径（用于按需生成 presigned URL）
+                if m.chunk_type == "image":
+                    meta.image_file_path = m.image_file_path
+                    meta.bucket_name = m.bucket_name
 
             # chunk_section_document 批量（用于补 ChunkItem 里缺失的 section_id / document_id）
             csds = (

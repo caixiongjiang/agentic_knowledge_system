@@ -30,9 +30,7 @@ class ComponentConfigManager:
     - KGExtractor（知识图谱提取）
     - ImageUnderstand（图片理解）
     - TextAnalyzer（文本分析器）
-    - RoutePlanner / ResultValidator（检索管线 LLM₁ / LLM₂；配置在 config/components.json，
-      支持 llm 内联或 llm_preset。LLM₂ 现已改为 LiteLLM 原生 tool calling，
-      与其他组件共用同一套 LiteLLM 模型字符串与 api_base / api_key 字段）
+    - RoutePlanner（检索管线 LLM₁；支持 llm 内联或 llm_preset）
     - 各种 Writers（MySQL、MongoDB、Neo4j、Embedding+Milvus）
     """
     
@@ -176,10 +174,6 @@ class ComponentConfigManager:
     def get_route_planner_config(self) -> Dict[str, Any]:
         """获取 RoutePlanner 组件配置"""
         return self.get_component_config("route_planner")
-    
-    def get_result_validator_config(self) -> Dict[str, Any]:
-        """获取 ResultValidator 组件配置"""
-        return self.get_component_config("result_validator")
 
     # ========== LLM 客户端创建 ==========
 

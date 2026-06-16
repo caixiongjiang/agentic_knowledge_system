@@ -279,44 +279,64 @@ default_max_retries = 2
 # - api_base / api_key 默认走 [proxy]，可在单个 preset 中覆盖
 
 [llm]
-# 默认 thinking 预算（仅在 preset / components 中显式启用 thinking_budget 时才生效）
-default_thinking_budget = 0
+# 思考链（thinking）三层语义，便于全局对齐：
+#
+#   1) ``[llm.presets.<name>].thinking_budget`` / ``components.<name>.llm.thinking_budget``
+#      —— **某条调用路径"默认"是否开思考及预算**（int）。
+#         缺省视为 0，意为"不显式声明，按上游模型/Proxy 默认行为"。
+#
+#   2) 业务请求 ``LLMClient.astream(thinking_budget=...)``（Optional[int]）
+#      —— **本次调用如何覆盖默认**：``None`` 沿用 cfg；``0`` 显式关；``>0`` 显式开+预算。
+#
+#   3) 实际下发：``reasoning_effort = none | low | medium | high``（LiteLLM 统一参数），
+#      由 LiteLLM / Proxy 按 provider 翻译；不支持的参数应 ``drop_params: true`` 丢弃。
+#      详见 ``LLMClient._apply_thinking_params``。
+#
+# 注：``model`` 字段必须是你的 LiteLLM Proxy 上真实可路由的模型名。
+# 推荐写法：``litellm_proxy/<proxy 上 model_name 的原值>``，让 LiteLLM SDK
+# 走 ``litellm_proxy`` 透传分支，把模型字符串原样转发给 proxy。
+# 不带任何前缀的裸名（如 ``deepseek-v4-flash``）也会被 ``_ensure_proxy_routable``
+# 在运行时自动补上 ``litellm_proxy/`` 前缀，但显式声明更易读。
 
 [llm.presets.fast]
-model = "deepseek/deepseek-chat"
+# 性价比优先；用于起标题 / 摘要压缩 / 检索结果 LLM 验证等"短轻"调用
+model = "litellm_proxy/deepseek-v4-flash"
 temperature = 0.0
-max_tokens = 2048
+max_tokens = 65536
 timeout = 60
 
 [llm.presets.quality]
-model = "openai/gpt-4o"
+model = "litellm_proxy/deepseek-v4-pro"
 temperature = 0.3
-max_tokens = 4096
+max_tokens = 65536
 timeout = 60
 
 [llm.presets.reasoning]
-model = "deepseek/deepseek-reasoner"
+# 推理优先；用于 RoutePlanner（检索路由规划）等需要复杂推理的内部调用
+model = "litellm_proxy/glm-5.1"
 temperature = 0.0
-max_tokens = 4096
+max_tokens = 65536
 timeout = 120
 thinking_budget = 4096
 
 [llm.presets.long_context]
-model = "gemini/gemini-1.5-pro"
+model = "litellm_proxy/deepseek-v4-flash"
 temperature = 0.5
-max_tokens = 8192
+max_tokens = 65536
 timeout = 90
 
 [llm.presets.multimodal]
-model = "gemini/gemini-2.0-flash"
+# 若 proxy 上没有真正的多模态模型，可保留作占位；
+# 业务路径只在显式启用多模态时才会引用本 preset
+model = "litellm_proxy/qwen3.6-flash"
 temperature = 0.7
-max_tokens = 4096
+max_tokens = 65536
 timeout = 90
 
 [llm.presets.test]
-model = "deepseek/deepseek-chat"
+model = "litellm_proxy/deepseek-v4-flash"
 temperature = 0.3
-max_tokens = 2048
+max_tokens = 65536
 timeout = 60
 
 # ==================== Chat 模块配置 ====================
@@ -331,6 +351,10 @@ timeout = 60
 agent_model_preset = "fast"
 # 异步起标题用的 preset（首轮结束后调用 1 次，性价比优先）
 title_model_preset = "fast"
+# 用户从前端 /api/chat/models 选了具体 model 时，作为采样参数模板的 preset
+# （temperature / max_tokens / thinking_budget / extra_params 取自该 preset，
+#  model 字段被前端选定的字符串覆盖）
+user_chat_template_preset = "fast"
 # 是否默认启用 Agent 工具循环（false 时走 RAG 单轮快路径）
 default_agent_mode = true
 # 是否默认启用思考链（仅 reasoning 类模型生效）
@@ -345,8 +369,6 @@ max_completion_tokens = 0
 [chat.retrieval]
 # 服务端初始检索 top_k
 top_k = 8
-# Chat 路径是否启用 LLM₂ 结果验证（默认关，省一次 LLM 调用）
-enable_validation = false
 
 [chat.history]
 # 加载历史消息上限（条数维度）

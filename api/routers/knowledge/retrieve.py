@@ -5,10 +5,10 @@
 @File    : retrieve.py
 @Author  : caixiongjiang
 @Date    : 2026/01/21 10:00
-@Function: 
+@Function:
     Knowledge 检索路由
     提供 Knowledge 检索相关的 API 端点：
-      POST /retrieve        — 智能检索（完整 Pipeline: LLM₁ → 多路 → LLM₂）
+      POST /retrieve        — 智能检索（完整 Pipeline: LLM₁ → 多路 → Rerank）
       POST /retrieve/custom — 自定义路由组合检索
       POST /retrieve/single — 单原子能力直调
       GET  /retrieve/routes — 列出所有可用路由
@@ -72,7 +72,6 @@ def _response_to_schema(resp: RetrieveResponse) -> RetrieveResponseSchema:
         alignment_ms=resp.phase_timings.alignment_ms,
         fusion_ms=resp.phase_timings.fusion_ms,
         rerank_ms=resp.phase_timings.rerank_ms,
-        validation_ms=resp.phase_timings.validation_ms,
     )
     return RetrieveResponseSchema(
         items=items,
@@ -90,7 +89,7 @@ async def smart_retrieve(
     body: RetrieveRequestSchema,
     user_id: str = Depends(get_current_user_id),
 ) -> ApiResponse[RetrieveResponseSchema]:
-    """完整 Pipeline 检索: LLM₁ 路由规划 → 多路召回 → Rerank → LLM₂ 验证"""
+    """完整 Pipeline 检索: LLM₁ 路由规划 → 多路召回 → Rerank"""
     try:
         service = _get_service()
 
@@ -103,7 +102,6 @@ async def smart_retrieve(
             ),
             top_k=body.top_k,
             enable_rerank=body.enable_rerank,
-            enable_validation=body.enable_validation,
             route_hints=body.route_hints,
         )
 
@@ -154,7 +152,6 @@ async def custom_retrieve(
             ),
             top_k=body.top_k,
             enable_rerank=body.enable_rerank,
-            enable_validation=body.enable_validation,
         )
 
         schema = _response_to_schema(response)

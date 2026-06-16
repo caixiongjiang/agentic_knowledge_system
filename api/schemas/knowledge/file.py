@@ -76,6 +76,52 @@ class FilePreviewResponse(BaseModel):
     expires_in: int = Field(..., description="URL 过期时间（秒）")
 
 
+# ==================== Chunk 图片预览 ====================
+
+
+class ChunkImagePreviewResponse(BaseModel):
+    """图片 chunk 预览响应"""
+    chunk_id: str = Field(..., description="Chunk ID")
+    preview_url: str = Field(..., description="图片预览URL（MinIO 预签名URL）")
+    expires_in: int = Field(..., description="URL 过期时间（秒）")
+    file_name: Optional[str] = Field(default=None, description="关联文件名")
+
+
+# ==================== Chunk 定位信息 ====================
+
+
+class ElementPosition(BaseModel):
+    """元素位置信息"""
+    element_id: str = Field(..., description="元素 ID")
+    element_type: str = Field(..., description="元素类型：text, image, table")
+    page_position: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "MinerU 页面边界框 [x0, y0, x1, y1]：左上角与右下角，"
+            "坐标空间见 ChunkPositionResponse.coord_space"
+        ),
+    )
+
+
+class ChunkPositionResponse(BaseModel):
+    """Chunk 定位响应"""
+    chunk_id: str = Field(..., description="Chunk ID")
+    chunk_type: Optional[str] = Field(default=None, description="Chunk 类型")
+    page_index: Optional[int] = Field(default=None, description="页码（从 0 开始）")
+    coord_space: str = Field(
+        default="mineru-normalized-1000",
+        description="page_position 使用的坐标空间标识",
+    )
+    coord_range: int = Field(
+        default=1000,
+        description="归一化坐标轴最大值（MinerU bbox 映射到 0~coord_range）",
+    )
+    elements: List[ElementPosition] = Field(
+        default_factory=list,
+        description="关联元素的位置信息列表",
+    )
+
+
 # ==================== 文件删除（软删除） ====================
 
 

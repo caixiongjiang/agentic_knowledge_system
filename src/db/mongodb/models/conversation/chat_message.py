@@ -130,6 +130,10 @@ class ToolCallRecord(PydanticBaseModel):
     time_ms: Optional[float] = Field(
         None, description="工具执行耗时（毫秒）",
     )
+    execution_model: Optional[str] = Field(
+        None,
+        description="工具内部调用的子模型（如 read_image_chunks 的 VLM）",
+    )
 
     model_config = ConfigDict(extra="ignore")
 

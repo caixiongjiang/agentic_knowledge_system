@@ -89,7 +89,10 @@ class _FakeSession:
     user_id: str
     title: str = "新会话"
     knowledge_base_ids: List[str] = field(default_factory=list)
+    folder_id: Optional[str] = None
+    include_subfolders: bool = True
     model_preset: str = "fast"
+    model: Optional[str] = None
     agent_mode: bool = True
     enable_thinking: bool = False
     max_tool_rounds: int = 5
@@ -132,14 +135,18 @@ class _FakeSessionService:
 
     def create_session(self, *, user_id: str, title: str = "新会话",
                        knowledge_base_ids: Optional[List[str]] = None,
-                       model_preset: str = "fast", agent_mode: bool = True,
+                       folder_id: Optional[str] = None,
+                       include_subfolders: bool = True,
+                       model_preset: str = "fast", model: Optional[str] = None,
+                       agent_mode: bool = True,
                        enable_thinking: bool = False, max_tool_rounds: int = 5,
                        system_prompt: Optional[str] = None):
         sid = self._gen_id()
         s = _FakeSession(
             session_id=sid, user_id=user_id, title=title,
             knowledge_base_ids=list(knowledge_base_ids or []),
-            model_preset=model_preset, agent_mode=agent_mode,
+            folder_id=folder_id, include_subfolders=include_subfolders,
+            model_preset=model_preset, model=model, agent_mode=agent_mode,
             enable_thinking=enable_thinking, max_tool_rounds=max_tool_rounds,
             system_prompt=system_prompt,
         )
@@ -630,6 +637,213 @@ def test_ws_invalid_frames() -> bool:
 
 
 # ============================================================
+# /api/chat/models 端点
+# ============================================================
+
+
+def test_rest_list_chat_models() -> bool:
+    """GET /api/chat/models 返回过滤后的 chat 模型清单"""
+    _hr("REST · /api/chat/models 列表")
+    sess = _FakeSessionService()
+    msg = _FakeMessageRepo()
+    chat = _ScriptedChatService()
+    app = _build_app(sess, msg, chat)
+
+    # mock LiteLLMRegistry，避免对 LiteLLM Proxy 的真实依赖
+    import api.routers.chat.models as models_module
+    from src.client.llm.registry import LLMModelInfo, LiteLLMRegistry
+
+    class _StubRegistry:
+        def __init__(self) -> None:
+            self.invalidated = 0
+            self.refreshed = 0
+
+        def list_models(self, *, force_refresh: bool = False):
+            if force_refresh:
+                self.refreshed += 1
+            return [
+                LLMModelInfo(
+                    id="openai/gpt-4o-mini",
+                    label="gpt-4o-mini",
+                    provider="openai",
+                ),
+                LLMModelInfo(
+                    id="deepseek/deepseek-chat",
+                    label="deepseek-chat",
+                    provider="deepseek",
+                ),
+            ]
+
+        def invalidate(self) -> None:
+            self.invalidated += 1
+
+    stub = _StubRegistry()
+    # patch get_litellm_registry within the router module's lookup
+    models_module.get_litellm_registry = lambda: stub  # type: ignore[assignment]
+
+    headers = {"X-User-Id": "u_models"}
+    with TestClient(app) as client:
+        # GET /api/chat/models
+        r = client.get("/api/chat/models", headers=headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["code"] == 200, body
+        models = body["data"]["models"]
+        assert len(models) == 2, models
+        ids = [m["id"] for m in models]
+        assert "openai/gpt-4o-mini" in ids
+        # 仅返回 id / label / provider，不带 capabilities / pricing 等
+        for m in models:
+            assert set(m.keys()) == {"id", "label", "provider"}, m
+        _ok("/api/chat/models 字段裁剪 OK，仅返回 id/label/provider")
+
+        # 缺 X-User-Id → 422（与 sessions 端点对齐，FastAPI 422 校验失败）
+        r = client.get("/api/chat/models")
+        assert r.status_code == 422, r.text
+        _ok("缺 X-User-Id → 422 OK")
+
+        # POST /api/chat/models/refresh 走强刷新
+        r = client.post("/api/chat/models/refresh", headers=headers)
+        assert r.status_code == 200, r.text
+        assert stub.invalidated == 1
+        assert stub.refreshed == 1
+        _ok("/api/chat/models/refresh 触发 invalidate + force refresh OK")
+
+    # 解析 + 归一化：原始 id 应被加 litellm_proxy/ 前缀；label 仍是裸名
+    items = LiteLLMRegistry._parse_models_response(
+        {"data": [
+            {"id": "openai/gpt-4o-mini"},
+            {"id": "openai/text-embedding-3-large"},
+            {"id": "cohere/qwen3-reranker-0.6b"},
+            {"id": "deepseek-v4-flash"},
+            {"id": "litellm_proxy/glm-5.1"},
+        ]},
+        info_map=None,
+    )
+    ids = [it.id for it in items]
+    labels = [it.label for it in items]
+    assert "litellm_proxy/openai/gpt-4o-mini" in ids, ids
+    assert "litellm_proxy/deepseek-v4-flash" in ids, ids
+    # 已带 litellm_proxy/ 前缀的不会被双重前缀
+    assert "litellm_proxy/glm-5.1" in ids, ids
+    assert "litellm_proxy/litellm_proxy/glm-5.1" not in ids
+    assert "openai/text-embedding-3-large" not in [it.id.replace("litellm_proxy/", "") for it in items]
+    assert "cohere/qwen3-reranker-0.6b" not in [it.id.replace("litellm_proxy/", "") for it in items]
+    # label 是去前缀后的最后一段，前端展示更友好
+    assert "deepseek-v4-flash" in labels
+    assert "gpt-4o-mini" in labels
+    assert "glm-5.1" in labels
+    _ok("启发式过滤 embedding / rerank OK")
+    _ok("裸 alias / 已带 provider 前缀的 id 都被归一为 litellm_proxy/<inner>")
+
+    # info_map.mode 精确路径
+    items = LiteLLMRegistry._parse_models_response(
+        {"data": [{"id": "x/foo"}, {"id": "x/bar"}]},
+        info_map={"x/foo": {"mode": "chat"}, "x/bar": {"mode": "image_generation"}},
+    )
+    ids = [it.id for it in items]
+    assert ids == ["litellm_proxy/x/foo"], ids
+    _ok("LiteLLM model_info.mode 过滤 OK")
+
+    return True
+
+
+def test_rest_create_session_with_model() -> bool:
+    """POST /api/chat/sessions 接受 model 字段并回显在 ChatSessionInfo"""
+    _hr("REST · 创建会话携带 model")
+    sess = _FakeSessionService()
+    msg = _FakeMessageRepo()
+    chat = _ScriptedChatService()
+    app = _build_app(sess, msg, chat)
+    headers = {"X-User-Id": "u_model"}
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/chat/sessions", headers=headers,
+            json={
+                "title": "M-with-model",
+                "model_preset": "fast",
+                "model": "openai/gpt-4o-mini",
+                "agent_mode": False,
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["data"]["model"] == "openai/gpt-4o-mini", body
+        assert body["data"]["model_preset"] == "fast", body
+        _ok("创建时透传 model 字段并回显 OK")
+
+        sid = body["data"]["session_id"]
+        # GET 回显 model
+        r = client.get(f"/api/chat/sessions/{sid}", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["data"]["model"] == "openai/gpt-4o-mini"
+        _ok("GET 详情含 model OK")
+
+        # 不传 model → None（不阻塞老前端）
+        r = client.post(
+            "/api/chat/sessions", headers=headers,
+            json={"title": "M-no-model"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["model"] is None
+        _ok("不传 model → 默认 None OK")
+
+    return True
+
+
+def test_ws_start_with_explicit_model() -> bool:
+    """WS start 帧的 model 字段被透传到 ChatRequest"""
+    _hr("WS · start.data.model 透传")
+    sess = _FakeSessionService()
+    msg = _FakeMessageRepo()
+    chat = _ScriptedChatService()
+
+    # 给 chat_stream 写一个带 model 检查的脚本
+    captured: Dict[str, Any] = {}
+
+    async def _capture_chat_stream(request):
+        captured["model"] = request.model
+        captured["model_preset"] = request.model_preset
+        yield ChatEvent(ChatEventType.SESSION_READY, {"session_id": request.session_id})
+        yield ChatEvent(ChatEventType.TURN_DONE, {"rounds": 1})
+
+    chat.chat_stream = _capture_chat_stream  # type: ignore[assignment]
+    app = _build_app(sess, msg, chat)
+
+    headers = {"X-User-Id": "u_ws_model"}
+    with TestClient(app) as client:
+        # 先用 REST 建一个 session，并指定 model_preset，但 model 留空
+        r = client.post(
+            "/api/chat/sessions", headers=headers,
+            json={"title": "WS-M", "model_preset": "fast"},
+        )
+        sid = r.json()["data"]["session_id"]
+
+        with client.websocket_connect("/api/chat/ws?token=u_ws_model") as ws:
+            assert _recv_json(ws)["type"] == "ready"
+            ws.send_text(json.dumps({
+                "type": "start",
+                "data": {
+                    "session_id": sid,
+                    "query": "hello",
+                    "model": "deepseek/deepseek-chat",
+                },
+            }))
+            kinds: List[str] = []
+            for _ in range(5):
+                f = _recv_json(ws)
+                kinds.append(f["type"])
+                if f["type"] == "turn.done":
+                    break
+            assert "session.ready" in kinds and "turn.done" in kinds
+            assert captured.get("model") == "deepseek/deepseek-chat", captured
+            _ok("start.data.model 透传到 ChatRequest OK")
+
+    return True
+
+
+# ============================================================
 # 入口
 # ============================================================
 
@@ -639,12 +853,15 @@ TESTS = [
     test_rest_list_pagination,
     test_rest_messages_endpoint,
     test_rest_missing_user_header,
+    test_rest_list_chat_models,
+    test_rest_create_session_with_model,
     test_ws_missing_token_closes,
     test_ws_ready_and_ping,
     test_ws_full_turn_flow,
     test_ws_concurrent_start_rejected,
     test_ws_stop_cancels_turn,
     test_ws_invalid_frames,
+    test_ws_start_with_explicit_model,
 ]
 
 

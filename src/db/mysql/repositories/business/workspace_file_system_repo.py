@@ -135,6 +135,50 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
             logger.error(f"根据folder_id查询失败: {e}")
             return []
     
+    def get_by_folder_ids(
+        self,
+        session: Session,
+        user_id: str,
+        folder_ids: List[str],
+        knowledge_base_id: Optional[str] = None,
+    ) -> List[WorkspaceFileSystem]:
+        """根据多个文件夹 ID 批量查询文件（folder scope 解析的核心查询）
+
+        与 ``get_by_folder_id`` 区别：本方法专为 ChatService 解析
+        ``scope_document_ids`` 设计——给定一组 folder_id（含 + 子文件夹后代），
+        一次性查出所有文件，避免 N+1 查询。
+
+        Args:
+            session: 数据库会话
+            user_id: 用户ID
+            folder_ids: 文件夹 ID 列表；空列表直接返回 ``[]``
+            knowledge_base_id: 可选，按知识库 ID 进一步筛选
+
+        Returns:
+            WorkspaceFileSystem 列表（已去重；deleted=0）
+        """
+        if not folder_ids:
+            return []
+        try:
+            query = session.query(self.model).filter(
+                self.model.user_id == user_id,
+                self.model.folder_id.in_(folder_ids),
+                self.model.deleted == 0,
+            )
+            if knowledge_base_id:
+                query = query.filter(
+                    self.model.knowledge_base_id == knowledge_base_id
+                )
+            results = query.all()
+            logger.debug(
+                f"批量按 folder_ids 查询文件: user_id={user_id}, "
+                f"folders={len(folder_ids)}, files={len(results)}"
+            )
+            return results
+        except SQLAlchemyError as e:
+            logger.error(f"批量按 folder_ids 查询失败: {e}")
+            return []
+
     def get_by_knowledge_base_id(
         self,
         session: Session,

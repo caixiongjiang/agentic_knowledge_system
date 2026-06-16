@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 from src.db.mongodb.models.chunk_data import ChunkData
+from src.types.utils.chunk_search_text import resolve_chunk_display_text
 from src.retrieve.capabilities.base import BaseCapability, CapabilityDescriptor
 from src.retrieve.capabilities.lexical._filter_helper import (
     filter_has_chunk_scope,
@@ -38,14 +39,27 @@ from src.retrieve.types.result import ChunkItem, RetrieveResult
 # ==================== AST 节点定义 ====================
 
 
+def _keyword_field_or_query(keyword: str) -> Dict[str, Any]:
+    """在 search_text 与结构化元数据字段上做包含匹配。"""
+    escaped = re.escape(keyword)
+    regex = {"$regex": escaped, "$options": "i"}
+    return {
+        "$or": [
+            {"search_text": regex},
+            {"text_meta.image_caption": regex},
+            {"text_meta.table_caption": regex},
+            {"text_meta.text": regex},
+        ],
+    }
+
+
 @dataclass
 class TermNode:
     """叶子节点：单个关键词"""
     keyword: str
 
     def to_mongo_query(self) -> Dict[str, Any]:
-        escaped = re.escape(self.keyword)
-        return {"text": {"$regex": escaped, "$options": "i"}}
+        return _keyword_field_or_query(self.keyword)
 
 
 @dataclass
@@ -74,10 +88,7 @@ class NotNode:
     child: ASTNode
 
     def to_mongo_query(self) -> Dict[str, Any]:
-        child_query = self.child.to_mongo_query()
-        if "text" in child_query:
-            return {"text": {"$not": child_query["text"]}}
-        return {"$nor": [child_query]}
+        return {"$nor": [self.child.to_mongo_query()]}
 
 
 ASTNode = Union[TermNode, AndNode, OrNode, NotNode]
@@ -307,7 +318,7 @@ class BooleanSearch(BaseCapability):
             items.append(ChunkItem(
                 chunk_id=str(doc.id),
                 score=1.0,
-                text=doc.text,
+                text=resolve_chunk_display_text(doc),
                 metadata={
                     "chunk_type": doc.chunk_type,
                 },

@@ -22,8 +22,13 @@
     4. **多模态原生支持**：``messages`` 里直接传 OpenAI 风格的 multi-content
        结构（``{"type":"text","text":...}`` / ``{"type":"image_url",...}``），
        LiteLLM 会负责按 provider 转换。
-    5. **思考链（thinking）**：通过 ``thinking_budget`` 参数控制，``> 0`` 时
-       在 ``extra_body`` 中带上 LiteLLM 的 ``thinking={"type":"enabled","budget_tokens":...}``。
+    5. **思考链（统一经 LiteLLM 翻译）**：应用只传 ``thinking_budget`` 三态语义，
+       ``LLMClient`` 映射为 LiteLLM 统一的 ``reasoning_effort``（``none/low/medium/high``），
+       由 LiteLLM / Proxy 按 provider 转成 ``enable_thinking``、``thinking`` 等原生参数。
+       - **配置层 ``thinking_budget=0``**：默认不下发（上游自决）。
+       - **调用层 ``thinking_budget=0``**：显式关 → ``reasoning_effort="none"``。
+       - **调用层 ``thinking_budget>0``**：显式开 → 按 budget 映射 effort 档位。
+       不在应用侧写 provider 分支；Proxy 建议开启 ``litellm_settings.drop_params: true``。
        响应里若有 ``reasoning_content`` 会自动归入 ``LLMResponse.thinking``。
     6. **观测**：用户运行的 LiteLLM Proxy 把日志写入 PostgreSQL，本地客户端
        仅用 loguru 输出关键 metrics（延迟 / token / model），无需 LangSmith。
@@ -95,7 +100,11 @@ class LLMClientConfig(BaseModel):
     thinking_budget: int = Field(
         0,
         ge=0,
-        description="> 0 时启用思考链；近似为允许 reasoning 阶段消耗的 token 上限",
+        description=(
+            "本客户端的默认思考策略：0=不主动声明（按上游默认），"
+            ">0=默认开思考并设置预算（tokens）。单次调用可被 "
+            "``astream(thinking_budget=...)`` 覆盖（None / 0 / >0 三态）。"
+        ),
     )
     extra_params: Dict[str, Any] = Field(
         default_factory=dict,
@@ -336,12 +345,6 @@ class LLMClient:
             if tool_choice is not None:
                 params["tool_choice"] = tool_choice
 
-        # 思考链：LiteLLM 接受 reasoning_effort 或 thinking={'type':'enabled', ...}
-        budget = thinking_budget if thinking_budget is not None else cfg.thinking_budget
-        if budget and budget > 0:
-            params["thinking"] = {"type": "enabled", "budget_tokens": int(budget)}
-
-        # 透传业务级 extra
         if cfg.extra_params:
             for k, v in cfg.extra_params.items():
                 params.setdefault(k, v)
@@ -351,7 +354,46 @@ class LLMClient:
                     continue
                 params[k] = v
 
+        # 与全局 litellm.drop_params 双保险；Proxy 侧也建议 drop_params: true
+        params["drop_params"] = True
+        self._apply_thinking_params(params, thinking_budget)
+
         return params
+
+    def _apply_thinking_params(
+        self,
+        params: Dict[str, Any],
+        call_budget: Optional[int],
+    ) -> None:
+        """把 ``thinking_budget`` 映射为 LiteLLM 统一参数 ``reasoning_effort``。
+
+        ===========================  ====================================
+        ``call_budget``               下发策略
+        ===========================  ====================================
+        ``None``                     沿用 ``cfg.thinking_budget``；cfg=0 则不下发
+        ``0``                        ``reasoning_effort="none"``（显式关）
+        ``>0``                       ``reasoning_effort=low|medium|high``
+        ===========================  ====================================
+
+        Provider 差异（Qwen ``enable_thinking``、GLM ``thinking`` 等）交给 LiteLLM
+        翻译；不支持的参数由 ``drop_params`` 丢弃。
+        """
+        effective_budget = self._resolve_effective_thinking_budget(call_budget)
+        if effective_budget is None:
+            return
+        if effective_budget <= 0:
+            params["reasoning_effort"] = "none"
+            return
+        params["reasoning_effort"] = _budget_to_reasoning_effort(effective_budget)
+
+    def _resolve_effective_thinking_budget(
+        self,
+        call_budget: Optional[int],
+    ) -> Optional[int]:
+        if call_budget is None:
+            cfg_budget = int(self.config.thinking_budget or 0)
+            return cfg_budget if cfg_budget > 0 else None
+        return int(call_budget)
 
     def _log_metrics(self, mode: str, resp: LLMResponse, elapsed_ms: float) -> None:
         usage = resp.usage
@@ -368,6 +410,15 @@ class LLMClient:
             fr=resp.finish_reason,
             n=len(resp.tool_calls),
         )
+
+
+def _budget_to_reasoning_effort(budget: int) -> str:
+    """把 token 预算粗映射为 LiteLLM 统一的 ``reasoning_effort`` 档位。"""
+    if budget < 1024:
+        return "low"
+    if budget < 4096:
+        return "medium"
+    return "high"
 
 
 # ==================== 工厂函数 ====================
@@ -412,8 +463,14 @@ def create_llm_client(
     自动回落到 ``[proxy]`` + ``.env`` 的模型网关默认值。
     """
     proxy = _proxy_defaults()
+    routable_model = _ensure_proxy_routable(model)
+    if routable_model != model:
+        logger.debug(
+            f"create_llm_client: '{model}' → '{routable_model}' "
+            f"(自动补 litellm_proxy/ 前缀，避免裸名被 LiteLLM SDK 当成 provider 推断失败)"
+        )
     cfg = LLMClientConfig(
-        model=model,
+        model=routable_model,
         api_base=api_base or proxy.get("api_base"),
         api_key=api_key or proxy.get("api_key"),
         temperature=temperature,
@@ -424,6 +481,86 @@ def create_llm_client(
         extra_params=extra_params or {},
     )
     return LLMClient(cfg)
+
+
+_LITELLM_PROXY_PREFIX = "litellm_proxy/"
+
+
+def _ensure_proxy_routable(model: str) -> str:
+    """对接 LiteLLM Proxy 的兜底归一化。
+
+    现象：用户的 LiteLLM Proxy 给模型配置的 ``model_name`` 多数是裸 alias（如
+    ``deepseek-v4-flash``），``/v1/models`` 直接返回这种裸字符串。前端把它当
+    ``model`` 参数透传到后端，``litellm.acompletion(model="deepseek-v4-flash",
+    api_base=<proxy>)`` 时 LiteLLM SDK 自己推不出 provider，抛
+    ``BadRequestError: LLM Provider NOT provided``。
+
+    解决方法：任何"看起来不像带 provider 的 id"（即不含 ``/``）都强制加上
+    ``litellm_proxy/`` 前缀，告诉 SDK 走"透传到 api_base 指向的 LiteLLM Proxy"
+    分支。已带 ``provider/`` 前缀的（``openai/gpt-4o`` 等）保持不动——它们走
+    SDK 内置的 provider adapter，符合预期。
+
+    这层归一化是**防御式的**：``LiteLLMRegistry`` 已经在生成模型清单时做了
+    一遍前缀归一；这里再做一次主要是覆盖"会话已经把裸名落库"的旧数据，让
+    它们也能正确路由。
+    """
+    if not model:
+        return model
+    if "/" in model:
+        return model
+    return _LITELLM_PROXY_PREFIX + model
+
+
+def create_llm_client_from_model(
+    *,
+    model: str,
+    chat_template_preset: str = "fast",
+) -> LLMClient:
+    """按"具体模型字符串 + 采样模板 preset"组装 LLMClient
+
+    使用场景：用户在前端从 ``/api/chat/models`` 选了一个 LiteLLM 模型字符串
+    （如 ``openai/gpt-4o-mini`` 或 ``litellm_proxy/deepseek-v4-flash``），后端
+    不再走 preset 的 ``model`` 字段，但仍希望复用 preset 里调好的
+    ``temperature / max_tokens / thinking_budget / extra_params`` 这些采样
+    参数——这就是 ``chat_template_preset`` 的用途。
+
+    优先级：
+        - ``model`` ← 入参（覆盖 preset.model）；裸名会自动加 ``litellm_proxy/``
+          前缀以确保 LiteLLM SDK 能正确路由
+        - 其他字段 ← preset；preset 缺失 / 字段未设 → 走默认值
+
+    ``api_base`` / ``api_key`` 始终走 ``[proxy]`` + ``.env``，与
+    ``create_llm_client_from_preset`` 一致。
+    """
+    from src.utils.config_manager import get_config_manager
+
+    cm = get_config_manager()
+    p = cm.get_llm_preset(chat_template_preset) or {}
+    # template preset 找不到也不阻塞：用纯默认值即可
+    if not p:
+        logger.warning(
+            f"chat_template_preset '{chat_template_preset}' 未配置，"
+            f"使用默认采样参数",
+        )
+
+    routable_model = _ensure_proxy_routable(model)
+    if routable_model != model:
+        logger.debug(
+            f"create_llm_client_from_model: '{model}' → '{routable_model}' "
+            f"(自动补 litellm_proxy/ 前缀)"
+        )
+
+    return create_llm_client(
+        model=routable_model,
+        api_base=p.get("api_base"),
+        api_key=p.get("api_key"),
+        temperature=p.get("temperature", 0.7),
+        max_tokens=p.get("max_tokens", 2048),
+        timeout=p.get("timeout"),
+        max_retries=p.get("max_retries"),
+        thinking_budget=p.get("thinking_budget", 0),
+        extra_params=p.get("extra_params") or {},
+    )
 
 
 def create_llm_client_from_preset(preset_name: str) -> LLMClient:
@@ -452,8 +589,16 @@ def create_llm_client_from_preset(preset_name: str) -> LLMClient:
         available = ", ".join(sorted(presets.keys())) or "(empty)"
         raise ValueError(f"未知 LLM preset '{preset_name}'，可用: {available}")
 
+    raw_model = p["model"]
+    routable_model = _ensure_proxy_routable(raw_model)
+    if routable_model != raw_model:
+        logger.debug(
+            f"create_llm_client_from_preset[{preset_name}]: "
+            f"'{raw_model}' → '{routable_model}' (自动补 litellm_proxy/ 前缀)"
+        )
+
     return create_llm_client(
-        model=p["model"],
+        model=routable_model,
         api_base=p.get("api_base"),
         api_key=p.get("api_key"),
         temperature=p.get("temperature", 0.7),

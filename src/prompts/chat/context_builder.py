@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     # 仅类型注解使用；运行期不导入，避免 src.prompts.chat ↔ src.service.chat 循环
     from src.service.chat.chunk_alias_map import ChunkAliasMap
 
+from src.prompts.chat.retrieval_hints import SEMANTIC_RECALL_LITERAL_HINT
+
 
 # ==================== 检索片段渲染 ====================
 
@@ -94,6 +96,8 @@ def format_retrieved_chunks_for_context(
         if text:
             lines.append(text)
         lines.append("")  # 空行分隔
+    lines.append(SEMANTIC_RECALL_LITERAL_HINT)
+    lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 

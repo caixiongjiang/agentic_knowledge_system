@@ -27,6 +27,7 @@ from src.db.mysql.repositories.base.element_meta_info_repo import (
 )
 from src.retrieve.capabilities.base import BaseCapability, CapabilityDescriptor
 from src.retrieve.types.enums import TraverseDirection
+from src.types.utils.chunk_search_text import resolve_chunk_display_text
 from src.retrieve.types.query import NavigationQuery
 from src.retrieve.types.result import ChunkItem, RetrieveResult
 
@@ -208,7 +209,7 @@ class ContextWindow(BaseCapability):
         chunk_data_list = await self._chunk_data_repo.get_by_ids(chunk_ids)
         data_map: Dict[str, str] = {}
         for cd in chunk_data_list:
-            data_map[str(cd.id)] = cd.text or ""
+            data_map[str(cd.id)] = resolve_chunk_display_text(cd)
         for item in items:
             item.text = data_map.get(item.chunk_id)
 

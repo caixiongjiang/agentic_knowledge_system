@@ -85,9 +85,13 @@ class ChatSessionService:
         user_id: str,
         title: str = "新会话",
         knowledge_base_ids: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        include_subfolders: bool = True,
         model_preset: str = "fast",
+        model: Optional[str] = None,
         agent_mode: bool = True,
         enable_thinking: bool = False,
+        enable_multimodal: bool = False,
         max_tool_rounds: int = 5,
         system_prompt: Optional[str] = None,
     ) -> Optional[ChatSession]:
@@ -99,12 +103,34 @@ class ChatSessionService:
                 ``TitleService`` 异步覆盖）
             knowledge_base_ids: 本会话允许检索的知识库 ID 列表；
                 ``None`` / 空列表表示放开到用户全量 KB
-            model_preset: ``[llm.presets.*]`` 名称
+            folder_id: 可选，会话绑定的文件夹 ID。传入后启用 folder scope，
+                每轮检索范围限定在该文件夹下文档。会校验：
+                - folder 必须属于该 ``user_id``；
+                - folder 所属 KB 必须 ∈ ``knowledge_base_ids``（非空时）；
+                - 若 ``knowledge_base_ids`` 为空，会自动用 folder 所属 KB 填上一份；
+                校验失败抛 ``ValueError`` 让调用方转 422。
+            include_subfolders: folder scope 是否含子文件夹，默认 True
+            model_preset: ``[llm.presets.*]`` 名称（后台 agent 仍走 preset）
+            model: LiteLLM 模型字符串；``None`` 表示由 ``model_preset`` 决定。
+                与 ``model_preset`` 并存：``model`` 非空时优先用它选模型，
+                ``model_preset`` 仍作为 temperature / max_tokens / thinking_budget
+                等采样参数模板（详见 ``ChatService._get_llm_client``）。
             agent_mode: 默认是否启用 Agent 工具循环
             enable_thinking: 默认是否启用思考链
+            enable_multimodal: 默认是否启用多模态读图
             max_tool_rounds: Agent 模式默认工具批次上限
             system_prompt: 用户自定义 system_prompt（``None`` 表示用模块默认）
         """
+        kb_ids = list(knowledge_base_ids or [])
+
+        # ===== folder_id 跨 KB 一致性校验 =====
+        if folder_id:
+            kb_ids = self._validate_folder_against_kb(
+                user_id=user_id,
+                folder_id=folder_id,
+                knowledge_base_ids=kb_ids,
+            )
+
         sess_id = generate_session_id()
         manager = get_mysql_manager()
         with manager.get_session() as db:
@@ -113,10 +139,14 @@ class ChatSessionService:
                 session_id=sess_id,
                 user_id=user_id,
                 title=title,
-                knowledge_base_ids=knowledge_base_ids or [],
+                knowledge_base_ids=kb_ids,
+                folder_id=folder_id,
+                include_subfolders=include_subfolders,
                 model_preset=model_preset,
+                model=model,
                 agent_mode=agent_mode,
                 enable_thinking=enable_thinking,
+                enable_multimodal=enable_multimodal,
                 max_tool_rounds=max_tool_rounds,
                 system_prompt=system_prompt,
                 creator=user_id,
@@ -126,9 +156,74 @@ class ChatSessionService:
                 return None
             logger.info(
                 f"创建会话: session_id={sess_id}, user={user_id}, "
-                f"model_preset={model_preset}, agent_mode={agent_mode}"
+                f"model_preset={model_preset}, model={model or '-'}, "
+                f"agent_mode={agent_mode}, "
+                f"scope={'folder=' + folder_id if folder_id else 'kb'}"
             )
             return obj
+
+    # ============================================================
+    # folder scope 校验辅助
+    # ============================================================
+
+    def _validate_folder_against_kb(
+        self,
+        *,
+        user_id: str,
+        folder_id: str,
+        knowledge_base_ids: List[str],
+    ) -> List[str]:
+        """校验 folder_id 与 knowledge_base_ids 的一致性。
+
+        校验规则（must_match）：
+
+        1. folder_id 必须存在且属于 ``user_id``；
+        2. folder 所属 KB 必须 ∈ ``knowledge_base_ids``（非空时）；
+        3. 若 ``knowledge_base_ids`` 为空 → 自动用 folder 所属 KB 填上一份。
+
+        Returns:
+            校验后的 knowledge_base_ids（必要时已自动填充 folder 的 KB）
+
+        Raises:
+            ValueError: 校验失败时抛出，建议上游转 422
+        """
+        from src.db.mysql.repositories.business.workspace_folder_repo import (
+            workspace_folder_repo,
+        )
+
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            folder = db.query(workspace_folder_repo.model).filter(
+                workspace_folder_repo.model.folder_id == folder_id,
+                workspace_folder_repo.model.user_id == user_id,
+                workspace_folder_repo.model.deleted == 0,
+            ).first()
+            if not folder:
+                raise ValueError(
+                    f"folder_id={folder_id} 不存在或不属于当前用户"
+                )
+            folder_kb = folder.knowledge_base_id
+            if not folder_kb:
+                # 数据脏：folder 没绑定 KB；保守起见允许通过但记录 warning
+                logger.warning(
+                    f"folder_id={folder_id} 没有绑定 knowledge_base_id；"
+                    "跳过跨 KB 校验"
+                )
+                return knowledge_base_ids
+
+            if not knowledge_base_ids:
+                logger.info(
+                    f"create_session 自动填充 KB：folder_id={folder_id} → "
+                    f"knowledge_base_ids=[{folder_kb}]"
+                )
+                return [folder_kb]
+
+            if folder_kb not in knowledge_base_ids:
+                raise ValueError(
+                    f"folder_id={folder_id} 所属 knowledge_base_id={folder_kb} "
+                    f"不在请求的 knowledge_base_ids={knowledge_base_ids} 中"
+                )
+            return knowledge_base_ids
 
     # ============================================================
     # 查询
@@ -215,6 +310,39 @@ class ChatSessionService:
                 updater=user_id,
             )
 
+    def update_session_settings(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        model: Optional[str] = None,
+        model_preset: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+    ) -> bool:
+        """把"会话级偏好"回写到 session（用户每轮可改的项）。
+
+        与 ``update_session_mode`` 的分工：
+
+        - ``update_session_mode``：首条消息后**锁定** ``agent_mode`` /
+          ``max_tool_rounds`` 等"会话定型"项；UI 上对应的 chip 在有消息后
+          就是 disabled 的，不能再变。
+        - ``update_session_settings``：随时可改的"轻偏好"——前端选了哪个
+          ``model``、是否开思考链、用哪个 preset 模板，只要每轮请求带上
+          就持久化，下次进同一会话时 UI 默认选项跟随。
+
+        所有参数都是 ``Optional``：``None`` 表示"不动这一项"。
+        """
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            return self._session_repo.update_settings(
+                db,
+                session_id,
+                model=model,
+                model_preset=model_preset,
+                enable_thinking=enable_thinking,
+                updater=user_id,
+            )
+
     # ============================================================
     # 删除
     # ============================================================
@@ -264,13 +392,22 @@ class ChatSessionService:
     ) -> List[ChatMessage]:
         """加载会话历史消息（按 create_time 正序，便于直接拼回 messages）
 
+        Chat 主流程（``skip=0``）取**最近** ``limit`` 条，而非最早 ``limit`` 条。
+        Agent 模式一轮常含多条 assistant/tool 消息；若从头部截断会在
+        ``tool_calls`` 与 ``role=tool`` 之间切开，导致下一轮 LLM 400。
+
         Args:
             session_id: 会话 ID（外层应已通过 ``get_session`` 完成权限校验）
-            limit: 单次加载上限（默认 200，覆盖典型 100 轮以内的会话）
-            skip: 跳过条数（前端做"加载更早"分页时用）
+            limit: 单次加载上限（默认 200）
+            skip: 跳过条数。仅在前端「加载更早」分页时使用；``skip>0`` 时
+                仍按时间正序分页（从最早消息起算），与 ``limit`` 组合。
         """
-        return await self._message_repo.list_by_session(
-            session_id, limit=limit, skip=skip, ascending=True,
+        if skip > 0:
+            return await self._message_repo.list_by_session(
+                session_id, limit=limit, skip=skip, ascending=True,
+            )
+        return await self._message_repo.list_recent_by_session(
+            session_id, limit=limit,
         )
 
 

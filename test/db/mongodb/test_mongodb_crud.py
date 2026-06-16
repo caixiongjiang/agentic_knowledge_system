@@ -147,17 +147,15 @@ async def test_create_record():
     
     chunk = await chunk_data_repository.create(
         creator="test_user",
-        message_id=message_id,
         chunk_type="text",
-        text="这是一段测试文本内容"
+        text_meta={"text": "这是一段测试文本内容"},
     )
-    
+
     if chunk:
         print(f"  ✓ 成功创建记录")
         print(f"    ID: {chunk.id}")
-        print(f"    Message ID: {chunk.message_id}")
         print(f"    Chunk Type: {chunk.chunk_type}")
-        print(f"    Text: {chunk.text[:30]}...")
+        print(f"    Text: {(chunk.text_meta or {}).get('text', '')[:30]}...")
         print(f"    Creator: {chunk.creator}")
         print(f"    Status: {chunk.status}")
         print(f"    Deleted: {chunk.deleted}")
@@ -184,9 +182,8 @@ async def test_get_by_id(chunk_id: str):
     if chunk:
         print(f"  ✓ 成功查询到记录")
         print(f"    ID: {chunk.id}")
-        print(f"    Message ID: {chunk.message_id}")
         print(f"    Chunk Type: {chunk.chunk_type}")
-        print(f"    Text: {chunk.text[:30] if chunk.text else 'N/A'}...")
+        print(f"    Text: {(chunk.text_meta or {}).get('text', '')[:30] or 'N/A'}...")
     else:
         print(f"  ✗ 未找到记录")
         return False
@@ -210,7 +207,7 @@ async def test_find_records():
     print(f"  ✓ 查询到 {len(chunks)} 条记录")
     
     for i, chunk in enumerate(chunks[:3], 1):
-        print(f"    {i}. ID: {chunk.id}, Message ID: {chunk.message_id}")
+        print(f"    {i}. ID: {chunk.id}, Type: {chunk.chunk_type}")
     
     print("\n✅ 条件查询测试通过!")
     return True
@@ -230,14 +227,14 @@ async def test_update_record(chunk_id: str):
     chunk_before = await chunk_data_repository.get_by_id(chunk_id)
     if chunk_before:
         print(f"  更新前状态: {chunk_before.status}")
-        print(f"  更新前文本: {chunk_before.text[:30] if chunk_before.text else 'N/A'}...")
-    
+        print(f"  更新前文本: {(chunk_before.text_meta or {}).get('text', '')[:30] or 'N/A'}...")
+
     # 更新记录
     chunk_after = await chunk_data_repository.update(
         chunk_id,
         updater="test_updater",
         status=1,
-        text="更新后的测试文本内容"
+        text_meta={"text": "更新后的测试文本内容"},
     )
     
     if chunk_after:
@@ -327,7 +324,7 @@ async def test_batch_create():
     if chunks:
         print(f"  ✓ 成功批量创建 {len(chunks)} 条记录")
         for i, chunk in enumerate(chunks[:3], 1):
-            print(f"    {i}. ID: {chunk.id}, Message ID: {chunk.message_id}")
+            print(f"    {i}. ID: {chunk.id}, Type: {chunk.chunk_type}")
             chunk_ids.append(str(chunk.id))
         
         # 如果超过3条，继续收集ID
@@ -399,37 +396,36 @@ async def test_upsert():
         test_id,
         creator="upsert_creator",
         updater="upsert_creator",
-        message_id=message_id,
         chunk_type="text",
-        text="Upsert创建的文本"
+        text_meta={"text": "Upsert创建的文本"},
     )
-    
+
     if chunk:
         print(f"  ✓ 成功创建记录")
         print(f"    ID: {chunk.id}")
-        print(f"    Text: {chunk.text}")
+        print(f"    Text: {(chunk.text_meta or {}).get('text', '')}")
     else:
         print(f"  ✗ 创建记录失败")
         return False
-    
+
     # 第二次upsert（应该更新）
     print(f"\n✓ 第二次 upsert (更新): {test_id}...")
     chunk = await chunk_data_repository.upsert(
         test_id,
         creator="upsert_creator",  # 不会改变
         updater="upsert_updater",
-        text="Upsert更新的文本",  # 更新
-        chunk_type="image"  # 更新
+        text_meta={"text": "Upsert更新的文本"},  # 更新
+        chunk_type="image",  # 更新
     )
-    
+
     if chunk:
         print(f"  ✓ 成功更新记录")
         print(f"    ID: {chunk.id}")
-        print(f"    Text: {chunk.text}")
+        print(f"    Text: {(chunk.text_meta or {}).get('text', '')}")
         print(f"    Type: {chunk.chunk_type}")
-        
+
         # 验证更新
-        if chunk.text == "Upsert更新的文本" and chunk.chunk_type == "image":
+        if (chunk.text_meta or {}).get("text") == "Upsert更新的文本" and chunk.chunk_type == "image":
             print(f"  ✓ 更新内容正确")
         else:
             print(f"  ✗ 更新内容不正确")
@@ -460,9 +456,8 @@ async def test_custom_query_methods():
         
         await chunk_data_repository.create(
             creator="custom_creator",
-            message_id=message_id,
             chunk_type="text",
-            text=f"自定义查询测试文本 #{i+1}"
+            text_meta={"text": f"自定义查询测试文本 #{i+1}"},
         )
     
     print(f"  ✓ 创建了 {len(test_message_ids)} 条测试数据")

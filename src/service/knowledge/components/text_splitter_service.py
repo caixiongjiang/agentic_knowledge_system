@@ -354,15 +354,22 @@ class TextSplitterService:
                 text = element.text
                 if self.config.enable_text_clean:
                     text = self.text_cleaner.clean_all(text)
-                
+
                 if not text:
                     continue
-                
+
                 text_buffer.append(text)
                 buffer_element_ids.append(element.element_id)
                 if buffer_page_index is None:
                     buffer_page_index = element.page_index
-            
+
+            # 处理公式 —— 追加到文本 buffer（LaTeX 不做文本清洗）
+            elif element.is_equation() and element.text:
+                text_buffer.append(element.text)
+                buffer_element_ids.append(element.element_id)
+                if buffer_page_index is None:
+                    buffer_page_index = element.page_index
+
             # 处理图片 —— 先 flush buffer，再创建 Image Chunk
             elif element.is_image():
                 chunks.extend(self._flush_text_buffer(
@@ -424,21 +431,58 @@ class TextSplitterService:
                 if chunk.section_id == section.section_id
             ]
         
-        # 填充 enhanced_vector_text（Section标题 + Chunk文本 → enhanced_chunk_store）
+        # 填充检索 / 展示双轨文本
+        # - vector_text / enhanced_vector_text          → Milvus 向量化 / MongoDB.search_text
+        # - display_text / enhanced_display_text        → MongoDB.text / enhanced_text
+        from src.types.utils.chunk_search_text import (
+            format_table_search_text_from_display,
+        )
+
         section_content_map = {s.section_id: s.content for s in sections}
+        vector_count = 0
         enhanced_count = 0
         for chunk in chunks:
-            if not chunk.section_id or chunk.section_id not in section_content_map:
-                continue
-            chunk_text = chunk.get_text_content()
-            if not chunk_text:
-                continue
-            section_title = section_content_map[chunk.section_id]
-            chunk.enhanced_vector_text = f"{section_title}\n{chunk_text}"
-            enhanced_count += 1
-        
-        if enhanced_count > 0:
-            logger.debug(f"填充 enhanced_vector_text: {enhanced_count}/{len(chunks)} 个Chunk")
+            section_title = (
+                section_content_map.get(chunk.section_id)
+                if chunk.section_id
+                else None
+            )
+
+            if chunk.is_image():
+                chunk.vector_text = chunk.build_image_embedding_text(
+                    section_title=section_title,
+                )
+                chunk.display_text = chunk.build_image_display_text(
+                    section_title=section_title,
+                )
+            elif chunk.is_table():
+                chunk.display_text = chunk.get_text_content()
+                if chunk.display_text:
+                    chunk.vector_text = format_table_search_text_from_display(
+                        chunk.display_text,
+                    )
+            else:
+                chunk_text = chunk.get_text_content()
+                if chunk_text:
+                    chunk.vector_text = chunk_text
+                    chunk.display_text = chunk_text
+
+            if chunk.vector_text:
+                vector_count += 1
+
+            if section_title and chunk.vector_text:
+                chunk.enhanced_vector_text = f"{section_title}\n{chunk.vector_text}"
+                enhanced_count += 1
+            if section_title and chunk.display_text:
+                chunk.enhanced_display_text = (
+                    f"{section_title}\n{chunk.display_text}"
+                )
+
+        if vector_count > 0:
+            logger.debug(
+                f"填充 vector_text: {vector_count}/{len(chunks)}，"
+                f"enhanced_vector_text: {enhanced_count}/{len(chunks)}"
+            )
         
         # 计算总字符数
         total_chars = sum(

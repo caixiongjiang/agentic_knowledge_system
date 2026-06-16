@@ -26,7 +26,7 @@ CREATE TABLE `element_meta_info` (
   `element_index` int NOT NULL COMMENT '元素在文档中的顺序（从0开始计数）',
   `page_index` int DEFAULT NULL COMMENT '页码（从0开始）',
   `element_type` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '元素类型：text=文本, image=图片, table=表格, discarded=丢弃',
-  `page_position` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '在页面中的位置（JSON数组格式：[x, y, width, height]）',
+  `page_position` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '在页面中的位置（JSON：MinerU bbox [x0,y0,x1,y1]，0~1000归一化，左上角原点）',
   `text_level` int DEFAULT NULL COMMENT '文本元素层级深度（1=一级，2=二级，仅text类型有效）',
   `bucket_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '对象存储桶名称（如 MinIO bucket）',
   `image_file_path` varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '图片文件路径',

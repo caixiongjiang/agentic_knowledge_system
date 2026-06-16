@@ -63,7 +63,7 @@ class ElementMetaInfo(BaseModel, KnowledgeMixin):
     page_position = Column(
         String(255), 
         nullable=True,
-        comment="在页面中的位置（JSON数组格式：[x, y, width, height]）"
+        comment="在页面中的位置（JSON数组：MinerU bbox [x0,y0,x1,y1]，0~1000 归一化，左上角原点）"
     )
     
     # 辅助元数据

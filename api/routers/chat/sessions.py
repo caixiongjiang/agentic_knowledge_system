@@ -79,9 +79,13 @@ def _to_session_info(s: ChatSession) -> ChatSessionInfo:
         user_id=s.user_id,
         title=s.title,
         knowledge_base_ids=list(s.knowledge_base_ids or []),
+        folder_id=getattr(s, "folder_id", None),
+        include_subfolders=bool(getattr(s, "include_subfolders", True)),
         model_preset=s.model_preset,
+        model=s.model,
         agent_mode=bool(s.agent_mode),
         enable_thinking=bool(s.enable_thinking),
+        enable_multimodal=bool(getattr(s, "enable_multimodal", False)),
         max_tool_rounds=int(s.max_tool_rounds),
         system_prompt=s.system_prompt,
         message_count=int(s.message_count or 0),
@@ -96,7 +100,10 @@ def _to_session_list_item(s: ChatSession) -> ChatSessionListItem:
         session_id=s.session_id,
         title=s.title,
         knowledge_base_ids=list(s.knowledge_base_ids or []),
+        folder_id=getattr(s, "folder_id", None),
+        include_subfolders=bool(getattr(s, "include_subfolders", True)),
         model_preset=s.model_preset,
+        model=s.model,
         agent_mode=bool(s.agent_mode),
         message_count=int(s.message_count or 0),
         last_message_at=s.last_message_at,
@@ -120,6 +127,7 @@ def _to_message_item(m: ChatMessage) -> ChatMessageItem:
                 retrieval_chunks=tc.retrieval_chunks,
                 retrieval_params=tc.retrieval_params,
                 time_ms=tc.time_ms,
+                execution_model=tc.execution_model,
             )
             for tc in (m.tool_calls or [])
         ],
@@ -174,16 +182,24 @@ async def create_session(
 ) -> ApiResponse[ChatSessionInfo]:
     """创建一个新的对话会话；返回会话详情（含分配的 ``session_id``）"""
     service = _get_service()
-    obj = service.create_session(
-        user_id=user_id,
-        title=body.title,
-        knowledge_base_ids=body.knowledge_base_ids,
-        model_preset=body.model_preset,
-        agent_mode=body.agent_mode,
-        enable_thinking=body.enable_thinking,
-        max_tool_rounds=body.max_tool_rounds,
-        system_prompt=body.system_prompt,
-    )
+    try:
+        obj = service.create_session(
+            user_id=user_id,
+            title=body.title,
+            knowledge_base_ids=body.knowledge_base_ids,
+            folder_id=body.folder_id,
+            include_subfolders=body.include_subfolders,
+            model_preset=body.model_preset,
+            model=body.model,
+            agent_mode=body.agent_mode,
+            enable_thinking=body.enable_thinking,
+            enable_multimodal=body.enable_multimodal,
+            max_tool_rounds=body.max_tool_rounds,
+            system_prompt=body.system_prompt,
+        )
+    except ValueError as e:
+        # folder_id 跨 KB 校验等失败：转 422 给前端，文案保留原始 detail
+        raise HTTPException(status_code=422, detail=str(e)) from e
     if obj is None:
         raise HTTPException(status_code=500, detail="创建会话失败")
     logger.info(f"REST create_session: session_id={obj.session_id}, user={user_id}")
@@ -203,25 +219,60 @@ async def list_sessions(
         description="按知识库 ID 过滤；前端按 KB 维度组织面板时使用，"
                     "服务端过滤可避免拉全量后再丢弃",
     ),
+    scope: Optional[str] = Query(
+        None,
+        description=(
+            "检索范围维度：'kb'=仅 KB 级会话（folder_id IS NULL）；"
+            "'folder'=仅指定 folder 的会话（须配合 folder_id）。"
+            "不传则返回该 KB 下全部会话（兼容旧客户端）。"
+        ),
+    ),
+    folder_id: Optional[str] = Query(
+        None,
+        description="scope='folder' 时必填，匹配 chat_session.folder_id",
+    ),
     user_id: str = Depends(get_current_user_id),
 ) -> ApiResponse[ChatSessionListResponse]:
     """按 ``last_message_at`` 倒序分页拉取当前用户的会话
 
     若提供 ``knowledge_base_id``，先过滤出 ``knowledge_base_ids`` 包含该 KB 的
     会话，再分页（``total`` 与 ``items`` 都基于过滤后的集合）。
+
+    v0.8.0：配合 ``scope`` / ``folder_id`` 把 KB 级与 folder 级会话列表拆开，
+    前端切换文件夹 / 知识库时各自展示独立历史。
     """
+    if scope == "folder" and not folder_id:
+        raise HTTPException(
+            status_code=422,
+            detail="scope=folder 时必须提供 folder_id",
+        )
+    if scope and scope not in ("kb", "folder"):
+        raise HTTPException(
+            status_code=422,
+            detail="scope 仅支持 'kb' 或 'folder'",
+        )
+
     service = _get_service()
-    if knowledge_base_id:
+    if knowledge_base_id or scope:
         # 服务端过滤：拉一页足够大的窗口（用户级会话量级有限），
         # 应用层做包含判断后再分页。这里走 limit=1000 一次拉到底以避免
         # 在 ORM 层引入 JSON 包含查询的方言耦合。
         all_items, _ = service.list_sessions(
             user_id=user_id, limit=1000, offset=0,
         )
-        filtered = [
-            s for s in all_items
-            if knowledge_base_id in (s.knowledge_base_ids or [])
-        ]
+        filtered = list(all_items)
+        if knowledge_base_id:
+            filtered = [
+                s for s in filtered
+                if knowledge_base_id in (s.knowledge_base_ids or [])
+            ]
+        if scope == "kb":
+            filtered = [s for s in filtered if not getattr(s, "folder_id", None)]
+        elif scope == "folder":
+            filtered = [
+                s for s in filtered
+                if getattr(s, "folder_id", None) == folder_id
+            ]
         total = len(filtered)
         start = (page - 1) * page_size
         items = filtered[start:start + page_size]

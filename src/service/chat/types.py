@@ -82,6 +82,7 @@ class ChatEventType(str, Enum):
     TOOL_CALL_ARGS_DELTA = "tool_call.args_delta"
 
     # 工具执行
+    TOOL_PROGRESS = "tool.progress"
     TOOL_CALL_COMPLETED = "tool_call.completed"
     TOOL_ROUND_DONE = "tool_round.done"
 
@@ -114,8 +115,9 @@ class ChatEvent:
         - ``CONTENT_DELTA`` / ``THINKING_DELTA``: ``{"text"}``
         - ``TOOL_CALL_STARTED``: ``{"index", "id", "name"}``
         - ``TOOL_CALL_ARGS_DELTA``: ``{"index", "text"}``
+        - ``TOOL_PROGRESS``: ``{"tool_call_id", "stage", "model"?}``
         - ``TOOL_CALL_COMPLETED``: ``{"id", "name", "args", "result_brief",
-          "items_added", "time_ms"}``
+          "items_added", "time_ms", "execution_model"?}``
         - ``MESSAGE_DONE``: ``{"message_id", "role", "round", "finish_reason",
           "tool_calls_count", "citations_count", "usage": {...}}``
         - ``TOOL_ROUND_DONE``: ``{"round", "tool_calls": [...]}``
@@ -152,8 +154,18 @@ class ChatRequest(BaseModel):
     enable_thinking: Optional[bool] = Field(
         None, description="是否启用思考链；None 表示沿用 session 默认",
     )
+    enable_multimodal: Optional[bool] = Field(
+        None, description="是否启用多模态读图；None 表示沿用 session 默认",
+    )
     model_preset: Optional[str] = Field(
         None, description="LLM preset 名称；None 表示沿用 session 默认",
+    )
+    model: Optional[str] = Field(
+        None,
+        description=(
+            "LiteLLM 模型字符串（如 'openai/gpt-4o-mini'），优先级高于 "
+            "model_preset；None 表示沿用 session 默认"
+        ),
     )
     max_tool_rounds: Optional[int] = Field(
         None, ge=1, description="Agent 模式工具循环上限；None 表示沿用 session 默认",
@@ -175,8 +187,24 @@ class ChatRequest(BaseModel):
             "驱动的探索式对话）"
         ),
     )
+    folder_id: Optional[str] = Field(
+        None,
+        description=(
+            "请求级临时覆盖 folder scope；None 表示沿用 session.folder_id。"
+            "传入后必须满足 folder 所属 KB ∈ session.knowledge_base_ids，"
+            "否则在 _resolve_turn_context 处会报错。"
+        ),
+    )
+    include_subfolders: Optional[bool] = Field(
+        None,
+        description=(
+            "请求级临时覆盖 include_subfolders；None 表示沿用 session 默认。"
+            "仅当 folder_id（请求或 session 级）非空时有意义。"
+        ),
+    )
 
-    model_config = ConfigDict(extra="ignore")
+    # 含 ``model`` 字段，需要解除 Pydantic v2 的保护命名空间
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
 
 
 class ChatTurnContext(BaseModel):
@@ -193,13 +221,49 @@ class ChatTurnContext(BaseModel):
     agent_mode: bool
     enable_thinking: bool
     model_preset: str
+    model: Optional[str] = None
+    """显式选定的 LiteLLM 模型字符串；为 ``None`` 时由 ``model_preset`` 决定模型"""
     max_tool_rounds: int
     retrieve_top_k: int
     system_prompt: str
     knowledge_base_ids: List[str] = Field(default_factory=list)
     skip_retrieval: bool = False
 
-    model_config = ConfigDict(extra="ignore")
+    # ===== scope 抽象（v0.8.0 引入）=====
+    scope_kind: str = Field(
+        "kb",
+        description=(
+            "本轮检索范围类型：'kb'=知识库全量；'folder'=文件夹内文档。"
+            "single_doc / documents 留待后续 PR 引入。"
+        ),
+    )
+    folder_id: Optional[str] = Field(
+        None,
+        description="folder scope 时的目标文件夹 ID；'kb' 时为 None",
+    )
+    folder_label: Optional[str] = Field(
+        None,
+        description=(
+            "folder scope 时给 LLM 看的可读名（如文件夹名 / 路径片段）；"
+            "由 ChatService 在解析时填充"
+        ),
+    )
+    include_subfolders: bool = Field(
+        True,
+        description="folder scope 时是否递归含子文件夹的文档",
+    )
+    scope_document_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "解析后产物：本轮检索 / 工具调用允许命中的 document_id 集合。"
+            "scope_kind='kb' 时为空（不限制）；scope_kind='folder' 时为该 folder "
+            "（含子目录，由 include_subfolders 决定）下所有文档去重后的 ID 列表。"
+            "navigation 工具组依此做硬校验拒绝越界 document_id"
+        ),
+    )
+
+    # 含 ``model`` 字段，需要解除 Pydantic v2 的保护命名空间
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
 
 
 # ============================================================

@@ -31,9 +31,6 @@ class RetrieveRequestSchema(BaseModel):
     )
     top_k: int = Field(default=10, ge=1, le=100, description="返回结果数量")
     enable_rerank: bool = Field(default=True, description="是否启用 Reranker 精排")
-    enable_validation: bool = Field(
-        default=True, description="是否启用 LLM 结果验证",
-    )
     route_hints: Optional[List[str]] = Field(
         default=None, description="路由提示（建议激活的路由名称列表）",
     )
@@ -51,7 +48,6 @@ class CustomRetrieveRequestSchema(BaseModel):
     document_id: Optional[str] = Field(default=None, description="文档 ID")
     top_k: int = Field(default=10, ge=1, le=100, description="返回结果数量")
     enable_rerank: bool = Field(default=True, description="是否启用精排")
-    enable_validation: bool = Field(default=False, description="是否启用结果验证")
 
 
 class SingleRetrieveRequestSchema(BaseModel):
@@ -89,7 +85,6 @@ class PhaseTimingsSchema(BaseModel):
     alignment_ms: float = 0.0
     fusion_ms: float = 0.0
     rerank_ms: float = 0.0
-    validation_ms: float = 0.0
 
 
 class RetrieveResponseSchema(BaseModel):

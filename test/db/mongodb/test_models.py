@@ -87,7 +87,7 @@ def test_model_fields():
     print(f"  字段数量: {len(chunk_fields)}")
     
     # 检查必需字段
-    required_fields = ["message_id", "chunk_type", "text", "creator", "deleted"]
+    required_fields = ["chunk_type", "text_meta", "search_text", "deleted"]
     
     print(f"\n  检查必需字段:")
     for field_name in required_fields:
@@ -234,14 +234,14 @@ async def test_custom_methods():
     print("\n✓ 测试 has_text 方法...")
     
     chunk_with_text = ChunkData(
-        message_id=3,
-        text="测试文本",
-        creator="test"
+        id="chunk_test_has_text",
+        chunk_type="text",
+        text_meta={"text": "测试文本"},
     )
-    
+
     chunk_without_text = ChunkData(
-        message_id=4,
-        creator="test"
+        id="chunk_test_no_text",
+        chunk_type="text",
     )
     
     has_text_1 = chunk_with_text.has_text()
@@ -317,15 +317,13 @@ async def test_model_instantiation():
     print("\n✓ 测试 ChunkData 实例化...")
     try:
         chunk = ChunkData(
-            message_id=12345,
+            id="chunk_test_instantiate",
             chunk_type="text",
-            text="这是一段测试文本",
-            creator="test_user"
+            text_meta={"text": "这是一段测试文本"},
         )
         print(f"  ✓ ChunkData 实例化成功")
-        print(f"    message_id: {chunk.message_id}")
         print(f"    chunk_type: {chunk.chunk_type}")
-        print(f"    creator: {chunk.creator}")
+        print(f"    text_meta: {chunk.text_meta}")
     except Exception as e:
         print(f"  ✗ ChunkData 实例化失败: {e}")
         return False

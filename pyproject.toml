@@ -22,6 +22,7 @@ dependencies = [
     "pymilvus[milvus-lite,model]>=2.6.6",
     "pymysql>=1.1.2",
     "pypdf>=6.6.0",
+    "pillow>=11.0.0",
     "python-dotenv>=1.2.1",
     "python-multipart>=0.0.22",
     "redis[hiredis]>=7.1.0",

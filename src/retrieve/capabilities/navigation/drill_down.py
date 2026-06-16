@@ -35,6 +35,7 @@ from src.db.mysql.repositories.base.section_meta_info_repo import (
 )
 from src.retrieve.capabilities.base import BaseCapability, CapabilityDescriptor
 from src.retrieve.types.enums import ElementType, GranularityLevel
+from src.types.utils.chunk_search_text import resolve_chunk_display_text
 from src.retrieve.types.query import NavigationQuery
 from src.retrieve.types.result import (
     ChunkItem,
@@ -209,6 +210,17 @@ class DrillDown(BaseCapability):
             if meta:
                 meta_map[sid] = meta
 
+        # 统计每个 section 下的 chunk 数量，方便上层 Agent 决定是否再下钻；
+        # 复用与 Skeleton 一致的口径（按 section_id 聚合 chunk_section_document）。
+        chunk_count_map: Dict[str, int] = {}
+        for sid in section_ids:
+            try:
+                chunk_count_map[sid] = len(
+                    self._chunk_rel_repo.get_by_section_id(session, sid)
+                )
+            except Exception:  # noqa: BLE001 - 计数失败不影响主流程
+                chunk_count_map[sid] = 0
+
         items: List[SectionItem] = []
         for i, rel in enumerate(section_rels):
             meta = meta_map.get(rel.section_id)
@@ -221,6 +233,8 @@ class DrillDown(BaseCapability):
                 metadata={
                     "text_level": meta.text_level if meta else None,
                     "parent_section_id": rel.parent_section_id,
+                    "chunk_count": chunk_count_map.get(rel.section_id, 0),
+                    "section_index": i,
                 },
             ))
 
@@ -417,7 +431,7 @@ class DrillDown(BaseCapability):
         if not chunk_ids:
             return
         chunk_data_list = await self._chunk_data_repo.get_by_ids(chunk_ids)
-        data_map = {str(cd.id): cd.text for cd in chunk_data_list}
+        data_map = {str(cd.id): resolve_chunk_display_text(cd) for cd in chunk_data_list}
         for item in items:
             item.text = data_map.get(item.chunk_id)
 

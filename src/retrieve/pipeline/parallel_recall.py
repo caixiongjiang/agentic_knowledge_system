@@ -11,8 +11,7 @@
 
     本模块同时对外暴露 ``build_query_for_route`` / ``normalize_to_chunk_items``
     /  ``is_lexical_route`` / ``is_semantic_route`` 等可复用的纯函数，
-    供 ResultValidator 的 ``re_retrieve`` 工具与 SearchMode 过滤等场景共享，
-    避免在多处重复手写 Query 构造逻辑。
+    供 SearchMode 过滤等场景共享，避免重复手写 Query 构造逻辑。
 
 @Modify History:
     2026/04/17 - 修复跳过未注册路由后 ``routes[i]`` 错位的索引问题；
@@ -81,11 +80,7 @@ def build_query_for_route(
     query_text: str,
     filters: MetadataFilter,
 ) -> Any:
-    """根据路由类型构建对应的 Query 对象（公开复用）
-
-    供 ParallelRecallExecutor 与 ResultValidator.re_retrieve 共用，
-    保证两处行为完全一致。
-    """
+    """根据路由类型构建对应的 Query 对象（公开复用）"""
     route = route_cfg.route
     score_threshold = route_cfg.params.get("score_threshold")
     q = effective_route_query(route_cfg, query_text)
