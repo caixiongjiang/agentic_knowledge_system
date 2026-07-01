@@ -94,6 +94,13 @@ class ElementPosition(BaseModel):
     """元素位置信息"""
     element_id: str = Field(..., description="元素 ID")
     element_type: str = Field(..., description="元素类型：text, image, table")
+    page_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "元素所在页码（从 0 开始）。文本 chunk 可能跨页，前端需按此逐元素"
+            "渲染高亮框，避免用 chunk 级 page_index 错位。"
+        ),
+    )
     page_position: Optional[List[float]] = Field(
         default=None,
         description=(

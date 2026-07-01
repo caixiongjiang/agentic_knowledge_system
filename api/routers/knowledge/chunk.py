@@ -114,6 +114,9 @@ async def get_chunk_position(
         raise HTTPException(status_code=404, detail="Chunk 不存在或已删除")
 
     # 2. 查询关联的 Element 位置信息
+    #    文本 chunk 的 chunk 级 page_index 取自 buffer 首个元素，可能与本 chunk
+    #    实际元素所在页不一致（文本跨页时）。因此这里逐元素带上各自的 page_index，
+    #    并用「首个有效元素的页码」作为定位跳转的目标页，使文本与图片/表格一致。
     elements: list[ElementPosition] = []
     raw_element_ids = getattr(meta, "element_ids", None) or []
     if raw_element_ids:
@@ -136,15 +139,24 @@ async def get_chunk_position(
                 ElementPosition(
                     element_id=getattr(el, "element_id", eid),
                     element_type=getattr(el, "element_type", "unknown"),
+                    page_index=getattr(el, "page_index", None),
                     page_position=parsed_pos,
                 )
             )
+
+    # 定位目标页：优先取首个有效元素的页码（与实际高亮元素所在页对齐）；
+    # 缺失时回退到 chunk 级 page_index。
+    resolved_page_index = getattr(meta, "page_index", None)
+    for e in elements:
+        if e.page_index is not None:
+            resolved_page_index = e.page_index
+            break
 
     return ApiResponse.success(
         data=ChunkPositionResponse(
             chunk_id=chunk_id,
             chunk_type=getattr(meta, "chunk_type", None),
-            page_index=getattr(meta, "page_index", None),
+            page_index=resolved_page_index,
             coord_space=MINERU_COORD_SPACE,
             coord_range=MINERU_COORD_RANGE,
             elements=elements,

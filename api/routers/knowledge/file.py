@@ -39,6 +39,7 @@ from api.schemas.knowledge.file import (
     FilePreviewResponse,
     SkippedFileDetail,
 )
+from api.schemas.knowledge.folder import FileInfo, FileListResponse
 from src.db.mysql.repositories.business.workspace_file_system_repo import (
     workspace_file_system_repo,
 )
@@ -47,6 +48,53 @@ from src.service.knowledge.delete_service import knowledge_delete_service
 from src.service.knowledge.move_service import knowledge_move_service
 
 router = APIRouter(tags=["File"])
+
+
+# ==================== 文件搜索（供前端 @ 文件选择器） ====================
+
+
+@router.get(
+    "/search",
+    response_model=ApiResponse[FileListResponse],
+    summary="按文件名搜索知识库内文件",
+    description=(
+        "在指定知识库内按文件名模糊搜索文件，供前端 @ 文件选择器使用。"
+        "q 为空时返回该知识库下的前 limit 个文件。"
+    ),
+)
+async def search_files(
+    knowledge_base_id: str = Query(..., description="知识库ID（限定搜索范围）"),
+    q: str = Query(default="", description="文件名关键字，空串返回前 limit 个"),
+    limit: int = Query(default=20, ge=1, le=50, description="返回条数上限"),
+    user_id: str = Depends(get_current_user_id),
+    session: Session = Depends(get_db_session),
+) -> ApiResponse[FileListResponse]:
+    try:
+        records = workspace_file_system_repo.search_by_name(
+            session, user_id, knowledge_base_id, q, limit
+        )
+    except SQLAlchemyError as e:
+        logger.error(f"搜索文件失败: {e}")
+        raise HTTPException(status_code=500, detail="搜索文件失败")
+
+    files = [
+        FileInfo(
+            file_id=r.file_id,
+            file_name=r.file_name,
+            folder_id=r.folder_id,
+            file_size=r.file_size,
+            mime_type=r.mime_type,
+            status=r.status,
+            knowledge_base_id=r.knowledge_base_id or "",
+            description=r.description,
+        )
+        for r in records
+    ]
+
+    return ApiResponse.success(
+        data=FileListResponse(files=files, total=len(files)),
+        message="搜索成功",
+    )
 
 
 # ==================== 文件移动 ====================

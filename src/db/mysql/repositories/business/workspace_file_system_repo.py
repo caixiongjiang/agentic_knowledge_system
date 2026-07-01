@@ -212,6 +212,58 @@ class WorkspaceFileSystemRepository(BaseRepository[WorkspaceFileSystem]):
             logger.error(f"根据knowledge_base_id查询失败: {e}")
             return []
     
+    def search_by_name(
+        self,
+        session: Session,
+        user_id: str,
+        knowledge_base_id: str,
+        q: str,
+        limit: int = 20,
+    ) -> List[WorkspaceFileSystem]:
+        """按文件名模糊搜索某知识库内的文件（供前端 @ 文件选择器使用）。
+
+        Args:
+            session: 数据库会话
+            user_id: 用户ID
+            knowledge_base_id: 知识库ID（必填，限定搜索范围）
+            q: 文件名关键字（空串返回该 KB 下前 limit 个文件）
+            limit: 返回条数上限（封顶 50）
+
+        Returns:
+            WorkspaceFileSystem 列表（deleted=0），按文件名排序
+        """
+        try:
+            capped = max(1, min(limit, 50))
+            query = session.query(self.model).filter(
+                self.model.user_id == user_id,
+                self.model.knowledge_base_id == knowledge_base_id,
+                self.model.deleted == 0,
+            )
+            keyword = (q or "").strip()
+            if keyword:
+                # 转义 LIKE 通配符，避免用户输入 % / _ 造成意外匹配
+                escaped = (
+                    keyword.replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                query = query.filter(
+                    self.model.file_name.like(f"%{escaped}%", escape="\\")
+                )
+            results = (
+                query.order_by(self.model.file_name)
+                .limit(capped)
+                .all()
+            )
+            logger.debug(
+                f"按文件名搜索: user_id={user_id}, kb={knowledge_base_id}, "
+                f"q={keyword!r}, hits={len(results)}"
+            )
+            return results
+        except SQLAlchemyError as e:
+            logger.error(f"按文件名搜索失败: {e}")
+            return []
+
     def get_by_sha256(
         self,
         session: Session,
