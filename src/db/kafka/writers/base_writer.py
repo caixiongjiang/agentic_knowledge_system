@@ -73,7 +73,16 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         self._retry_manager = retry_manager
         self._dlq_manager = dlq_manager
         self._enable_idempotency = enable_idempotency
-        
+
+        # 幂等开关打开但未注入 dedup_manager 时显式告警：
+        # 否则系统照常运行、看起来正常，但重试/DLQ 路径会静默产生重复数据
+        if self._enable_idempotency and self._dedup_manager is None:
+            logger.warning(
+                f"[{type(self).__name__}] enable_idempotency=True 但 dedup_manager 未注入，"
+                f"幂等检查将不生效；重试/异常路径可能产生重复写入。"
+                f"如确需关闭幂等，请显式传 enable_idempotency=False。"
+            )
+
         # 统计信息
         self._duplicate_count = 0
         self._total_written = 0
@@ -96,14 +105,17 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         
         logger.debug(f"开始处理批量消息: {len(messages)} 条")
         
-        # 1. 批量幂等性检查
+        # 1. 批量幂等性检查（P2 #5：一次 MGET 批量查询，避免 N 次 Redis 往返）
         unique_messages = []
         results_map = {}  # event_id -> bool
         
         if self._enable_idempotency and self._dedup_manager:
+            duplicate_ids = await self._dedup_manager.get_duplicates(
+                [msg.metadata.event_id for msg in messages]
+            )
             for msg in messages:
                 event_id = msg.metadata.event_id
-                if await self._dedup_manager.is_duplicate(event_id):
+                if str(event_id) in duplicate_ids:
                     self._duplicate_count += 1
                     results_map[event_id] = True  # 幂等性消息视为成功
                     logger.debug(f"消息已处理过(幂等性): event_id={event_id}")
@@ -120,14 +132,17 @@ class BaseWriter(BatchKafkaConsumer, ABC):
         try:
             success_flags = await self.process_batch_impl(unique_messages)
             
-            # 3. 标记成功处理的消息 (幂等性)
+            # 3. 标记成功处理的消息 (幂等性，P2 #5：批量 mark)
             if self._enable_idempotency and self._dedup_manager:
+                processed_ids = []
                 for i, msg in enumerate(unique_messages):
                     if success_flags[i]:
-                        await self._dedup_manager.mark_processed(msg.metadata.event_id)
+                        processed_ids.append(msg.metadata.event_id)
                         results_map[msg.metadata.event_id] = True
                     else:
                         results_map[msg.metadata.event_id] = False
+                if processed_ids:
+                    await self._dedup_manager.mark_processed_batch(processed_ids)
             else:
                 for i, msg in enumerate(unique_messages):
                     results_map[msg.metadata.event_id] = success_flags[i]

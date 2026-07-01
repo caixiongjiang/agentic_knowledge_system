@@ -71,6 +71,53 @@ from src.types.messages.db_write import (
     EmbeddingWriteMessage, GraphWriteMessage, MetaWriteMessage, MongoWriteMessage,
     MongoCollection, MySQLTable, MilvusCollection,
 )
+from src.utils.config_manager import get_config
+
+
+# Writer 名称 → (batch_size 配置路径, flush_interval_ms 配置路径, 代码默认值)
+# 配置来源统一为 config.toml [kafka.batch]，components.json 中的同名字段仅作历史保留、不再生效
+_WRITER_BATCH_CONFIG_PATHS: Dict[str, tuple] = {
+    "mysql_writer": (
+        "kafka.batch.mysql_batch_size",
+        "kafka.batch.mysql_flush_interval_ms",
+        200,
+        1000,
+    ),
+    "mongo_writer": (
+        "kafka.batch.mongo_batch_size",
+        "kafka.batch.mongo_flush_interval_ms",
+        100,
+        500,
+    ),
+    "neo4j_writer": (
+        "kafka.batch.neo4j_batch_size",
+        "kafka.batch.neo4j_flush_interval_ms",
+        500,
+        2000,
+    ),
+    "embedding_milvus_writer": (
+        "kafka.batch.embedding_batch_size",
+        "kafka.batch.embedding_flush_interval_ms",
+        100,
+        500,
+    ),
+}
+
+
+def _resolve_writer_batch_kwargs(worker_name: str) -> Dict[str, int]:
+    """从 config.toml [kafka.batch] 解析 Writer 的 batch_size / flush_interval_ms。
+
+    缺失时回退到代码默认值（与 _WRITER_BATCH_CONFIG_PATHS 中的兜底一致），
+    保证「文档说一套、代码跑一套」不再发生。
+    """
+    entry = _WRITER_BATCH_CONFIG_PATHS.get(worker_name)
+    if entry is None:
+        return {}
+    bs_path, fi_path, default_bs, default_fi = entry
+    return {
+        "batch_size": int(get_config(bs_path, default_bs)),
+        "flush_interval_ms": int(get_config(fi_path, default_fi)),
+    }
 
 
 @dataclass
@@ -298,7 +345,15 @@ class WorkerManager:
             # Pipeline Worker 注入进度管理器，DB Writer 不需要
             if self.progress_manager and config.group_id != ConsumerGroup.DB_WRITER:
                 worker_kwargs["progress_manager"] = self.progress_manager
-            
+
+            # DB Writer 注入批处理参数（来自 config.toml [kafka.batch]）
+            if config.group_id == ConsumerGroup.DB_WRITER:
+                worker_kwargs.update(_resolve_writer_batch_kwargs(worker_name))
+                logger.info(
+                    f"  批处理参数: batch_size={worker_kwargs.get('batch_size')}, "
+                    f"flush_interval_ms={worker_kwargs.get('flush_interval_ms')}"
+                )
+
             worker = worker_class(**worker_kwargs)
             
             # Writer 类型需要注册 Repository 和客户端

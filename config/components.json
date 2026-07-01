@@ -68,36 +68,32 @@
   },
 
   "mysql_writer": {
+    "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
-    "batch_size": 100,
-    "flush_interval": 5,
     "max_retries": 3,
-    "comment": "MySQL批量写入器"
+    "comment": "MySQL批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
 
   "mongo_writer": {
+    "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
-    "batch_size": 50,
-    "flush_interval": 5,
     "max_retries": 3,
-    "comment": "MongoDB批量写入器"
+    "comment": "MongoDB批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
 
   "neo4j_writer": {
+    "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
-    "batch_size": 200,
-    "flush_interval": 10,
     "max_retries": 3,
-    "comment": "Neo4j批量写入器"
+    "comment": "Neo4j批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
 
   "embedding_milvus_writer": {
+    "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
-    "batch_size": 32,
-    "flush_interval": 3,
     "max_retries": 3,
     "embedding_model": "qwen3-embedding-0.6b",
     "embedding_dim": 1024,
-    "comment": "Embedding + Milvus批量写入器（合并组件）"
+    "comment": "Embedding + Milvus批量写入器（合并组件，批处理参数见 config.toml [kafka.batch]）"
   }
 }

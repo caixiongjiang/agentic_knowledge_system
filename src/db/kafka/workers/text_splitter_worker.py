@@ -367,7 +367,8 @@ class TextSplitterWorker(BaseWorker):
             logger.warning("Producer 未配置，无法发送 MySQL 消息")
             return
 
-        total_count = 0
+        # P2 #7：跨表汇总后一次性批量发送（同一 Topic）
+        meta_msgs: List[MetaWriteMessage] = []
 
         for table_name_str, records in mysql_data.items():
             if not records:
@@ -385,22 +386,22 @@ class TextSplitterWorker(BaseWorker):
                     or message.file_id
                 )
 
-                meta_msg = MetaWriteMessage(
+                meta_msgs.append(MetaWriteMessage(
                     user_id=message.user_id,
                     file_id=message.file_id,
                     table_name=table_enum,
                     record_data=record,
                     operation=WriteOperation.INSERT,
                     record_id=record_id,
-                )
+                ))
 
-                await self._producer.send_message(
-                    topic=KafkaTopics.DB_WRITE_META,
-                    message=meta_msg
-                )
-                total_count += 1
+        if meta_msgs:
+            await self._producer.send_messages(
+                topic=KafkaTopics.DB_WRITE_META,
+                messages=meta_msgs
+            )
 
-        logger.debug(f"MySQL 消息发送完成: {total_count} 条 (4 个表)")
+        logger.debug(f"MySQL 消息发送完成: {len(meta_msgs)} 条 (4 个表)")
     
     # MongoDB Collection 名称字符串 → MongoCollection 枚举的映射
     _MONGO_COLLECTION_MAP: Dict[str, MongoCollection] = {
@@ -428,7 +429,8 @@ class TextSplitterWorker(BaseWorker):
             logger.warning("Producer 未配置，无法发送 MongoDB 消息")
             return
 
-        total_count = 0
+        # P2 #7：跨集合汇总后一次性批量发送（同一 Topic）
+        mongo_msgs: List[MongoWriteMessage] = []
 
         for collection_name_str, documents in mongodb_data.items():
             if not documents:
@@ -442,22 +444,22 @@ class TextSplitterWorker(BaseWorker):
             for doc in documents:
                 document_id = doc.get("_id", message.file_id)
 
-                mongo_msg = MongoWriteMessage(
+                mongo_msgs.append(MongoWriteMessage(
                     user_id=message.user_id,
                     file_id=message.file_id,
                     collection_name=collection_enum,
                     document_data=doc,
                     operation=WriteOperation.UPSERT,
                     document_id=str(document_id),
-                )
+                ))
 
-                await self._producer.send_message(
-                    topic=KafkaTopics.DB_WRITE_MONGO,
-                    message=mongo_msg
-                )
-                total_count += 1
+        if mongo_msgs:
+            await self._producer.send_messages(
+                topic=KafkaTopics.DB_WRITE_MONGO,
+                messages=mongo_msgs
+            )
 
-        logger.debug(f"MongoDB 消息发送完成: {total_count} 条 (2 个集合)")
+        logger.debug(f"MongoDB 消息发送完成: {len(mongo_msgs)} 条 (2 个集合)")
     
     async def _send_embedding_messages(
         self,

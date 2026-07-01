@@ -243,6 +243,80 @@ class DeduplicationManager:
         logger.debug(f"消息标记为已处理（仅内存）: {event_id}")
         return True
     
+    async def get_duplicates(self, event_ids: list) -> set:
+        """批量检查一组 event_id 中哪些是重复（已处理）的。
+
+        相比逐条 is_duplicate（N 次往返），这里：
+        1. 先用本地 LRU 过滤掉命中的；
+        2. 剩余的用 Redis MGET 一次往返批量查询。
+
+        Args:
+            event_ids: 事件ID列表
+
+        Returns:
+            重复（已处理）的 event_id 字符串集合
+        """
+        if not event_ids:
+            return set()
+
+        str_ids = [str(e) for e in event_ids]
+        duplicates: set = set()
+
+        # 1. 本地 LRU 命中
+        remaining: list = []
+        for sid in str_ids:
+            if await self.lru_cache.get(sid) is not None:
+                duplicates.add(sid)
+            else:
+                remaining.append(sid)
+
+        # 2. Redis MGET 批量查询剩余（单次往返）
+        if remaining and self._use_redis and self.redis_namespace is not None:
+            try:
+                values = await self.redis_namespace.mget(remaining)
+                now = datetime.now(timezone.utc)
+                for sid, val in zip(remaining, values):
+                    if val is not None:
+                        duplicates.add(sid)
+                        await self.lru_cache.set(sid, now)
+            except Exception as e:
+                logger.error(f"Redis 批量去重查询失败: {e}，这些消息将被当作首次处理")
+
+        if duplicates:
+            logger.debug(f"批量去重命中 {len(duplicates)}/{len(str_ids)} 条")
+        return duplicates
+
+    async def mark_processed_batch(self, event_ids: list) -> None:
+        """批量标记一组消息为已处理。
+
+        本地 LRU 逐条写入（纯内存，无 IO）；Redis 侧用 asyncio.gather
+        并发下发带 TTL 的 SET（MSET 不支持单 key TTL，故用并发 SET 替代）。
+
+        Args:
+            event_ids: 事件ID列表
+        """
+        if not event_ids:
+            return
+
+        str_ids = [str(e) for e in event_ids]
+        now = datetime.now(timezone.utc)
+
+        # 1. 写入本地 LRU
+        for sid in str_ids:
+            await self.lru_cache.set(sid, now)
+
+        # 2. 并发写入 Redis（带 TTL）
+        if self._use_redis and self.redis_namespace is not None:
+            try:
+                iso = now.isoformat()
+                await asyncio.gather(*[
+                    self.redis_namespace.set(sid, iso, ex=self.ttl_seconds)
+                    for sid in str_ids
+                ])
+                logger.debug(f"批量标记已处理 {len(str_ids)} 条（含 Redis）")
+            except Exception as e:
+                logger.error(f"Redis 批量写入失败: {e}，本地 LRU 已写入")
+
     async def remove_processed(self, event_id: EventID) -> bool:
         """
         移除已处理标记（用于测试或重新处理）

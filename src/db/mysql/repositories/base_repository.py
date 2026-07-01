@@ -17,6 +17,8 @@ from datetime import datetime
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import inspect as sqla_inspect
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from src.db.mysql.models.base_model import BaseModel
 
 # 泛型类型
@@ -369,3 +371,158 @@ class BaseRepository(Generic[ModelType]):
             session.rollback()
             logger.error(f"{self.model_name} upsert操作失败: {e}")
             return None
+
+    # ========== 真正的批量 UPDATE / UPSERT ==========
+
+    def _primary_key_name(self) -> Optional[str]:
+        """返回单列主键的列名；复合主键或无主键返回 None。"""
+        pk_cols = [c for c in self.model.__table__.columns if c.primary_key]
+        if len(pk_cols) != 1:
+            return None
+        return pk_cols[0].name
+
+    def bulk_update(
+        self,
+        session: Session,
+        rows: List[Dict[str, Any]],
+        updater: str = "",
+        extra_set: Optional[Dict[str, Any]] = None
+    ) -> List[bool]:
+        """批量 UPDATE，单次 round-trip（SQLAlchemy bulk_update_mappings）。
+
+        Args:
+            session: 数据库会话
+            rows: 每行必须包含主键字段 + 需要更新的字段
+            updater: 写入 updater 审计字段的值
+            extra_set: 额外要统一 set 的字段（如 status）
+
+        Returns:
+            每行对应的成功标志（True/False）。批量整体失败时回退到逐条 update。
+        """
+        if not rows:
+            return []
+
+        pk_name = self._primary_key_name()
+        if not pk_name:
+            logger.error(f"{self.model_name} 无单列主键，无法 bulk_update")
+            return [False] * len(rows)
+
+        # 准备 mappings：包含主键 + 待更新字段 + 审计字段
+        mappings: List[Dict[str, Any]] = []
+        for row in rows:
+            if pk_name not in row:
+                logger.error(f"{self.model_name} bulk_update 行缺少主键 {pk_name}: {row}")
+                return [False] * len(rows)
+            mapping = {k: v for k, v in row.items()}
+            mapping["updater"] = updater
+            if extra_set:
+                mapping.update(extra_set)
+            mappings.append(mapping)
+
+        try:
+            session.bulk_update_mappings(self.model, mappings)
+            session.commit()
+            logger.debug(f"成功 bulk_update {len(mappings)} 条 {self.model_name}")
+            return [True] * len(rows)
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.warning(
+                f"{self.model_name} bulk_update 整批失败({len(rows)}条)，降级逐条: {e}"
+            )
+            # 降级：逐条 update，精准定位坏数据
+            results: List[bool] = []
+            for row in rows:
+                pk_val = row.get(pk_name)
+                update_fields = {k: v for k, v in row.items() if k != pk_name}
+                ok = self.update(session, pk_val, updater=updater, **update_fields) is not None
+                results.append(ok)
+            return results
+
+    def bulk_upsert(
+        self,
+        session: Session,
+        rows: List[Dict[str, Any]],
+        creator: str = "",
+        updater: str = "",
+    ) -> List[bool]:
+        """批量 UPSERT（INSERT ... ON DUPLICATE KEY UPDATE）。
+
+        MySQL 走原生 ON DUPLICATE KEY UPDATE（单次 round-trip）；
+        非 MySQL 方言（如 SQLite）自动降级为逐条 upsert。
+
+        Args:
+            session: 数据库会话
+            rows: 每行必须包含主键字段 + 全部字段值
+            creator / updater: 审计字段
+
+        Returns:
+            每行对应的成功标志。
+        """
+        if not rows:
+            return []
+
+        pk_name = self._primary_key_name()
+        if not pk_name:
+            logger.error(f"{self.model_name} 无单列主键，无法 bulk_upsert")
+            return [False] * len(rows)
+
+        # 统一补齐审计字段
+        prepared: List[Dict[str, Any]] = []
+        for row in rows:
+            r = dict(row)
+            r.setdefault("creator", creator)
+            r.setdefault("updater", updater)
+            prepared.append(r)
+
+        bind = session.bind
+        dialect_name = sqla_inspect(bind).get_dialect().name if bind is not None else "mysql"
+
+        if dialect_name == "mysql":
+            try:
+                # 收集需要在冲突时更新的列（除主键、creator 外的所有列）
+                update_cols = {
+                    col: prepared[0][col]
+                    for col in prepared[0]
+                    if col != pk_name and col != "creator"
+                }
+                stmt = mysql_insert(self.model.__table__).values(prepared)
+                # ON DUPLICATE KEY UPDATE：用 INSERTED 引用待插入的值
+                stmt = stmt.on_duplicate_key_update(
+                    **{col: getattr(stmt.inserted, col) for col in update_cols}
+                )
+                session.execute(stmt)
+                session.commit()
+                logger.debug(f"成功 bulk_upsert(MySQL) {len(prepared)} 条 {self.model_name}")
+                return [True] * len(rows)
+            except SQLAlchemyError as e:
+                session.rollback()
+                logger.warning(
+                    f"{self.model_name} bulk_upsert(MySQL) 整批失败({len(rows)}条)，降级逐条: {e}"
+                )
+                return self._upsert_row_by_row(session, prepared, pk_name, creator, updater)
+        else:
+            # SQLite 等不支持 ON DUPLICATE KEY UPDATE 的方言，直接逐条
+            return self._upsert_row_by_row(session, prepared, pk_name, creator, updater)
+
+    def _upsert_row_by_row(
+        self,
+        session: Session,
+        rows: List[Dict[str, Any]],
+        pk_name: str,
+        creator: str,
+        updater: str,
+    ) -> List[bool]:
+        """逐条 upsert 兜底，用于非 MySQL 方言或整批失败降级。"""
+        results: List[bool] = []
+        for row in rows:
+            pk_val = row.get(pk_name)
+            fields = {k: v for k, v in row.items() if k != pk_name}
+            ok = self.upsert(
+                session,
+                id_value=pk_val,
+                creator=creator,
+                updater=updater,
+                **fields,
+            ) is not None
+            results.append(ok)
+        return results

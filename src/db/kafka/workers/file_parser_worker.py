@@ -275,21 +275,22 @@ class FileParserWorker(BaseWorker):
         
         logger.info(f"发送 {len(records)} 条 MySQL 消息到 Kafka")
         
-        for record in records:
-            record_id = record.get("element_id", message.file_id)
-            
-            meta_msg = MetaWriteMessage(
+        # P2 #7：先组装全部消息，再批量发送（aiokafka 合并为更少的 broker 请求）
+        meta_msgs = [
+            MetaWriteMessage(
                 user_id=message.user_id,
                 file_id=message.file_id,
                 table_name=MySQLTable.ELEMENT_META_INFO,
                 record_data=record,
                 operation=WriteOperation.INSERT,
-                record_id=record_id,
+                record_id=record.get("element_id", message.file_id),
             )
-            
-            await self._producer.send_message(
+            for record in records
+        ]
+        if meta_msgs:
+            await self._producer.send_messages(
                 topic=KafkaTopics.DB_WRITE_META,
-                message=meta_msg
+                messages=meta_msgs
             )
         
         logger.debug(f"MySQL 消息发送完成: {len(records)} 条")
@@ -314,21 +315,22 @@ class FileParserWorker(BaseWorker):
         
         logger.info(f"发送 {len(documents)} 条 MongoDB 消息到 Kafka")
         
-        for doc in documents:
-            document_id = doc.get("_id", message.file_id)
-            
-            mongo_msg = MongoWriteMessage(
+        # P2 #7：批量发送
+        mongo_msgs = [
+            MongoWriteMessage(
                 user_id=message.user_id,
                 file_id=message.file_id,
                 collection_name=MongoCollection.ELEMENT_DATA,
                 document_data=doc,
                 operation=WriteOperation.INSERT,
-                document_id=str(document_id),
+                document_id=str(doc.get("_id", message.file_id)),
             )
-            
-            await self._producer.send_message(
+            for doc in documents
+        ]
+        if mongo_msgs:
+            await self._producer.send_messages(
                 topic=KafkaTopics.DB_WRITE_MONGO,
-                message=mongo_msg
+                messages=mongo_msgs
             )
         
         logger.debug(f"MongoDB 消息发送完成: {len(documents)} 条")

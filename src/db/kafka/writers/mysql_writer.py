@@ -7,7 +7,7 @@ MySQLWriter
 功能: 批量写入元数据到 MySQL，按 table_name 路由到具体 Repository
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -129,15 +129,23 @@ class MySQLWriter(BaseWriter):
         2. 每个表内按 operation 分组
         3. 路由到具体 Repository 执行批量操作
 
+        单 batch 使用单个 Session，按 table × op 在同一事务内多次 flush，
+        最后统一提交；任意子组失败仅影响该子组对应的消息（降级为逐条）。
+
         Args:
             messages: MetaWriteMessage 列表
 
         Returns:
-            List[bool]: 每条消息的处理结果
+            List[bool]: 每条消息的处理结果（与输入等长、同序）
         """
         logger.info(f"开始批量写入元数据: {len(messages)} 条消息")
 
         results_map: Dict[str, bool] = {}
+
+        # 单 batch 单 session（P1 #8）：避免按 table/op 反复开关连接
+        session = self._get_session()
+        if not session:
+            return [False] * len(messages)
 
         try:
             # 1. 按 table_name 分组
@@ -159,11 +167,12 @@ class MySQLWriter(BaseWriter):
                 grouped_by_op = self._group_by_operation(table_messages)
 
                 for operation, op_messages in grouped_by_op.items():
-                    success = await self._execute_operation(
-                        repo, operation, op_messages
+                    op_results = self._execute_operation(
+                        session, repo, operation, op_messages
                     )
-                    for msg in op_messages:
-                        results_map[msg.metadata.event_id] = success
+                    # op_results 与 op_messages 等长、同序
+                    for msg, ok in zip(op_messages, op_results):
+                        results_map[msg.metadata.event_id] = ok
 
             # 3. 返回结果（按原始顺序）
             results = [
@@ -178,8 +187,15 @@ class MySQLWriter(BaseWriter):
             return results
 
         except Exception as e:
+            session.rollback()
             logger.error(f"批量写入元数据失败: {e}", exc_info=True)
-            return [False] * len(messages)
+            # 未被 _execute_operation 精确标记的，视为失败
+            return [
+                results_map.get(msg.metadata.event_id, False)
+                for msg in messages
+            ]
+        finally:
+            session.close()
 
     def _group_by_table(
         self,
@@ -217,27 +233,28 @@ class MySQLWriter(BaseWriter):
             grouped.setdefault(msg.operation, []).append(msg)
         return grouped
 
-    async def _execute_operation(
+    def _execute_operation(
         self,
+        session: Session,
         repo: MySQLBaseRepository,
         operation: WriteOperation,
         messages: List[MetaWriteMessage]
-    ) -> bool:
+    ) -> List[bool]:
         """
         执行具体的数据库操作
 
+        所有子方法都返回与 messages 等长、同序的 List[bool]，
+        单条失败不会连累同批其他消息（P0 #3 / P1 #4）。
+
         Args:
+            session: 共享的数据库 Session（由调用方统一管理生命周期）
             repo: MySQL Repository 实例
             operation: 操作类型
             messages: 消息列表
 
         Returns:
-            是否成功
+            每条消息的成功标志
         """
-        session = self._get_session()
-        if not session:
-            return False
-
         try:
             if operation == WriteOperation.INSERT:
                 return self._batch_insert(session, repo, messages)
@@ -247,24 +264,26 @@ class MySQLWriter(BaseWriter):
                 return self._batch_upsert(session, repo, messages)
             else:
                 logger.error(f"不支持的操作类型: {operation}")
-                return False
+                return [False] * len(messages)
         except Exception as e:
+            session.rollback()
             logger.error(
                 f"执行 {operation} 操作失败 ({type(repo).__name__}): {e}",
                 exc_info=True
             )
-            return False
-        finally:
-            session.close()
+            return [False] * len(messages)
 
     def _batch_insert(
         self,
         session: Session,
         repo: MySQLBaseRepository,
         messages: List[MetaWriteMessage]
-    ) -> bool:
+    ) -> List[bool]:
         """
-        批量 INSERT
+        批量 INSERT，失败时降级为逐条 INSERT（P0 #3 / P1 #4）
+
+        bulk_create 内部是单事务 add_all+commit，整批失败会 rollback，
+        因此降级重试是安全的（不会产生重复写入）。
 
         Args:
             session: 数据库 Session
@@ -272,26 +291,41 @@ class MySQLWriter(BaseWriter):
             messages: 消息列表
 
         Returns:
-            是否成功
+            每条消息的成功标志
         """
         batch_data = [msg.record_data for msg in messages]
         result = repo.bulk_create(session, batch_data)
 
-        success = len(result) == len(messages)
-        logger.debug(
-            f"批量 INSERT ({type(repo).__name__}): "
-            f"请求 {len(messages)} 条, 成功 {len(result)} 条"
+        # bulk_create 成功返回等长列表；失败返回 []（已 rollback）
+        if len(result) == len(messages):
+            logger.debug(
+                f"批量 INSERT ({type(repo).__name__}): 成功 {len(messages)} 条"
+            )
+            return [True] * len(messages)
+
+        # 整批失败 → 降级逐条，精准定位坏数据
+        logger.warning(
+            f"批量 INSERT 失败 ({type(repo).__name__}, {len(messages)}条)，降级为逐条"
         )
-        return success
+        results: List[bool] = []
+        for msg in messages:
+            single = repo.bulk_create(session, [msg.record_data])
+            results.append(len(single) == 1)
+            if len(single) != 1:
+                logger.error(
+                    f"单条 INSERT 失败 event_id={msg.metadata.event_id} "
+                    f"table={msg.table_name}"
+                )
+        return results
 
     def _batch_update(
         self,
         session: Session,
         repo: MySQLBaseRepository,
         messages: List[MetaWriteMessage]
-    ) -> bool:
+    ) -> List[bool]:
         """
-        批量 UPDATE
+        批量 UPDATE（P1 #2：真正批量，单次 round-trip）
 
         Args:
             session: 数据库 Session
@@ -299,37 +333,49 @@ class MySQLWriter(BaseWriter):
             messages: 消息列表
 
         Returns:
-            是否成功
+            每条消息的成功标志
         """
-        all_success = True
-        for msg in messages:
+        # 校验 record_id 并构造 rows
+        rows: List[Dict[str, Any]] = []
+        idx_missing: List[int] = []
+        for i, msg in enumerate(messages):
             if not msg.record_id:
                 logger.error(f"UPDATE 操作缺少 record_id: event_id={msg.metadata.event_id}")
-                all_success = False
+                idx_missing.append(i)
                 continue
+            row = dict(msg.record_data)
+            # 写入主键值，bulk_update 要求 mappings 包含主键
+            pk_name = repo._primary_key_name()
+            if pk_name:
+                row[pk_name] = msg.record_id
+            rows.append(row)
 
-            result = repo.update(
-                session,
-                id_value=msg.record_id,
-                updater=msg.updater,
-                **msg.record_data
-            )
-            if result is None:
-                all_success = False
+        if not rows:
+            return [False] * len(messages)
 
+        ok_flags = repo.bulk_update(session, rows, updater=messages[0].updater if messages else "")
+
+        # 把 missing record_id 的位置置 False，其余按 ok_flags 顺序对齐
+        results: List[bool] = []
+        ok_iter = iter(ok_flags)
+        for i in range(len(messages)):
+            if i in idx_missing:
+                results.append(False)
+            else:
+                results.append(next(ok_iter, False))
         logger.debug(
-            f"批量 UPDATE ({type(repo).__name__}): {len(messages)} 条记录"
+            f"批量 UPDATE ({type(repo).__name__}): {sum(results)}/{len(messages)} 条成功"
         )
-        return all_success
+        return results
 
     def _batch_upsert(
         self,
         session: Session,
         repo: MySQLBaseRepository,
         messages: List[MetaWriteMessage]
-    ) -> bool:
+    ) -> List[bool]:
         """
-        批量 UPSERT
+        批量 UPSERT（P1 #2：MySQL INSERT ... ON DUPLICATE KEY UPDATE，单次 round-trip）
 
         Args:
             session: 数据库 Session
@@ -337,28 +383,42 @@ class MySQLWriter(BaseWriter):
             messages: 消息列表
 
         Returns:
-            是否成功
+            每条消息的成功标志
         """
-        all_success = True
-        for msg in messages:
+        rows: List[Dict[str, Any]] = []
+        idx_missing: List[int] = []
+        for i, msg in enumerate(messages):
             if not msg.record_id:
                 logger.error(f"UPSERT 操作缺少 record_id: event_id={msg.metadata.event_id}")
-                all_success = False
+                idx_missing.append(i)
                 continue
+            row = dict(msg.record_data)
+            pk_name = repo._primary_key_name()
+            if pk_name:
+                row[pk_name] = msg.record_id
+            rows.append(row)
 
-            result = repo.upsert(
-                session,
-                id_value=msg.record_id,
-                updater=msg.updater,
-                **msg.record_data
-            )
-            if result is None:
-                all_success = False
+        if not rows:
+            return [False] * len(messages)
 
-        logger.debug(
-            f"批量 UPSERT ({type(repo).__name__}): {len(messages)} 条记录"
+        updater = messages[0].updater if messages else ""
+        ok_flags = repo.bulk_upsert(
+            session, rows,
+            creator=updater,
+            updater=updater,
         )
-        return all_success
+
+        results: List[bool] = []
+        ok_iter = iter(ok_flags)
+        for i in range(len(messages)):
+            if i in idx_missing:
+                results.append(False)
+            else:
+                results.append(next(ok_iter, False))
+        logger.debug(
+            f"批量 UPSERT ({type(repo).__name__}): {sum(results)}/{len(messages)} 条成功"
+        )
+        return results
 
     def get_stats(self) -> dict:
         """获取统计信息（包含路由注册状态）"""

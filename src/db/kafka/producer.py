@@ -6,6 +6,7 @@ Kafka Producer 封装
 提供统一的消息发送接口，自动处理序列化、Key 生成等。
 """
 
+import asyncio
 from typing import Optional, List
 from aiokafka import AIOKafkaProducer
 from aiokafka.structs import RecordMetadata
@@ -143,6 +144,11 @@ class KafkaProducer:
         Raises:
             ValueError: 如果消息列表为空或类型不正确
             RuntimeError: 如果发送失败
+        
+        说明（P2 #7）：
+            先把全部消息入队到 aiokafka（拿到每条的 Future），再用 asyncio.gather
+            统一等待 ack。aiokafka 内部会按 linger_ms / batch_size 把同分区消息
+            合并成更少的 broker 请求，吞吐显著优于「逐条 send 再逐条 await」。
         """
         if not messages:
             raise ValueError("消息列表不能为空")
@@ -151,15 +157,21 @@ class KafkaProducer:
             raise ValueError("所有消息必须是 BaseMessage 的子类")
         
         try:
-            results = []
-            
+            # 1. 全部入队，收集 Future（send 仅入队，不等待 ack）
+            futures = []
             for message in messages:
-                metadata = await self.send_message(
+                key = message.get_message_key()
+                value = message.to_bytes()
+                future = await self._producer.send(
                     topic=topic,
-                    message=message,
+                    value=value,
+                    key=key.encode("utf-8"),
                     partition=partition
                 )
-                results.append(metadata)
+                futures.append(future)
+            
+            # 2. 并发等待全部 ack
+            results = await asyncio.gather(*futures)
             
             logger.info(f"批量发送完成: topic={topic}, count={len(messages)}")
             return results
