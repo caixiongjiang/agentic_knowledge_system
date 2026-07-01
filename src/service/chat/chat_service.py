@@ -15,19 +15,15 @@
     本服务是个 **async generator**：``chat_stream(request)`` 产出 ``ChatEvent``，
     供上层（Phase 4 WS / SSE 端点）直接迭代转发。
 
-    两种执行路径
-    ------------
-    1. **RAG 单轮（``agent_mode=False``）**：
-        - 一次性 ``LLMClient.astream`` 拉流，**不暴露 tools**；
-        - 适合简单问答、低成本、低延迟。
-    2. **Agent 工具循环（``agent_mode=True``）**：
-        - Agent 拥有完整工具集（``search_knowledge_base`` + 4 个导航工具）；
-        - Agent 自主决定何时检索、用什么查询、是否需要导航补充；
-        - 每轮 ``astream`` 流出文本/思考/tool_call 增量；
-        - 若收到 tool_calls，并行 ``asyncio.gather`` 执行后把结果以
-          ``role=tool`` 拼回 messages，进入下一轮；
-        - 工具循环上限 ``max_tool_rounds`` 由 ``ChatSession`` / 请求覆盖；
-        - 达上限后做一次**收尾轮**强制纯文本。
+    执行路径：Agent 工具循环
+    ------------------------
+    - Agent 拥有完整工具集（``search_knowledge_base`` + 导航工具）；
+    - Agent 自主决定何时检索、用什么查询、是否需要导航补充；
+    - 每轮 ``astream`` 流出文本/思考/tool_call 增量；
+    - 若收到 tool_calls，并行 ``asyncio.gather`` 执行后把结果以
+      ``role=tool`` 拼回 messages，进入下一轮；
+    - 工具循环上限 ``max_tool_rounds`` 由 ``ChatSession`` / 请求覆盖；
+    - 达上限后做一次**收尾轮**强制纯文本。
 
     与现有模块的协作
     ----------------
@@ -169,13 +165,20 @@ class ChatServiceConfig:
     业务语义：preset 仍然是后台抽取/起标题/摘要的真相源（model + 调好的
     temperature / max_tokens / thinking_budget 等）；当用户在前端选了某个
     具体模型字符串时，``model`` 由用户提供，但 temperature 之类继续从这个
-    template preset 里读，保持 RAG 单轮 / Agent 单轮的体验稳定。
+    template preset 里读，保持 Agent 单轮的体验稳定。
     """
 
     # ---------- session 默认（仅当 ChatRequest 与 ChatSession 都未指定时使用） ----------
-    default_agent_mode: bool = True
+    default_mode: str = "agent"
     default_enable_thinking: bool = False
     default_max_tool_rounds: int = 5
+
+    # ---------- @ 内联引用注入（方案A + 方案C）----------
+    mention_inject_max_chars: int = 6000
+    """方案A：单个 @ 文件全量注入正文的字符上限；超过则退化为方案C（仅提示 document_id）"""
+
+    mention_inject_total_budget: int = 12000
+    """方案A：单轮所有 @ 文件全量注入正文的合计字符预算；超预算的文件退化为方案C"""
 
     # ============================================================
     # 配置加载
@@ -223,14 +226,22 @@ class ChatServiceConfig:
                 "user_chat_template_preset", inst.user_chat_template_preset,
             ),
         )
-        inst.default_agent_mode = bool(
-            chat_cfg.get("default_agent_mode", inst.default_agent_mode),
+        inst.default_mode = str(
+            chat_cfg.get("default_mode", inst.default_mode),
         )
         inst.default_enable_thinking = bool(
             chat_cfg.get("default_enable_thinking", inst.default_enable_thinking),
         )
         inst.default_max_tool_rounds = int(
             chat_cfg.get("default_max_tool_rounds", inst.default_max_tool_rounds),
+        )
+        inst.mention_inject_max_chars = int(
+            chat_cfg.get("mention_inject_max_chars", inst.mention_inject_max_chars),
+        )
+        inst.mention_inject_total_budget = int(
+            chat_cfg.get(
+                "mention_inject_total_budget", inst.mention_inject_total_budget,
+            ),
         )
 
         # [chat.retrieval]
@@ -384,21 +395,20 @@ class ChatService:
         # ===== scope 摘要（v0.8.0）=====
         # 注意：sys_prompt 构造在 scope 解析之前，但 scope dict 构造需要解析结果。
         # 所以这里先把 sys_prompt 的最终构造放到 scope 解析之后；上面只准备 desc。
-        _agent_mode = (
-            request.agent_mode if request.agent_mode is not None else session.agent_mode
-        )
+        # Agent 模式：始终启用工具
         _enabled_tools = (
-            ("search_knowledge_base", "grep_chunks", "context_window", "drill_down",
-             "skeleton", "roll_up", "read_chunks", "read_image_chunks")
-            if _agent_mode else None
+            "search_knowledge_base", "grep_chunks", "context_window", "drill_down",
+            "skeleton", "roll_up", "read_chunks", "read_image_chunks",
+            "skills_list", "skill_view"
         )
         # model 字段优先级：request > session > None（None 时由 model_preset 决定）
         # 注意：``model`` 与 ``model_preset`` 并存——``model`` 选定具体模型，
         # ``model_preset`` 仍作为采样参数模板（temperature / max_tokens 等）。
         effective_model = request.model or session.model or None
 
-        # ===== scope 解析（v0.8.0 引入）=====
-        # 优先级：request.folder_id > session.folder_id；任一存在则 folder scope。
+        # ===== scope 解析（v0.8.0）=====
+        # 优先级：request.folder_id > session.folder_id > kb
+        # 注：@ 文件走 mentions 软引用（见 _resolve_mentions），不再经 scope 硬锁。
         effective_folder_id: Optional[str] = (
             request.folder_id
             if request.folder_id is not None
@@ -409,9 +419,10 @@ class ChatService:
             if request.include_subfolders is not None
             else bool(getattr(session, "include_subfolders", True))
         )
+        folder_label: Optional[str] = None
         scope_kind: str = "folder" if effective_folder_id else "kb"
         scope_document_ids: List[str] = []
-        folder_label: Optional[str] = None
+
         if effective_folder_id:
             resolved = self._resolve_folder_document_ids(
                 user_id=session.user_id,
@@ -433,12 +444,28 @@ class ChatService:
                 "document_count": len(scope_document_ids),
                 "knowledge_base_ids": list(session.knowledge_base_ids or []),
             }
+        # ===== 技能索引注入（system prompt，稳定前缀）=====
+        _skills_index: Optional[str] = None
+        # Slash 显式召唤的技能正文：注入到当轮 user turn（见 chat_stream），
+        # 而非 system prompt——避免污染稳定前缀、提升 KV cache 命中率。
+        _forced_skills_block: str = ""
+        try:
+            from src.service.skill.registry_singleton import get_registry
+            _reg = get_registry()
+            _skills_index = _reg.build_index(set(_enabled_tools))
+            _forced_skills_block = self._build_forced_skills_block(
+                request.forced_skill_names, _reg,
+            )
+        except Exception as e:
+            logger.warning(f"技能索引构建失败（不影响对话）: {e}")
+
         sys_prompt = (
             request.custom_system_prompt
             or session.system_prompt
             or build_chat_system_prompt(
                 enabled_tools=_enabled_tools,
                 scope=scope_dict,
+                skills_index=_skills_index,
             )
         )
 
@@ -446,8 +473,10 @@ class ChatService:
             session_id=session.session_id,
             user_id=session.user_id,
             query=request.query,
-            agent_mode=(
-                request.agent_mode if request.agent_mode is not None else session.agent_mode
+            mode=(
+                request.mode
+                if request.mode is not None
+                else getattr(session, "mode", None) or self._cfg.default_mode
             ),
             enable_thinking=(
                 request.enable_thinking
@@ -474,6 +503,7 @@ class ChatService:
             folder_label=folder_label,
             include_subfolders=effective_include_subfolders,
             scope_document_ids=scope_document_ids,
+            forced_skills_block=_forced_skills_block,
         )
 
     def _resolve_folder_document_ids(
@@ -562,6 +592,328 @@ class ChatService:
                 f"unique_documents={len(unique)}, label={label}"
             )
             return {"document_ids": unique, "folder_label": label}
+
+    def _resolve_file_document_ids(
+        self,
+        *,
+        user_id: str,
+        file_id: str,
+        knowledge_base_ids: List[str],
+    ) -> Dict[str, Any]:
+        """@ 文件 scope → document_ids 解析（v0.9.0）
+
+        单文件提问：file_id -> workspace_file_system.document_id。
+        与 folder scope 不同，这里最多返回 1 个 document_id（按内容去重后的 ID）。
+
+        软降级：
+        - 文件不存在 / 无权限 / 不属于 session 允许的 KB → document_ids=[] + label=None
+        - 文件尚未索引完成（document_id is None）→ document_ids=[] + label=file_name
+          （上游提示词层会注入"空范围"提示，告知模型该文件暂无可检索内容）
+
+        Args:
+            user_id: 当前用户
+            file_id: @ 选中的文件 ID
+            knowledge_base_ids: session 允许的 KB 列表；非空时用于校验 file 归属
+
+        Returns:
+            ``{"document_ids": [...], "file_label": "..."}``
+        """
+        from src.db.mysql.connection.factory import get_mysql_manager
+        from src.db.mysql.repositories.business.workspace_file_system_repo import (
+            WorkspaceFileSystemRepository,
+        )
+
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            file_repo = WorkspaceFileSystemRepository()
+            file = file_repo.get_by_user_and_file(db, user_id, file_id)
+            if not file:
+                logger.warning(
+                    f"_resolve_file_document_ids: file_id={file_id} "
+                    f"不存在或无权限（user={user_id}）；返回空 scope（软降级）"
+                )
+                return {"document_ids": [], "file_label": None}
+
+            # 校验 file 所属 KB 在 session 允许范围内
+            if knowledge_base_ids and file.knowledge_base_id not in knowledge_base_ids:
+                logger.warning(
+                    f"_resolve_file_document_ids: file_id={file_id} 所属 KB "
+                    f"{file.knowledge_base_id} 不在 session.knowledge_base_ids "
+                    f"{knowledge_base_ids}；返回空 scope（软降级）"
+                )
+                return {"document_ids": [], "file_label": file.file_name}
+
+            doc_id = getattr(file, "document_id", None)
+            label = file.file_name
+            if not doc_id:
+                logger.info(
+                    f"_resolve_file_document_ids: file_id={file_id} "
+                    f"尚未完成索引（document_id 为空）；本轮无检索范围"
+                )
+                return {"document_ids": [], "file_label": label}
+
+            logger.debug(
+                f"file scope 解析: file_id={file_id}, document_id={doc_id}, "
+                f"label={label}"
+            )
+            return {"document_ids": [doc_id], "file_label": label}
+
+    def _resolve_mentions(
+        self,
+        *,
+        user_id: str,
+        mentions: Optional[List[Any]],
+        knowledge_base_ids: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Cursor 式 @ 内联引用解析（v0.10.0，软引用）
+
+        把请求里的 ``mentions``（文件/目录，可多个）解析为可注入 user prompt 的
+        引用条目。与 folder/document scope 不同，这里**不锁死 scope**，只是把
+        document_id 暴露给模型，让它自行决定是否聚焦。
+
+        软降级：
+        - 文件/目录不存在或无权限 → 丢弃该条；
+        - 文件未完成索引（无 document_id）→ 保留条目但标记 indexed=False；
+        - 目录为空 → 保留条目但 document_ids=[]。
+
+        Args:
+            user_id: 当前用户
+            mentions: ``ChatMention`` 列表（含 ``kind`` / ``id``）
+            knowledge_base_ids: session 允许的 KB 列表，用于归属校验
+
+        Returns:
+            形如 ``[{"kind","id","label","document_ids","indexed"}, ...]`` 的有序去重列表
+        """
+        if not mentions:
+            return []
+        refs: List[Dict[str, Any]] = []
+        seen: set = set()
+        for m in mentions:
+            kind = getattr(m, "kind", None)
+            mid = getattr(m, "id", None)
+            if not kind or not mid:
+                continue
+            key = (kind, mid)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if kind == "file":
+                resolved = self._resolve_file_document_ids(
+                    user_id=user_id,
+                    file_id=mid,
+                    knowledge_base_ids=knowledge_base_ids,
+                )
+                label = resolved.get("file_label")
+                doc_ids = resolved.get("document_ids", [])
+                if label is None and not doc_ids:
+                    # 文件不存在 / 无权限 → 丢弃
+                    continue
+                refs.append({
+                    "kind": "file",
+                    "id": mid,
+                    "label": label or mid,
+                    "document_ids": doc_ids,
+                    "indexed": bool(doc_ids),
+                })
+            elif kind == "folder":
+                resolved = self._resolve_folder_document_ids(
+                    user_id=user_id,
+                    folder_id=mid,
+                    include_subfolders=True,
+                    knowledge_base_ids=knowledge_base_ids,
+                )
+                label = resolved.get("folder_label")
+                doc_ids = resolved.get("document_ids", [])
+                if label is None and not doc_ids:
+                    # 目录不存在 / 无权限 → 丢弃
+                    continue
+                refs.append({
+                    "kind": "folder",
+                    "id": mid,
+                    "label": label or mid,
+                    "document_ids": doc_ids,
+                    "indexed": True,
+                })
+
+        logger.debug(f"@ 内联引用解析: 输入 {len(mentions)} 项, 有效 {len(refs)} 项")
+        return refs
+
+    async def _load_document_full_text(
+        self, document_id: str, *, max_chars: int,
+    ) -> Optional[Dict[str, Any]]:
+        """载入单篇文档的**有序全文**（方案A 全量注入用）。
+
+        复用 ``DrillDown``（Document → Chunk，``include_content=True``）取回按
+        ``(page_index, element_index, split_seq)`` 排好序的 chunk 正文并拼接。
+
+        Args:
+            document_id: 目标文档 ID
+            max_chars: 全文字符上限；一旦累计超过即视为「大文件」，返回 ``None``
+                （交由方案C 仅提示 document_id），避免把超大文档塞进上下文。
+
+        Returns:
+            ``{"text": str, "chunk_count": int}``；无内容 / 超阈值 / 失败 → ``None``。
+        """
+        if max_chars <= 0:
+            return None
+        try:
+            from src.retrieve.capabilities.navigation.drill_down import DrillDown
+            from src.retrieve.types.enums import GranularityLevel
+            from src.retrieve.types.query import NavigationQuery
+
+            cap = DrillDown()
+            result = await cap.execute(
+                query=NavigationQuery(
+                    anchor_id=document_id,
+                    anchor_type=GranularityLevel.DOCUMENT,
+                    target_granularity=GranularityLevel.CHUNK,
+                    include_content=True,
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 - 载入失败退化为方案C，不中断对话
+            logger.warning(
+                f"方案A 载入文档全文失败 document_id={document_id}: {e}",
+            )
+            return None
+
+        parts: List[str] = []
+        total = 0
+        for item in result.items:
+            text = getattr(item, "text", None)
+            if not text:
+                continue
+            total += len(text)
+            if total > max_chars:
+                logger.debug(
+                    f"方案A：document_id={document_id} 全文超阈值 "
+                    f"(> {max_chars} 字)，退化为方案C 仅提示 document_id",
+                )
+                return None
+            parts.append(text)
+
+        if not parts:
+            return None
+        return {"text": "\n\n".join(parts), "chunk_count": len(result.items)}
+
+    @staticmethod
+    def _build_forced_skills_block(
+        forced_skill_names: Optional[List[str]],
+        registry: Any,
+    ) -> str:
+        """把 Slash 显式召唤的技能正文拼成注入当轮 user turn 的「显式技能」块。
+
+        - 注入到 *给 LLM 的* user 消息尾部（而非 system prompt），使 system prompt
+          保持稳定前缀、提升 KV cache 命中率（Cursor 式 slash 指令即注入 user turn）。
+        - 停用 / 不存在的技能静默跳过；无有效技能时返回空串（user 消息保持原样）。
+
+        Args:
+            forced_skill_names: 前端 `/` 选中的技能名列表。
+            registry: SkillRegistry 单例（有 ``get(name) -> Skill | None``）。
+        """
+        if not forced_skill_names:
+            return ""
+
+        parts: List[str] = []
+        for name in forced_skill_names:
+            try:
+                skill = registry.get(name)
+            except Exception:  # noqa: BLE001
+                skill = None
+            if skill is not None:
+                parts.append(f"## 技能：{name}\n\n{skill.body}")
+        if not parts:
+            return ""
+
+        return (
+            "\n\n---\n本条消息通过 “/” 显式调用了以下技能，请把它们的完整指令作为"
+            "本轮的最高优先级要求，严格遵循：\n\n" + "\n\n".join(parts)
+        )
+
+    async def _build_references_block(
+        self, references: List[Dict[str, Any]],
+    ) -> str:
+        """把解析后的 @ 引用拼成注入 user prompt 的「引用资料」块（方案A + 方案C）。
+
+        - **方案A（小文件全量注入）**：已索引的单文档文件，若全文在
+          ``mention_inject_max_chars`` 且不超过本轮合计预算
+          ``mention_inject_total_budget``，则直接把全文拼进上下文，模型无需再调工具。
+        - **方案C（大文件 / 目录 / 多文件超预算 → 仅提示）**：只给出 document_id，
+          让模型按需用 skeleton / drill_down / read_chunks 等工具自取。
+
+        软引用语义：不锁死 scope，问题超出引用范围时模型仍可更大范围检索。
+        无引用时返回空串（user 消息保持原样）。
+        """
+        if not references:
+            return ""
+
+        full_blocks: List[str] = []   # 方案A：全量注入
+        hint_lines: List[str] = []    # 方案C：仅提示 document_id
+        remaining_budget = self._cfg.mention_inject_total_budget
+
+        for r in references:
+            label = r.get("label", "")
+            doc_ids = r.get("document_ids", []) or []
+            kind = r.get("kind")
+
+            if kind == "file":
+                if not doc_ids:
+                    hint_lines.append(
+                        f"- 文件「{label}」：尚未完成索引，暂无可检索内容"
+                    )
+                    continue
+                doc_id = doc_ids[0]
+                # 方案A：尝试全量注入（单文件、已索引、正文在预算内）
+                loaded: Optional[Dict[str, Any]] = None
+                if remaining_budget > 0:
+                    loaded = await self._load_document_full_text(
+                        doc_id,
+                        max_chars=min(
+                            self._cfg.mention_inject_max_chars, remaining_budget,
+                        ),
+                    )
+                if loaded is not None:
+                    text = loaded["text"]
+                    remaining_budget -= len(text)
+                    full_blocks.append(
+                        f"### 文件「{label}」（document_id = {doc_id}，已全量载入，"
+                        f"共 {len(text)} 字）\n{text}"
+                    )
+                else:
+                    # 方案C：大文件 / 超预算 → 仅提示
+                    hint_lines.append(
+                        f"- 文件「{label}」：document_id = {doc_id}"
+                        f"（已索引，正文较大未全量载入）"
+                    )
+            else:  # folder → 方案C
+                n = len(doc_ids)
+                if n:
+                    preview = ", ".join(doc_ids[:20])
+                    more = " …" if n > 20 else ""
+                    hint_lines.append(
+                        f"- 目录「{label}」：含 {n} 篇文档"
+                        f"（document_ids: {preview}{more}）"
+                    )
+                else:
+                    hint_lines.append(f"- 目录「{label}」：该目录下暂无可检索文档")
+
+        segments: List[str] = [
+            "\n\n---\n本条消息通过 @ 引用了以下资料（请优先据此理解与回答）："
+        ]
+        if full_blocks:
+            segments.append("\n\n".join(full_blocks))
+        if hint_lines:
+            segments.append(
+                "以下资料仅提供 document_id（正文较大或为目录，未全量载入）：\n"
+                + "\n".join(hint_lines)
+                + "\n\n可用 skeleton / drill_down / grep_chunks / read_chunks / "
+                "search_knowledge_base 传入上述 document_id 聚焦这些资料。"
+            )
+        segments.append(
+            "若问题超出引用范围，可再做更大范围检索；"
+            "未完成索引的资料暂无可检索内容，请如实告知用户。"
+        )
+        return "\n\n".join(segments)
 
     # ============================================================
     # 主入口：流式对话
@@ -653,7 +1005,7 @@ class ChatService:
                 self._session_service.update_session_mode(
                     session_id=ctx.session_id,
                     user_id=ctx.user_id,
-                    agent_mode=ctx.agent_mode,
+                    mode=ctx.mode,
                     enable_thinking=ctx.enable_thinking,
                     max_tool_rounds=ctx.max_tool_rounds,
                 )
@@ -694,7 +1046,7 @@ class ChatService:
             {
                 "session_id": ctx.session_id,
                 "user_message_id": user_msg_id,
-                "agent_mode": ctx.agent_mode,
+                "mode": ctx.mode,
                 "model_preset": ctx.model_preset,
                 "model": ctx.model,
             },
@@ -708,6 +1060,10 @@ class ChatService:
             )
             # 把刚写入的 user 消息排除（避免它出现在 history + user_message 两处）
             history = [m for m in history if m.id != user_msg_id]
+
+            # 上下文压缩：如果有 summary 消息，跳过已总结的旧消息
+            history = self._apply_context_compression(history)
+
         except Exception as e:  # noqa: BLE001
             logger.warning(f"加载历史异常，按空历史继续: {e}")
             history = []
@@ -771,163 +1127,71 @@ class ChatService:
             ctx.scope_kind == "folder" and not ctx.scope_document_ids
         )
 
-        if not ctx.agent_mode and not ctx.skip_retrieval and not scope_is_empty:
-            yield ChatEvent(ChatEventType.RETRIEVAL_STARTED, {})
-            retrieval_start = time.perf_counter()
-            try:
-                from src.retrieve.pipeline.types import RetrieveRequest
-                from src.retrieve.types.query import MetadataFilter
-
-                filters = MetadataFilter(user_id=ctx.user_id)
-                if ctx.knowledge_base_ids:
-                    filters.knowledge_base_id = ctx.knowledge_base_ids[0]
-                if ctx.scope_document_ids:
-                    # folder scope：把 document_ids 灌入 filters，召回层会按
-                    # ``document_id in [...]`` 把 Milvus + 字面检索全部圈死。
-                    filters.document_ids = list(ctx.scope_document_ids)
-
-                retrieve_request = RetrieveRequest(
-                    query_text=ctx.query,
-                    filters=filters,
-                    top_k=ctx.retrieve_top_k or self._cfg.retrieve_top_k,
-                )
-
-                # 用 queue polling 模式消费检索进度，与 Agent 模式一致
-                progress_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
-
-                async def _on_chat_progress(stage: str) -> None:
-                    await progress_queue.put(stage)
-
-                retrieve_task = asyncio.create_task(
-                    self._get_retrieve_service().retrieve(
-                        retrieve_request, on_progress=_on_chat_progress,
-                    )
-                )
-                while not retrieve_task.done():
-                    try:
-                        stage = await asyncio.wait_for(
-                            progress_queue.get(), timeout=0.1,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    if stage is None:
-                        continue
-                    yield ChatEvent(
-                        ChatEventType.RETRIEVAL_PROGRESS,
-                        {"stage": stage},
-                    )
-                # drain remaining items
-                while not progress_queue.empty():
-                    try:
-                        stage = progress_queue.get_nowait()
-                        if stage is not None:
-                            yield ChatEvent(
-                                ChatEventType.RETRIEVAL_PROGRESS,
-                                {"stage": stage},
-                            )
-                    except asyncio.QueueEmpty:
-                        break
-                retrieve_resp = await retrieve_task
-                seed_hits = list(retrieve_resp.items or [])
-            except Exception as e:
-                logger.warning(f"Chat 模式初始检索失败（忽略，继续回答）: {e}")
-
-            retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
-
-            # enrich + alias 分配
-            meta_map: Dict[str, ChunkMeta] = {}
-            if seed_hits:
-                meta_map = await enrich_cache.ensure(seed_hits)
-                for c in seed_hits:
-                    alias_map.alias_for(c.chunk_id)
-
-            # 构建 retrieval.done 帧的 chunks 预览
-            chunk_previews = []
-            for c in seed_hits:
-                meta = meta_map.get(c.chunk_id)
-                chunk_previews.append(self._chunk_brief(
-                    c, meta=meta, alias=alias_map.alias_of(c.chunk_id),
-                ))
-
-            result.retrieval_time_ms = retrieval_ms
-            yield ChatEvent(
-                ChatEventType.RETRIEVAL_DONE,
-                {
-                    "hit_count": len(seed_hits),
-                    "time_ms": round(retrieval_ms, 1),
-                    "chunks": chunk_previews,
-                },
-            )
-
-            # ---- 6a) 持久化检索元数据到 user 消息 ----
-            if seed_hits:
-                await self._update_user_retrieval_metadata(
-                    user_msg_id=user_msg_id,
-                    updater=ctx.user_id,
-                    hit_count=len(seed_hits),
-                    time_ms=retrieval_ms,
-                    chunk_previews=chunk_previews,
-                    params={
-                        "query_text": ctx.query,
-                        "top_k": ctx.retrieve_top_k or self._cfg.retrieve_top_k,
-                        "time_ms": round(retrieval_ms, 1),
-                    },
-                )
-
         # ---- 7) 组装首轮 messages ----
+        # Cursor 式 @ 内联引用：解析 mentions → 「引用资料」块（方案A 小文件全量注入 +
+        # 方案C 大文件/目录仅提示 document_id），注入到 *给 LLM 的* user 消息尾部
+        # （软引用：不锁死 scope）。
+        # 注意：持久化/显示用的 user 消息仍是 ctx.query 原文（见 §2），此处仅增强 LLM 副本。
+        references = self._resolve_mentions(
+            user_id=ctx.user_id,
+            mentions=getattr(request, "mentions", None),
+            knowledge_base_ids=ctx.knowledge_base_ids,
+        )
+        # 顺序：用户原文 → 显式技能块（/ 召唤）→ @ 引用资料块。
+        # 三者仅拼进「给 LLM 的」user 副本；持久化/显示用的 user 消息仍是 ctx.query 原文。
+        user_message_for_llm = (
+            ctx.query
+            + ctx.forced_skills_block
+            + await self._build_references_block(references)
+        )
+
         # Chat 模式：检索结果以"参考片段"形式注入 user 消息之前
         # （compose_chat_messages 内部处理格式化 + alias 替换）
         messages: List[Dict[str, Any]] = compose_chat_messages(
             system_prompt=ctx.system_prompt,
             history=history,
-            user_message=ctx.query,
+            user_message=user_message_for_llm,
             retrieved_chunks=seed_hits,
             alias_map=alias_map,
         )
         if summary_dict is not None:
             messages.insert(1, summary_dict)
 
-        # ---- 8) 进入执行路径 ----
+        # ---- 8) 进入执行路径（Agent 模式）----
         supplemented: List[ChunkItem] = []
-        kit: Optional[KnowledgeNavToolKit] = None
-        if ctx.agent_mode:
-            # 检索工具进度回调：通过 Queue 桥接到 async generator yield
-            search_progress_queue: asyncio.Queue[
-                Optional[Tuple[str, str, Optional[str], str]]
-            ] = asyncio.Queue()
+        # 检索工具进度回调：通过 Queue 桥接到 async generator yield
+        search_progress_queue: asyncio.Queue[
+            Optional[Tuple[str, str, Optional[str], str]]
+        ] = asyncio.Queue()
 
-            async def _on_search_progress(
-                tool_call_id: str,
-                stage: str,
-                *,
-                model: Optional[str] = None,
-                channel: str = "retrieval",
-            ) -> None:
-                await search_progress_queue.put(
-                    (tool_call_id, stage, model, channel),
-                )
-
-            kit = KnowledgeNavToolKit(
-                supplemented_items=supplemented,
-                alias_map=alias_map,
-                retrieve_service=self._get_retrieve_service(),
-                on_progress=_on_search_progress,
-                user_id=ctx.user_id,
-                knowledge_base_ids=ctx.knowledge_base_ids,
-                scope_document_ids=ctx.scope_document_ids,
-                scope_kind=ctx.scope_kind,
-                scope_label=ctx.folder_id,
+        async def _on_search_progress(
+            tool_call_id: str,
+            stage: str,
+            *,
+            model: Optional[str] = None,
+            channel: str = "retrieval",
+        ) -> None:
+            await search_progress_queue.put(
+                (tool_call_id, stage, model, channel),
             )
+
+        kit = KnowledgeNavToolKit(
+            supplemented_items=supplemented,
+            alias_map=alias_map,
+            retrieve_service=self._get_retrieve_service(),
+            on_progress=_on_search_progress,
+            user_id=ctx.user_id,
+            knowledge_base_ids=ctx.knowledge_base_ids,
+            scope_document_ids=ctx.scope_document_ids,
+            scope_kind=ctx.scope_kind,
+            scope_label=ctx.folder_id,
+        )
 
         assistant_msg_ids: List[str] = []
         tool_msg_ids: List[str] = []
 
-        if ctx.agent_mode:
-            tools_schema = kit.schemas() if kit else None
-            max_rounds = max(1, ctx.max_tool_rounds)
-        else:
-            tools_schema = None
-            max_rounds = 1
+        tools_schema = kit.schemas() if kit else None
+        max_rounds = max(1, ctx.max_tool_rounds)
         # 业务"开/关" → LLMClient 的三态 thinking_budget：
         #   ctx.enable_thinking=True  → cfg.thinking_budget（>0 → reasoning_effort 档位）
         #   ctx.enable_thinking=False → 0（显式 reasoning_effort="none"）
@@ -951,7 +1215,7 @@ class ChatService:
                 max_rounds=max_rounds,
                 tools_schema=tools_schema,
                 thinking_budget=thinking_budget,
-                search_progress_queue=search_progress_queue if ctx.agent_mode else None,
+                search_progress_queue=search_progress_queue,
                 turn_citations=turn_citations,
             ):
                 yield ev
@@ -1018,7 +1282,7 @@ class ChatService:
         )
 
     # ============================================================
-    # 主循环（RAG / Agent 统一）
+    # 主循环（Agent 工具循环）
     # ============================================================
 
     async def _run_loop_real(
@@ -1043,7 +1307,7 @@ class ChatService:
         ] = None,
         turn_citations: Optional[Dict[str, Citation]] = None,
     ) -> AsyncIterator[ChatEvent]:
-        """RAG 单轮 / Agent 工具循环 + 收尾轮的统一执行体"""
+        """Agent 工具循环 + 收尾轮的执行体"""
 
         for round_idx in range(max_rounds):
             assistant_msg_id = generate_message_id()
@@ -1131,58 +1395,7 @@ class ChatService:
                 result.final_finish_reason = resp.finish_reason
                 return
 
-            # ---- 分支 B: 有 tool_calls，但 RAG 模式不允许 → 仍持久化空 results 后退出 ----
-            if kit is None:
-                # RAG 路径理论上不会到这里（tools_schema=None 模型不应返工具）
-                logger.warning(
-                    "RAG 模式收到 tool_calls，忽略并退出",
-                )
-                citations_this_round = await self._build_citations_for_round(
-                    seed_hits=seed_hits,
-                    added_chunks=supplemented,
-                    enrich_cache=enrich_cache,
-                    alias_map=alias_map,
-                    extra_citations=list((turn_citations or {}).values()),
-                )
-                if turn_citations is not None:
-                    for c in citations_this_round:
-                        if c.chunk_id:
-                            turn_citations[c.chunk_id] = c
-                all_citations_for_persist = citations_this_round
-                citations_for_display = self._filter_cited_only(
-                    resp.content or "", citations_this_round,
-                )
-                await self._persist_assistant(
-                    ctx=ctx,
-                    message_id=assistant_msg_id,
-                    resp=resp,
-                    citations=all_citations_for_persist,
-                    alias_map=alias_map,
-                    kit=kit,
-                )
-                assistant_msg_ids.append(assistant_msg_id)
-                yield ChatEvent(
-                    ChatEventType.MESSAGE_DONE,
-                    {
-                        "message_id": assistant_msg_id,
-                        "role": "assistant",
-                        "round": round_idx,
-                        "finish_reason": resp.finish_reason,
-                        "tool_calls_count": len(resp.tool_calls),
-                        "citations_count": len(citations_for_display),
-                        "citations": [c.model_dump() for c in citations_for_display],
-                        "has_thinking": bool(resp.thinking),
-                        "usage": {
-                            "prompt_tokens": resp.usage.prompt_tokens,
-                            "completion_tokens": resp.usage.completion_tokens,
-                            "total_tokens": resp.usage.total_tokens,
-                        },
-                    },
-                )
-                result.final_finish_reason = "tool_calls"
-                return
-
-            # ---- 分支 C: Agent 模式，有 tool_calls ----
+            # ---- 分支 B: 有 tool_calls ----
             # 关键：先把工具跑完，把 result_brief / items_added 一并合并进 assistant 落库
             # ——这样历史回放时 UI 也能拿到工具结果（修复 "工具未返回摘要" / "新增 0 段"）。
             # 注意事件顺序仍然是：(content/tool_call stream) → message.done →
@@ -1527,7 +1740,7 @@ class ChatService:
             tool_results: 本轮工具执行结果，``[(tc, content, items_added, time_ms), ...]``。
                 传入时会按 ``tc.id`` 合并到 ``ToolCallRecord.result_brief`` /
                 ``items_added``——这样历史回放时前端也能拿到工具结果。
-                None 表示 LLM 这轮没返工具调用、或 RAG 模式异常忽略工具。
+                None 表示 LLM 这轮没返工具调用。
             alias_map: 若提供，会把"本轮新分配的 alias delta"写入
                 ``metadata['alias_additions']``，便于下一 turn 重建累加。
                 同时把 tool_calls 入参里的 ``chunk_id`` alias 还原成真实 id 落库
@@ -1850,6 +2063,60 @@ class ChatService:
                 brief["image_file_path"] = meta.image_file_path
                 brief["bucket_name"] = meta.bucket_name
         return brief
+
+    # ============================================================
+    # 子功能：上下文压缩
+    # ============================================================
+
+    def _apply_context_compression(
+        self, history: List[ChatMessage]
+    ) -> List[ChatMessage]:
+        """应用上下文压缩：如果有 summary 消息，跳过已总结的旧消息
+
+        逻辑：
+        1. 查找最新的 summary 消息
+        2. 如果找到，过滤掉 metadata.summarized=true 的消息
+        3. 保留 summary 消息本身 + summary 之后的新消息
+
+        Args:
+            history: 原始历史消息列表
+
+        Returns:
+            压缩后的历史消息列表
+        """
+        # 查找最新的 summary 消息
+        latest_summary = None
+        latest_summary_idx = -1
+        for i, msg in enumerate(history):
+            if msg.role == "summary":
+                latest_summary = msg
+                latest_summary_idx = i
+
+        if latest_summary is None:
+            # 没有 summary，返回原始历史
+            return history
+
+        # 过滤逻辑：
+        # 1. 保留 summary 消息
+        # 2. 跳过 summary 之前且被标记为 summarized 的消息
+        # 3. 保留 summary 之后的所有消息（无论是否标记）
+        compressed = []
+        for i, msg in enumerate(history):
+            if i == latest_summary_idx:
+                # 保留 summary 消息
+                compressed.append(msg)
+            elif i < latest_summary_idx:
+                # summary 之前的消息：跳过已总结的
+                if not msg.metadata.get("summarized", False):
+                    compressed.append(msg)
+            else:
+                # summary 之后的消息：全部保留
+                compressed.append(msg)
+
+        logger.debug(
+            f"上下文压缩: 原始 {len(history)} 条 → 压缩后 {len(compressed)} 条"
+        )
+        return compressed
 
     # ============================================================
     # 子功能：摘要回调（fast preset）

@@ -162,7 +162,7 @@ async def _run_chat_turn(
         session_id=payload.session_id,
         user_id=session.user_id,
         query=payload.query,
-        agent_mode=payload.agent_mode,
+        mode=payload.mode,
         enable_thinking=payload.enable_thinking,
         enable_multimodal=payload.enable_multimodal,
         model_preset=payload.model_preset,
@@ -171,6 +171,11 @@ async def _run_chat_turn(
         retrieve_top_k=payload.retrieve_top_k,
         custom_system_prompt=payload.custom_system_prompt,
         skip_retrieval=payload.skip_retrieval,
+        # Cursor 式 @ 内联引用（软引用，可多个，文件/目录混选）
+        mentions=payload.mentions,
+        folder_id=payload.folder_id,
+        include_subfolders=payload.include_subfolders,
+        forced_skill_names=payload.forced_skill_names,
     )
 
     service = _get_chat_service()

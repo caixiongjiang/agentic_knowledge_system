@@ -59,6 +59,7 @@ class ChatRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+    SUMMARY = "summary"  # 总结消息，用于上下文压缩
 
 
 # ==================== 嵌套子模型 ====================
@@ -192,9 +193,9 @@ class ChatMessage(BaseDocument):
     )
 
     # ========== 角色与正文 ==========
-    role: Literal["system", "user", "assistant", "tool"] = Field(
+    role: Literal["system", "user", "assistant", "tool", "summary"] = Field(
         ...,
-        description="OpenAI 风格角色",
+        description="OpenAI 风格角色（summary 用于上下文压缩）",
     )
 
     content: str = Field(

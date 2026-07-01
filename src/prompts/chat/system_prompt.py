@@ -101,6 +101,7 @@ DEFAULT_CHAT_SYSTEM = """\
 - 历史对话与当前 user 消息会按时间序排在你面前；当上文已涉及某主题时，请保持术语一致。
 - tool 消息（role=tool）是上一轮你的工具调用返回的真实结果，可信。
 
+{skills_index}
 {custom_addendum}\
 """
 
@@ -220,6 +221,7 @@ def build_chat_system_prompt(
     enabled_tools: Optional[Sequence[str]] = None,
     custom_addendum: Optional[str] = None,
     scope: Optional[dict] = None,
+    skills_index: Optional[str] = None,
 ) -> str:
     """构造 Chat 模式的 system prompt。
 
@@ -242,6 +244,13 @@ def build_chat_system_prompt(
             ``kind == "kb"`` 或 ``scope is None`` 时不渲染 scope 块（保持
             与历史 KB 会话提示完全一致），仅 folder 模式会注入"## 当前范围"
             告知 LLM。
+        skills_index: 技能索引文本块（Level 0），由 SkillRegistry.build_index() 生成。
+            仅 mode='agent'（或 'plan'）时注入；None 或空串时不渲染。
+
+            注意：Slash 显式召唤（forced_skill_names）的技能**不再**注入 system
+            prompt，而是由 ChatService 注入到当轮 user 消息尾部（见
+            ``ChatService._build_forced_skills_block``），以避免污染稳定前缀、
+            提升 KV cache 命中率。
     """
     desc = (
         tools_description
@@ -250,9 +259,13 @@ def build_chat_system_prompt(
     )
     addendum = (custom_addendum or "").strip()
     custom_block = f"\n## 自定义规范\n\n{addendum}\n" if addendum else ""
+    skills_block = (skills_index or "").strip()
+    skills_section = f"\n{skills_block}\n" if skills_block else ""
+
     return DEFAULT_CHAT_SYSTEM.format(
         scope_summary=_format_scope_summary(scope),
         tools_description=desc or "(本会话未启用导航工具)",
+        skills_index=skills_section,
         custom_addendum=custom_block,
     )
 
@@ -267,13 +280,25 @@ def _format_scope_summary(scope: Optional[dict]) -> str:
         本会话锁定在文件夹 **项目A/调研** 下的 8 篇文档进行检索（已含子文件夹）。
         检索 / 导航工具的范围会被自动圈死，越界文档会被服务端硬拒。
         若需扩大范围，请用户在前端切换到知识库或其他文件夹。
+
+    document 模式（@ 单文件）样例::
+
+        ## 当前范围
+
+        本会话锁定到文件 **report.pdf** 进行检索。
+        检索 / 导航工具的范围会被自动圈死，越界内容会被服务端硬拒。
     """
     if not scope:
         return ""
     kind = scope.get("kind", "kb")
-    if kind != "folder":
-        return ""
+    if kind == "document":
+        return _format_document_scope_summary(scope)
+    if kind == "folder":
+        return _format_folder_scope_summary(scope)
+    return ""
 
+
+def _format_folder_scope_summary(scope: dict) -> str:
     label = scope.get("label") or scope.get("folder_id") or "(未知文件夹)"
     document_count = scope.get("document_count")
     include_subfolders = scope.get("include_subfolders", True)
@@ -301,6 +326,30 @@ def _format_scope_summary(scope: Optional[dict]) -> str:
         "检索 / 导航工具的范围会被自动圈死，越界文档会被服务端硬拒；"
         "请勿请求或编造该文件夹之外的内容。\n"
         "若用户希望扩大范围，请提示其在前端切换到知识库或其他文件夹。\n"
+    )
+
+
+def _format_document_scope_summary(scope: dict) -> str:
+    """@ 单文件 scope 的提示块。"""
+    label = scope.get("label") or scope.get("file_id") or "(未知文件)"
+    document_count = scope.get("document_count")
+
+    if isinstance(document_count, int) and document_count > 0:
+        scope_line = f"本会话锁定到文件 **{label}** 进行检索。"
+    else:
+        # 文件未索引完成 / 不存在 / 无权限
+        scope_line = (
+            f"本会话锁定到文件 **{label}**，但该文件当前没有可检索内容"
+            "（可能尚未完成索引）。请告知用户：该文件暂无法基于知识回答，"
+            "可建议用户等待索引完成或选择其他文件。"
+        )
+
+    return (
+        "\n## 当前范围\n\n"
+        f"{scope_line}\n"
+        "检索 / 导航工具的范围会被自动圈死到该文件对应的文档，"
+        "越界内容会被服务端硬拒；请勿请求或编造该文件之外的内容。\n"
+        "若用户希望扩大范围，请提示其在前端切换到知识库、文件夹或其他文件。\n"
     )
 
 
@@ -366,6 +415,16 @@ _TOOL_BRIEF: dict = {
         "仅判断「有没有」或概念性问题不必用本工具。"
         "`mode`：`literal` 子串 / `regex` 正则 / `boolean` 布尔式。"
         "返回 alias（`c1`…）与命中 snippet；全文用 `read_chunks`；`document_id` 可限定单篇。"
+    ),
+    "skills_list": (
+        "- **skills_list(category=None)**：列出当前可用技能（仅 name + description）。"
+        "需要某技能的完整指令时用 `skill_view(name)` 加载。"
+        "`category` 可选按类别过滤。"
+    ),
+    "skill_view": (
+        "- **skill_view(name, path=None)**：加载某个技能的完整指令（Level 1）。"
+        "传 `path` 可加载其附带参考文件（Level 2，如 `templates/report-outline.md`）。"
+        "当技能索引中的 description 与当前任务相关时，**必须**先用本工具加载完整指令再作答。"
     ),
 }
 

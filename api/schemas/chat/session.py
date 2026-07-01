@@ -55,7 +55,7 @@ class ChatSessionCreateRequest(BaseModel):
             "仅当 folder_id 非空时有意义"
         ),
     )
-    model_preset: str = Field("fast", description="LLM preset 名称")
+    model_preset: str = "fast"
     model: Optional[str] = Field(
         None,
         description=(
@@ -63,7 +63,7 @@ class ChatSessionCreateRequest(BaseModel):
             "model_preset。None 表示由 model_preset 决定"
         ),
     )
-    agent_mode: bool = Field(True, description="是否默认启用 Agent 工具循环")
+    mode: str = Field("agent", description="会话交互模式（agent / plan 等）")
     enable_thinking: bool = Field(False, description="是否默认启用思考链")
     enable_multimodal: bool = Field(False, description="是否默认启用多模态读图")
     max_tool_rounds: int = Field(5, ge=1, le=20, description="Agent 工具批次上限")
@@ -164,7 +164,7 @@ class ChatSessionInfo(BaseModel):
             "LiteLLM 模型字符串；用户在前端选定后写回。NULL → 走 model_preset"
         ),
     )
-    agent_mode: bool = True
+    mode: str = "agent"
     enable_thinking: bool = False
     enable_multimodal: bool = False
     max_tool_rounds: int = 5
@@ -203,7 +203,7 @@ class ChatSessionListItem(BaseModel):
     include_subfolders: bool = True
     model_preset: str = "fast"
     model: Optional[str] = None
-    agent_mode: bool = True
+    mode: str = "agent"
     message_count: int = 0
     last_message_at: Optional[datetime] = None
     create_time: Optional[datetime] = None

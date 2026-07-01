@@ -150,6 +150,43 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
             logger.error(f"刷新会话计数失败: {e}")
             return False
 
+    def reset_message_count(
+        self,
+        session: Session,
+        session_id: str,
+    ) -> bool:
+        """重置会话的 message_count 为 0，清空 last_message_at
+
+        用于「清空上下文」功能：清空消息后将会话计数归零。
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            是否找到并更新了记录
+        """
+        try:
+            updated = (
+                session.query(self.model)
+                .filter(
+                    self.model.session_id == session_id,
+                    self.model.deleted == 0,
+                )
+                .update(
+                    {
+                        self.model.message_count: 0,
+                        self.model.last_message_at: None,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            session.commit()
+            return updated > 0
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"重置会话计数失败: {e}")
+            return False
+
     # ==================== 模式锁定 ====================
 
     def update_mode(
@@ -157,7 +194,7 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         session: Session,
         session_id: str,
         *,
-        agent_mode: Optional[bool] = None,
+        mode: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
         enable_multimodal: Optional[bool] = None,
         max_tool_rounds: Optional[int] = None,
@@ -166,8 +203,8 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         """首条消息发出后，把用户选择的运行参数回写到 session。"""
         try:
             updates: dict = {}
-            if agent_mode is not None:
-                updates[self.model.agent_mode] = agent_mode
+            if mode is not None:
+                updates[self.model.mode] = mode
             if enable_thinking is not None:
                 updates[self.model.enable_thinking] = enable_thinking
             if enable_multimodal is not None:
@@ -209,7 +246,7 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         """轻量偏好回写：``model`` / ``model_preset`` / ``enable_thinking`` / ``enable_multimodal``。
 
         与 ``update_mode`` 的分工：``update_mode`` 是"会话首条消息后锁定"的
-        模式参数（``agent_mode`` / ``max_tool_rounds``）；本方法是"用户每轮
+        模式参数（``mode`` / ``max_tool_rounds``）；本方法是"用户每轮
         可调整的偏好"——选了哪个模型、是否开思考链等，每次都允许改。
 
         所有参数都是 ``Optional``：``None`` 表示"不动这一项"。返回 ``True``

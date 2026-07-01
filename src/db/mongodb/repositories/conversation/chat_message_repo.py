@@ -166,6 +166,42 @@ class ChatMessageRepository(BaseRepository[ChatMessage]):
             logger.error(f"批量软删除会话消息失败: {e}", exc_info=True)
             return 0
 
+    async def mark_as_summarized(
+        self,
+        message_ids: List[str],
+        *,
+        updater: str = "",
+    ) -> int:
+        """标记指定消息为已总结（metadata.summarized = true）
+
+        用于上下文压缩：总结后标记旧消息，后续构建 LLM 上下文时跳过。
+
+        Args:
+            message_ids: 要标记的消息 ID 列表
+            updater: 操作者
+
+        Returns:
+            被标记的消息条数
+        """
+        try:
+            result = await self.model.find(
+                {"_id": {"$in": message_ids}, "deleted": 0}
+            ).update(
+                {
+                    "$set": {
+                        "metadata.summarized": True,
+                        "updater": updater,
+                        "update_time": datetime.now(),
+                    }
+                }
+            )
+            modified = result.modified_count if result else 0
+            logger.debug(f"标记 {modified} 条消息为已总结")
+            return modified
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"标记消息为已总结失败: {e}", exc_info=True)
+            return 0
+
 
 # 全局实例
 chat_message_repo = ChatMessageRepository()

@@ -73,8 +73,7 @@ class ChatSession(BaseModel):
           后台 agent / 起标题 / 摘要等仍由 preset 驱动
         - ``model``: LiteLLM 模型字符串（如 ``openai/gpt-4o-mini``）；前端从
           ``/api/chat/models`` 选定后写回，``None`` 表示由 ``model_preset`` 决定
-        - ``agent_mode``: 是否启用 Agent 工具循环（``True`` 默认）；为 ``False``
-          时走 RAG 单轮快路径
+        - ``mode``: 会话交互模式（``agent`` 默认 / ``plan`` 等）
         - ``enable_thinking``: 是否启用思考链（``deepseek-reasoner`` 等）
         - ``max_tool_rounds``: Agent 模式下含工具批次的调整轮数上限
         - ``system_prompt``: 用户可覆盖的自定义 system prompt
@@ -160,11 +159,11 @@ class ChatSession(BaseModel):
         ),
     )
 
-    agent_mode = Column(
-        Boolean,
+    mode = Column(
+        String(32),
         nullable=False,
-        default=True,
-        comment="是否启用 Agent 工具循环（False 时走 RAG 单轮快路径）",
+        default="agent",
+        comment="会话交互模式（agent / plan 等；默认 agent 启用工具循环）",
     )
 
     enable_thinking = Column(

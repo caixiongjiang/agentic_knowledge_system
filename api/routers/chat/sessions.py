@@ -83,7 +83,7 @@ def _to_session_info(s: ChatSession) -> ChatSessionInfo:
         include_subfolders=bool(getattr(s, "include_subfolders", True)),
         model_preset=s.model_preset,
         model=s.model,
-        agent_mode=bool(s.agent_mode),
+        mode=getattr(s, "mode", None) or "agent",
         enable_thinking=bool(s.enable_thinking),
         enable_multimodal=bool(getattr(s, "enable_multimodal", False)),
         max_tool_rounds=int(s.max_tool_rounds),
@@ -104,7 +104,7 @@ def _to_session_list_item(s: ChatSession) -> ChatSessionListItem:
         include_subfolders=bool(getattr(s, "include_subfolders", True)),
         model_preset=s.model_preset,
         model=s.model,
-        agent_mode=bool(s.agent_mode),
+        mode=getattr(s, "mode", None) or "agent",
         message_count=int(s.message_count or 0),
         last_message_at=s.last_message_at,
         create_time=s.create_time,
@@ -191,7 +191,7 @@ async def create_session(
             include_subfolders=body.include_subfolders,
             model_preset=body.model_preset,
             model=body.model,
-            agent_mode=body.agent_mode,
+            mode=body.mode,
             enable_thinking=body.enable_thinking,
             enable_multimodal=body.enable_multimodal,
             max_tool_rounds=body.max_tool_rounds,
@@ -383,3 +383,72 @@ async def list_messages(
         page_size=page_size,
     )
     return ApiResponse.success(data=payload)
+
+
+@router.delete(
+    "/{session_id}/messages",
+    response_model=ApiResponse[ChatSessionUpdateResponse],
+    summary="清空会话消息",
+)
+async def clear_messages(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ApiResponse[ChatSessionUpdateResponse]:
+    """清空会话内的所有消息（保留会话本身）
+
+    用于「清空上下文」功能：清空消息历史，但保留会话配置
+    （知识库、文件夹、模型设置等）。
+
+    权限：仅会话所有者可操作。
+    """
+    ok = await _get_service().clear_messages(
+        session_id=session_id,
+        user_id=user_id,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在或无权限")
+    logger.info(f"REST clear_messages: session_id={session_id}")
+    return ApiResponse.success(
+        data=ChatSessionUpdateResponse(
+            session_id=session_id,
+            success=True,
+            message="messages_cleared",
+        ),
+    )
+
+
+@router.post(
+    "/{session_id}/summarize",
+    response_model=ApiResponse[ChatSessionUpdateResponse],
+    summary="总结对话上下文",
+)
+async def summarize_context(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ApiResponse[ChatSessionUpdateResponse]:
+    """总结当前对话上下文，生成摘要并标记旧消息
+
+    用于「总结对话」功能：
+    1. 调用 LLM 生成对话摘要
+    2. 存储为 role="summary" 的消息
+    3. 标记之前所有消息为已总结
+
+    后续构建 LLM 上下文时，会跳过已总结的旧消息，只发送
+    摘要 + 新消息，节省 token。
+
+    权限：仅会话所有者可操作。
+    """
+    summary = await _get_service().summarize_context(
+        session_id=session_id,
+        user_id=user_id,
+    )
+    if summary is None:
+        raise HTTPException(status_code=404, detail="会话不存在、无权限或无消息可总结")
+    logger.info(f"REST summarize_context: session_id={session_id}")
+    return ApiResponse.success(
+        data=ChatSessionUpdateResponse(
+            session_id=session_id,
+            success=True,
+            message="context_summarized",
+        ),
+    )

@@ -89,7 +89,7 @@ class ChatSessionService:
         include_subfolders: bool = True,
         model_preset: str = "fast",
         model: Optional[str] = None,
-        agent_mode: bool = True,
+        mode: str = "agent",
         enable_thinking: bool = False,
         enable_multimodal: bool = False,
         max_tool_rounds: int = 5,
@@ -115,7 +115,6 @@ class ChatSessionService:
                 与 ``model_preset`` 并存：``model`` 非空时优先用它选模型，
                 ``model_preset`` 仍作为 temperature / max_tokens / thinking_budget
                 等采样参数模板（详见 ``ChatService._get_llm_client``）。
-            agent_mode: 默认是否启用 Agent 工具循环
             enable_thinking: 默认是否启用思考链
             enable_multimodal: 默认是否启用多模态读图
             max_tool_rounds: Agent 模式默认工具批次上限
@@ -144,7 +143,7 @@ class ChatSessionService:
                 include_subfolders=include_subfolders,
                 model_preset=model_preset,
                 model=model,
-                agent_mode=agent_mode,
+                mode=mode,
                 enable_thinking=enable_thinking,
                 enable_multimodal=enable_multimodal,
                 max_tool_rounds=max_tool_rounds,
@@ -157,7 +156,6 @@ class ChatSessionService:
             logger.info(
                 f"创建会话: session_id={sess_id}, user={user_id}, "
                 f"model_preset={model_preset}, model={model or '-'}, "
-                f"agent_mode={agent_mode}, "
                 f"scope={'folder=' + folder_id if folder_id else 'kb'}"
             )
             return obj
@@ -294,7 +292,7 @@ class ChatSessionService:
         *,
         session_id: str,
         user_id: str,
-        agent_mode: Optional[bool] = None,
+        mode: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
         max_tool_rounds: Optional[int] = None,
     ) -> bool:
@@ -304,7 +302,7 @@ class ChatSessionService:
             return self._session_repo.update_mode(
                 db,
                 session_id,
-                agent_mode=agent_mode,
+                mode=mode,
                 enable_thinking=enable_thinking,
                 max_tool_rounds=max_tool_rounds,
                 updater=user_id,
@@ -323,7 +321,7 @@ class ChatSessionService:
 
         与 ``update_session_mode`` 的分工：
 
-        - ``update_session_mode``：首条消息后**锁定** ``agent_mode`` /
+        - ``update_session_mode``：首条消息后**锁定** ``mode`` /
           ``max_tool_rounds`` 等"会话定型"项；UI 上对应的 chip 在有消息后
           就是 disabled 的，不能再变。
         - ``update_session_settings``：随时可改的"轻偏好"——前端选了哪个
@@ -342,6 +340,167 @@ class ChatSessionService:
                 enable_thinking=enable_thinking,
                 updater=user_id,
             )
+
+    # ============================================================
+    # 清空消息
+    # ============================================================
+
+    async def clear_messages(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+    ) -> bool:
+        """清空会话内的所有消息（保留会话本身）
+
+        权限：仅 ``user_id`` 匹配的本人可操作。
+
+        Args:
+            session_id: 会话 ID
+            user_id: 当前用户 ID（用于权限校验）
+
+        Returns:
+            True 表示清空成功，False 表示会话不存在或无权限
+        """
+        # 1. 权限校验：检查会话是否存在且属于当前用户
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            session = self._session_repo.get_by_id_and_user(db, session_id, user_id)
+            if session is None:
+                return False
+
+        # 2. 软删除 MongoDB 中的所有消息
+        try:
+            cnt = await self._message_repo.soft_delete_by_session(
+                session_id, updater=user_id,
+            )
+            logger.info(
+                f"清空会话消息: session_id={session_id}, user={user_id}, "
+                f"软删消息 {cnt} 条"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"清空会话消息失败: session={session_id}, err={e}")
+            return False
+
+        # 3. 重置会话的 message_count 和 last_message_at
+        with manager.get_session() as db:
+            self._session_repo.reset_message_count(db, session_id)
+
+        return True
+
+    async def summarize_context(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+    ) -> Optional[str]:
+        """总结当前对话上下文，生成摘要并标记旧消息
+
+        流程：
+        1. 加载会话的 user/assistant 消息（跳过 tool/thinking 轮次）
+        2. 调用 LLM 生成摘要
+        3. 存储为 role="summary" 的消息
+        4. 标记之前所有消息的 metadata.summarized = true
+
+        Args:
+            session_id: 会话 ID
+            user_id: 当前用户 ID（用于权限校验）
+
+        Returns:
+            生成的摘要文本，失败返回 None
+        """
+        # 1. 权限校验
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            session = self._session_repo.get_by_id_and_user(db, session_id, user_id)
+            if session is None:
+                return None
+
+        # 2. 加载会话所有消息（排除已软删和已总结的）
+        all_messages = await self._message_repo.list_by_session(
+            session_id, limit=1000, ascending=True,
+        )
+        # 过滤掉已总结的消息和 summary 消息
+        all_messages = [
+            m for m in all_messages
+            if not m.metadata.get("summarized", False) and m.role != "summary"
+        ]
+
+        if not all_messages:
+            return None
+
+        # 3. 只保留 user/assistant 消息用于总结（跳过 tool/thinking 轮次）
+        messages_for_summary = [
+            m for m in all_messages
+            if m.role in ("user", "assistant")
+        ]
+
+        if not messages_for_summary:
+            return None
+
+        # 4. 构建对话历史文本
+        history_text = []
+        for msg in messages_for_summary:
+            if msg.role == "user":
+                history_text.append(f"用户: {msg.content}")
+            elif msg.role == "assistant":
+                # 截断避免过长，保留核心内容
+                content = msg.content[:500] if len(msg.content) > 500 else msg.content
+                history_text.append(f"助手: {content}")
+
+        conversation = "\n".join(history_text)
+
+        # 5. 调用 LLM 生成摘要（使用独立的总结提示词）
+        try:
+            from src.client.llm import LLMClient, LLMClientConfig
+            from src.prompts.chat.summary_prompt import SUMMARY_SYSTEM_PROMPT
+
+            config = LLMClientConfig(
+                model=session.model or "fast",
+                temperature=0.3,
+                max_tokens=800,
+            )
+            client = LLMClient(config)
+
+            response = await client.agenerate(
+                messages=[
+                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"请总结以下对话：\n\n{conversation}"},
+                ]
+            )
+            summary_content = response.content
+
+        except Exception as e:
+            logger.error(f"生成摘要失败: {e}")
+            return None
+
+        # 6. 存储 summary 消息
+        from datetime import datetime
+
+        summary_msg = ChatMessage(
+            id=generate_message_id(),
+            session_id=session_id,
+            user_id=user_id,
+            role="summary",
+            content=summary_content,
+            metadata={"summary_type": "context_compression"},
+            create_time=datetime.now(),
+            update_time=datetime.now(),
+        )
+        await summary_msg.insert()
+
+        # 7. 标记所有消息为已总结（包括 tool/thinking 等中间轮次）
+        all_msg_ids = [m.id for m in all_messages]
+        if all_msg_ids:
+            await self._message_repo.mark_as_summarized(all_msg_ids, updater=user_id)
+
+        logger.info(
+            f"上下文总结完成: session_id={session_id}, "
+            f"总结了 {len(messages_for_summary)} 条对话消息，"
+            f"标记了 {len(all_msg_ids)} 条消息（含工具调用）"
+        )
+
+        return summary_content
 
     # ============================================================
     # 删除

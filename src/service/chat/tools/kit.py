@@ -55,9 +55,14 @@ class KnowledgeNavToolKit:
         )
         self.scope_doc_id_set: frozenset = frozenset(self.scope_document_ids or [])
         self.scope_kind = scope_kind
-        self.scope_label = scope_label or (
-            f"folder/{scope_label}" if scope_kind == "folder" else "kb"
-        )
+        if scope_label:
+            self.scope_label = scope_label
+        elif scope_kind == "folder":
+            self.scope_label = f"folder/{scope_label}"
+        elif scope_kind == "document":
+            self.scope_label = "document"
+        else:
+            self.scope_label = "kb"
 
         self.search_results: Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any]]] = {}
         self._result_counts: Dict[str, int] = {}
@@ -170,23 +175,34 @@ class KnowledgeNavToolKit:
         name: str,
         args: Dict[str, Any],
     ) -> Optional[str]:
-        if self.scope_kind != "folder":
+        # folder / document 两种 scope 都需要硬约束导航工具的 document_id 越界
+        if self.scope_kind not in ("folder", "document"):
             return None
 
         if not self.scope_doc_id_set:
+            scope_desc = (
+                f"文件 {self.scope_label or '(未知)'}"
+                if self.scope_kind == "document"
+                else f"文件夹 {self.scope_label or '(未知)'}"
+            )
             return (
-                f"当前会话锁定在文件夹 {self.scope_label or '(未知)'}，"
-                "但该文件夹内没有可检索的文档。"
-                "请告知用户：当前文件夹为空或文档尚未完成索引，"
-                "无法基于知识回答；可建议用户上传文档或切换文件夹。"
+                f"当前会话锁定在{scope_desc}，"
+                "但该范围内没有可检索的文档。"
+                "请告知用户：当前范围为空或文档尚未完成索引，"
+                "无法基于知识回答；可建议用户上传文档或切换范围后再问。"
             )
 
         explicit_doc_id = args.get("document_id")
         if isinstance(explicit_doc_id, str) and explicit_doc_id:
             if explicit_doc_id not in self.scope_doc_id_set:
+                scope_desc = (
+                    f"document={self.scope_label}"
+                    if self.scope_kind == "document"
+                    else f"folder={self.scope_label}"
+                )
                 return (
                     f"document_id={explicit_doc_id} 不在当前 scope "
-                    f"（folder={self.scope_label}，共 "
+                    f"（{scope_desc}，共 "
                     f"{len(self.scope_doc_id_set)} 篇）内。"
                     "请先用 search_knowledge_base / drill_down 在本范围内"
                     "拿到合法的 document_id 后再调用本工具。"

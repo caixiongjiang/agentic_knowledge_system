@@ -355,12 +355,16 @@ title_model_preset = "fast"
 # （temperature / max_tokens / thinking_budget / extra_params 取自该 preset，
 #  model 字段被前端选定的字符串覆盖）
 user_chat_template_preset = "fast"
-# 是否默认启用 Agent 工具循环（false 时走 RAG 单轮快路径）
-default_agent_mode = true
+# 会话默认交互模式（agent=工具循环 / plan=先规划再执行）
+default_mode = "agent"
 # 是否默认启用思考链（仅 reasoning 类模型生效）
 default_enable_thinking = false
 # Agent 模式默认工具批次上限
 default_max_tool_rounds = 5
+# @ 内联引用（方案A）：单个 @ 文件全量注入正文的字符上限；超过则退化为方案C（仅提示 document_id）
+mention_inject_max_chars = 6000
+# @ 内联引用（方案A）：单轮所有 @ 文件全量注入正文的合计字符预算；超预算的文件退化为方案C
+mention_inject_total_budget = 12000
 # 启用思考链时的预算（tokens）；仅 enable_thinking=true 时透传给 LLMClient.astream
 thinking_budget = 4096
 # 单轮 assistant 输出 token 上限；0 / 缺省表示由模型 / preset 决定

@@ -12,7 +12,7 @@
 
     - **ChatRequest**：单轮对话请求；既包含会话身份信息（``session_id`` /
       ``user_id`` / ``query``），也允许在请求级别覆盖会话默认参数
-      （``agent_mode`` / ``enable_thinking`` / ``retrieve_top_k`` 等），
+      （``mode`` / ``enable_thinking`` / ``retrieve_top_k`` 等），
       方便客户端做"试一下不开 agent"之类的临时切换。
     - **ChatEvent / ChatEventType**：服务端 → 客户端的语义事件序列。
       与 ``src/chat/stream_buffer.py::StreamEvent`` 的差异：
@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -135,6 +135,20 @@ class ChatEvent:
 # ============================================================
 
 
+class ChatMention(BaseModel):
+    """Cursor 式 @ 内联引用项（文件或目录）
+
+    后端按 ``kind`` 把 ``id`` 解析为一组 document_id：
+    - ``kind='file'``   → 该文件的单个 document_id（未索引则为空）
+    - ``kind='folder'`` → 该目录（含子目录）下所有文档的 document_id
+    """
+
+    kind: Literal["file", "folder"] = Field(..., description="引用类型")
+    id: str = Field(..., description="文件 ID 或目录 ID")
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class ChatRequest(BaseModel):
     """单轮对话请求
 
@@ -148,8 +162,11 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, description="本轮用户输入")
 
     # 请求级覆盖（None → 用 ChatSession 默认）
-    agent_mode: Optional[bool] = Field(
-        None, description="是否启用 Agent 工具循环；None 表示沿用 session 默认",
+    mode: Optional[str] = Field(
+        None,
+        description=(
+            "会话交互模式（agent / plan 等）；None 表示沿用 session 默认。"
+        ),
     )
     enable_thinking: Optional[bool] = Field(
         None, description="是否启用思考链；None 表示沿用 session 默认",
@@ -187,6 +204,14 @@ class ChatRequest(BaseModel):
             "驱动的探索式对话）"
         ),
     )
+    mentions: Optional[List[ChatMention]] = Field(
+        None,
+        description=(
+            "Cursor 式 @ 内联引用（软引用，可多个，文件/目录混选）；None 表示无引用。"
+            "后端解析为「引用资料」块注入 user prompt（不锁死 scope）；"
+            "越界 / 不存在 / 未索引项软降级（丢弃或标注未索引），不报错。"
+        ),
+    )
     folder_id: Optional[str] = Field(
         None,
         description=(
@@ -200,6 +225,15 @@ class ChatRequest(BaseModel):
         description=(
             "请求级临时覆盖 include_subfolders；None 表示沿用 session 默认。"
             "仅当 folder_id（请求或 session 级）非空时有意义。"
+        ),
+    )
+    forced_skill_names: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Slash 显式召唤的技能名列表（如 ['/research-report'] 触发时传 ['research-report']）。"
+            "被指定的技能正文会注入到 *当轮 user 消息尾部*（而非 system prompt），"
+            "使 system prompt 保持稳定前缀、提升缓存命中率，模型必定遵循。"
+            "停用或不存在的技能会被跳过。"
         ),
     )
 
@@ -218,7 +252,9 @@ class ChatTurnContext(BaseModel):
     user_id: str
     query: str
 
-    agent_mode: bool
+    mode: str
+    """会话交互模式（agent / plan 等）"""
+
     enable_thinking: bool
     model_preset: str
     model: Optional[str] = None
@@ -234,7 +270,6 @@ class ChatTurnContext(BaseModel):
         "kb",
         description=(
             "本轮检索范围类型：'kb'=知识库全量；'folder'=文件夹内文档。"
-            "single_doc / documents 留待后续 PR 引入。"
         ),
     )
     folder_id: Optional[str] = Field(
@@ -259,6 +294,14 @@ class ChatTurnContext(BaseModel):
             "scope_kind='kb' 时为空（不限制）；scope_kind='folder' 时为该 folder "
             "（含子目录，由 include_subfolders 决定）下所有文档去重后的 ID 列表。"
             "navigation 工具组依此做硬校验拒绝越界 document_id"
+        ),
+    )
+
+    forced_skills_block: str = Field(
+        "",
+        description=(
+            "Slash 显式召唤技能的正文块（已解析），注入到当轮 *给 LLM 的* user "
+            "消息尾部；无显式技能时为空串。由 ChatService._build_forced_skills_block 生成。"
         ),
     )
 

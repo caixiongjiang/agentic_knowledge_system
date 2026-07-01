@@ -32,11 +32,11 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.service.chat.types import ChatEvent, ChatEventType
+from src.service.chat.types import ChatEvent, ChatEventType, ChatMention
 
 
 # ============================================================
@@ -68,8 +68,8 @@ class ChatRequestPayload(BaseModel):
 
     session_id: str = Field(..., description="会话 ID（必须已存在）")
     query: str = Field(..., min_length=1, description="本轮用户输入")
-    agent_mode: Optional[bool] = Field(
-        None, description="是否启用 Agent 工具循环；None 表示沿用 session 默认",
+    mode: Optional[str] = Field(
+        None, description="会话交互模式（agent / plan 等）；None 表示沿用 session 默认",
     )
     enable_thinking: Optional[bool] = Field(
         None, description="是否启用思考链；None 表示沿用 session 默认",
@@ -96,6 +96,14 @@ class ChatRequestPayload(BaseModel):
     )
     skip_retrieval: bool = Field(False, description="是否跳过初始检索")
 
+    mentions: Optional[List[ChatMention]] = Field(
+        None,
+        description=(
+            "Cursor 式 @ 内联引用（软引用，可多个，文件/目录混选）。"
+            "后端解析为「引用资料」块注入 user prompt，并不锁死 scope；"
+            "file 所属 KB 必须属于 session.knowledge_base_ids，越界项软降级丢弃。"
+        ),
+    )
     folder_id: Optional[str] = Field(
         None,
         description=(
@@ -107,6 +115,13 @@ class ChatRequestPayload(BaseModel):
         None,
         description=(
             "请求级临时覆盖 include_subfolders；None 表示沿用 session 默认"
+        ),
+    )
+    forced_skill_names: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Slash 显式召唤的技能名列表（注入到当轮 user 消息尾部，非 system "
+            "prompt）；None 表示无显式技能"
         ),
     )
 
