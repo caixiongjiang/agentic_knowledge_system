@@ -12,6 +12,8 @@ from src.service.chat.tools.handlers.search_knowledge_base import (
     DEFINITION as SEARCH_KNOWLEDGE_BASE,
 )
 from src.service.chat.tools.handlers.skeleton import DEFINITION as SKELETON
+from src.service.chat.tools.handlers.skills_list import DEFINITION as SKILLS_LIST
+from src.service.chat.tools.handlers.skill_view import DEFINITION as SKILL_VIEW
 
 ALL_TOOL_DEFINITIONS = (
     CONTEXT_WINDOW,
@@ -22,4 +24,6 @@ ALL_TOOL_DEFINITIONS = (
     GREP_CHUNKS,
     READ_CHUNKS,
     READ_IMAGE_CHUNKS,
+    SKILLS_LIST,
+    SKILL_VIEW,
 )

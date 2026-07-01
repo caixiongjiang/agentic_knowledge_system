@@ -7,7 +7,8 @@ requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.13.3",
     "aiokafka[lz4]>=0.13.0",
-    "beanie>=2.0.1",
+    "skill-core>=0.2.0",
+    "beanie>=2.0.1,<2.1.0",
     "cryptography",
     "deepagents>=0.5.1",
     "fastapi>=0.129.0",
@@ -35,3 +36,6 @@ dependencies = [
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
+
+[tool.uv.sources]
+skill-core = { path = "third_party/skill_core-0.2.0-py3-none-any.whl" }

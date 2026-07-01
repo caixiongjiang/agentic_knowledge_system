@@ -74,6 +74,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     get_mysql_manager().init_db()
     logger.info("MySQL 初始化完成（自动建表）")
 
+    from src.service.skill.registry_singleton import init_registry
+    init_registry()
+    logger.info("SkillRegistry 初始化完成")
+
     mongo_manager = await get_mongodb_manager()
     logger.info("MongoDB 初始化完成（Beanie ODM + 索引）")
 
