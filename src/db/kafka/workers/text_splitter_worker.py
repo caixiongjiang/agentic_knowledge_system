@@ -4,12 +4,12 @@
 TextSplitter Worker
 
 监听: knowledge_base.parse.end
-功能: 从数据库加载 ParseResult，执行文本切分，生成 Chunk 并分发到下游
+功能: 从 ParseEndMessage 自包含 payload 构造 ParseResult，执行文本切分，生成 Chunk 并分发到下游
 输出:
   - db_write.embedding.start (向量化写入)
   - db_write.meta.start (MySQL 元数据写入)
   - db_write.mongo.start (MongoDB 文档数据写入)
-  - knowledge_base.split.end (前台完成通知)
+  - knowledge_base.split.end (前台完成通知 + 自包含 chunks/sections 供后台抽取)
 """
 
 from typing import Optional, List, Dict, Any
@@ -38,23 +38,22 @@ class TextSplitterWorker(BaseWorker):
     
     职责:
     - 消费 Kafka 消息 (knowledge_base.parse.end)
-    - 从 MySQL/MongoDB 加载 ParseResult
+    - 从 ParseEndMessage 自包含 elements payload 构造 ParseResult（不读库）
     - 调用 TextSplitterService 执行文本切分
     - 发送 MySQL 写入消息到 Kafka (section/chunk 元信息)
     - 发送 MongoDB 写入消息到 Kafka (section/chunk 内容数据)
     - 发送 Embedding 写入消息到 Kafka (文本向量化)
-    - 发送 SplitEndMessage (前台完成通知，进度100%)
+    - 发送 SplitEndMessage (前台完成通知，进度100%，自包含供后台抽取)
     
     架构说明:
     Worker 层 (本类):
       - 负责所有 Kafka 操作 (消费和生产)
-      - 管理 MySQL 会话生命周期
       - 调用 Service 层处理业务逻辑
       - 不涉及具体的切分算法
     
     Service 层 (TextSplitterService):
       - 负责文本切分业务逻辑
-      - 从数据库加载 ParseResult
+      - 从 ParseEndMessage payload 构造 ParseResult（不读数据库）
       - 执行文本/表格/图片切分
       - 返回 SplitResult
     
@@ -126,8 +125,8 @@ class TextSplitterWorker(BaseWorker):
         
         流程:
         1. 校验消息状态（跳过解析失败的文件）
-        2. 获取 MySQL 会话
-        3. 调用 TextSplitterService.load_parse_result_from_db() 加载 ParseResult
+        2. 获取 TextSplitterService
+        3. 从 ParseEndMessage 自包含 payload 构造 ParseResult（不读库）
         4. 调用 TextSplitterService.split_document() 执行切分
         5. 使用 SplitResult 的转换方法生成各类数据
         6. 分发到 4 个下游 Kafka Topic
@@ -161,24 +160,18 @@ class TextSplitterWorker(BaseWorker):
             return True
         
         try:
-            # 2. 获取 Service 和 MySQL 会话
+            # 2. 获取 Service
             splitter_service = self._get_splitter_service()
-            mysql_manager = self._get_mysql_manager()
             
-            # 3. 从数据库加载 ParseResult
-            with mysql_manager.get_session() as session:
-                parse_result = await splitter_service.load_parse_result_from_db(
-                    user_id=message.user_id,
-                    file_id=message.file_id,
-                    document_id=message.document_id,
-                    mysql_session=session,
-                    knowledge_base_id=message.knowledge_base_id
-                )
+            # 3. 从 ParseEndMessage 自包含 payload 构造 ParseResult
+            #    不读数据库——避免 parse 写库异步（MySQL/MongoDB 独立 Consumer）导致的
+            #    parse→split 读库竞态（历史问题：MongoDB 未落盘时读到空 text，产生空标题 section / 空 chunk）。
+            parse_result = splitter_service.build_parse_result_from_payload(message)
             
             if not parse_result.is_success():
-                error_msg = f"ParseResult 加载失败: {parse_result.error_message}"
+                error_msg = f"ParseResult 构造失败: {parse_result.error_message}"
                 logger.error(
-                    f"ParseResult 加载失败: file_id={message.file_id}, "
+                    f"ParseResult 构造失败: file_id={message.file_id}, "
                     f"error={parse_result.error_message}"
                 )
                 await self._fail_file_progress(
@@ -268,12 +261,12 @@ class TextSplitterWorker(BaseWorker):
                     message, enhanced_items, split_result
                 )
             
-            # # 5f. 发送 SplitEndMessage (前台完成通知)
-            # await self._send_split_end_message(message, split_result)
-            # logger.info(
-            #     f"下游消息分发已禁用 (暂时跳过): file_id={message.file_id}, "
-            #     f"chunks={split_result.total_chunks}"
-            # )
+            # 5f. 发送 SplitEndMessage (前台完成通知 + 触发后台抽取链路)
+            await self._send_split_end_message(message, split_result)
+            logger.info(
+                f"SplitEndMessage 已发送 (触发后台抽取): file_id={message.file_id}, "
+                f"chunks={split_result.total_chunks}"
+            )
             
             # 6. 更新 Redis 进度到 split_end (100%)
             success_msg = (
@@ -597,22 +590,38 @@ class TextSplitterWorker(BaseWorker):
             logger.warning("Producer 未配置，无法发送 SplitEndMessage")
             return
         
-        # 构建 chunks 摘要数据（供下游使用）
+        # 构建 chunks 数据（自包含，供下游 SectionSummaryWorker 直接消费，避免读库竞态）
         chunks_summary = [
             {
                 "chunk_id": chunk.chunk_id,
+                "section_id": chunk.section_id,
                 "chunk_type": chunk.chunk_type,
-                "text": chunk.get_text_content() or "",
+                "text": chunk.get_text_content() or "",  # text/table/code 原文；image 为空
+                "image_caption": chunk.image_caption,     # 仅 image 有效
+                "image_footnote": chunk.image_footnote,   # 仅 image 有效
                 "page_index": chunk.page_index,
                 "language": chunk.language,
             }
             for chunk in split_result.chunks
         ]
-        
+
+        # 构建 sections 数据（自包含，供下游 SectionSummaryWorker 直接消费）
+        sections_summary = [
+            {
+                "section_id": section.section_id,
+                "title": section.content,
+                "level": section.level,
+                "page_index": section.page_index,
+                "chunk_id_list": list(section.chunk_id_list),
+            }
+            for section in split_result.sections
+        ]
+
         split_end_msg = SplitEndMessage(
             user_id=message.user_id,
             file_id=message.file_id,
             chunks=chunks_summary,
+            sections=sections_summary,
             split_strategy=split_result.split_method,
             chunk_stats={
                 "total_chunks": split_result.total_chunks,
@@ -632,7 +641,11 @@ class TextSplitterWorker(BaseWorker):
             brief_summary=(
                 f"文档已切分为 {split_result.total_chunks} 个文本块，"
                 f"包含 {split_result.total_sections} 个章节"
-            )
+            ),
+            # 透传溯源字段，供下游 SectionSummaryWorker / FileSummaryWorker 使用
+            document_id=message.document_id,
+            knowledge_base_id=message.knowledge_base_id,
+            knowledge_base_name=message.knowledge_base_name,
         )
         
         await self._producer.send_message(

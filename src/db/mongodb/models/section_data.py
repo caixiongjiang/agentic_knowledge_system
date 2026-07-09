@@ -46,6 +46,40 @@ class SectionData(BaseDocument):
         default_factory=list,
         description="section翻译内容列表（支持多语言）"
     )
+
+    # ========== 结构层级 ==========
+    parent_section_id: Optional[str] = Field(
+        None,
+        description=(
+            "直接父 section ID（顶级 section 为 None）。"
+            "由 SectionSummaryService 从标题编号推断得到，前端骨架接口据此拼树。"
+        )
+    )
+
+    is_leaf: Optional[bool] = Field(
+        None,
+        description=(
+            "是否叶子 section。True=挂有 chunk 的叶子 section；"
+            "False=父 section（rollup 摘要）。None 表示尚未由 section_summary 更新。"
+        )
+    )
+
+    chunk_id_list: List[str] = Field(
+        default_factory=list,
+        description=(
+            "该 section 及其所有后代叶子的 chunk_id 列表（去重、保序）。"
+            "用于「Milvus 命中 summary → 拿到 chunk_id 列表下钻」检索路径。"
+        )
+    )
+
+    # ========== 摘要 ==========
+    summary: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "section 摘要子文档（由 SectionSummaryService 通过 UPSERT $set 写入）。"
+            "结构：{summary_id, text, chunk_count, language}。"
+        )
+    )
     
     # ========== Pydantic 配置 ==========
     class Config:
@@ -64,6 +98,16 @@ class SectionData(BaseDocument):
             IndexModel(
                 [("deleted", ASCENDING), ("create_time", DESCENDING)],
                 name="idx_deleted_create_time"
+            ),
+            # Milvus summary_id → section_data 反查（检索命中后拿 section 上下文）
+            IndexModel(
+                [("summary.summary_id", ASCENDING)],
+                name="idx_summary_id"
+            ),
+            # 按 parent_section_id 拼树（前端骨架接口 / agent 下钻）
+            IndexModel(
+                [("parent_section_id", ASCENDING)],
+                name="idx_parent_section_id"
             ),
         ]
     

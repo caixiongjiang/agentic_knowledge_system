@@ -87,8 +87,13 @@ def format_chunks_for_llm(
 
 
 def skeleton_outline_to_text(outline_tree: list) -> str:
-    """SkeletonNode 列表转可读目录树文本。"""
+    """SkeletonNode 列表转可读目录树文本。
+
+    每个节点展示：section_id / 层级 / 标题 / 片段数 / 摘要预览（若有）。
+    摘要截断到 200 字，帮助 Agent 快速判断是否需要下钻该 section。
+    """
     lines: List[str] = []
+    _SUMMARY_PREVIEW = 200
 
     def _walk(node: Any, depth: int = 0) -> None:
         indent = "  " * depth
@@ -96,10 +101,22 @@ def skeleton_outline_to_text(outline_tree: list) -> str:
         title = getattr(node, "title", "") or "(无标题)"
         chunk_count = getattr(node, "chunk_count", 0)
         level = getattr(node, "level", None)
+        is_leaf = getattr(node, "is_leaf", None)
+        summary = getattr(node, "summary", None)
         level_part = f" L{level}" if level is not None else ""
+        leaf_part = ""
+        if is_leaf is True:
+            leaf_part = " [leaf]"
+        elif is_leaf is False:
+            leaf_part = " [parent]"
         lines.append(
-            f"{indent}- [{section_id}{level_part}] {title}（{chunk_count}个片段）",
+            f"{indent}- [{section_id}{level_part}{leaf_part}] "
+            f"{title}（{chunk_count}个片段）",
         )
+        if summary:
+            shown = summary[:_SUMMARY_PREVIEW]
+            suffix = "…" if len(summary) > _SUMMARY_PREVIEW else ""
+            lines.append(f"{indent}  摘要：{shown}{suffix}")
         for child in getattr(node, "children", []):
             _walk(child, depth + 1)
 

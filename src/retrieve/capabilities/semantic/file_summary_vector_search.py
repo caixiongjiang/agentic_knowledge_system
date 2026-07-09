@@ -2,36 +2,34 @@
 # -*- coding: UTF-8 -*-
 """=================================================
 @PROJECT_NAME: agentic_knowledge_system
-@File    : summary_vector_search.py
-@Author  : caixiongjiang
-@Date    : 2026/02/28
-@Function: 
-    摘要向量语义检索原子能力
-@Modify History:
-         
-@Copyright：Copyright(c) 2024-2026. All Rights Reserved
+@File    : file_summary_vector_search.py
+@Function:
+    文档级摘要向量语义检索原子能力
+    对 Milvus file_summary_store Collection 执行 ANN 检索。
 =================================================="""
 from typing import Any, Dict, List, Optional
 
 from src.client.embedding import EmbeddingClient
 from src.db.milvus import BaseMilvusManager
-from src.db.milvus.repositories.extract.summary_repository import SummaryRepository
+from src.db.milvus.repositories.extract.summary_repository import (
+    FileSummaryRepository,
+)
 from src.retrieve.capabilities.base import CapabilityDescriptor
 from src.retrieve.capabilities.semantic.base_vector_search import BaseVectorSearch
 from src.retrieve.types.result import SummaryItem
 
 
-class SummaryVectorSearch(BaseVectorSearch):
-    """摘要向量语义检索
+class FileSummaryVectorSearch(BaseVectorSearch):
+    """文档级摘要向量语义检索
 
-    对 Milvus summary_store Collection 执行 ANN 向量检索，
-    返回与查询最相关的文档/章节摘要。
+    对 Milvus file_summary_store Collection 执行 ANN 向量检索，
+    返回与查询最相关的文档摘要。
 
-    摘要由后台阶段对 Chunk 或 Document 进行 LLM 总结生成，
-    提供了浓缩后的信息视角。适合需要概览性信息或快速定位相关文档的场景。
+    文档摘要由 FileSummaryService 基于 section 摘要 rollup 生成，
+    提供整篇文档的概览视角。适用于"有没有讲 X 的文档"、文档级主题定位。
 
-    对应 Collection: summary_store
-    对应 Repository: SummaryRepository
+    对应 Collection: file_summary_store
+    对应 Repository: FileSummaryRepository
     """
 
     def __init__(
@@ -39,7 +37,7 @@ class SummaryVectorSearch(BaseVectorSearch):
         embedding_client: Optional[EmbeddingClient] = None,
         milvus_manager: Optional[BaseMilvusManager] = None,
     ) -> None:
-        repository = SummaryRepository(manager=milvus_manager)
+        repository = FileSummaryRepository(manager=milvus_manager)
         super().__init__(repository=repository, embedding_client=embedding_client)
 
     def _build_result_items(self, hits: List[Dict[str, Any]]) -> List[SummaryItem]:
@@ -61,12 +59,12 @@ class SummaryVectorSearch(BaseVectorSearch):
 
     def describe(self) -> CapabilityDescriptor:
         return CapabilityDescriptor(
-            name="summary_vector_search",
-            display_name="摘要向量语义检索",
+            name="file_summary_vector_search",
+            display_name="文档摘要向量语义检索",
             description=(
-                "在 summary_store 中执行向量 ANN 检索，"
-                "召回与查询最相关的文档或章节摘要。"
-                "适用于需要概览信息、快速定位相关文档的场景。"
+                "在 file_summary_store 中执行向量 ANN 检索，"
+                "召回与查询最相关的文档级摘要。"
+                "适用于需要概览整篇文档、快速定位相关文档的场景。"
             ),
             input_schema={
                 "query_text": "str - 自然语言查询（与 query_vector 二选一）",

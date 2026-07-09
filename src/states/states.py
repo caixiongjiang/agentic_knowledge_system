@@ -29,9 +29,9 @@ class IndexStage(str, Enum):
     INDEX_START = "index_start"
     PARSE_END = "parse_end"
     SPLIT_END = "split_end"
+    SECTION_SUMMARY_END = "section_summary_end"
     SUMMARY_END = "summary_end"
     GRAPH_END = "graph_end"
-    IMAGE_END = "image_end"
     ANALYZE_END = "analyze_end"
 
 
@@ -55,7 +55,7 @@ def stage_to_progress(stage: str) -> float:
     """
     根据阶段名称返回对应的进度值
 
-    后台阶段（summary_end / graph_end / image_end / analyze_end）不影响前台进度，
+    后台阶段（summary_end / graph_end / analyze_end）不影响前台进度，
     一律返回 1.0（前台已完成）。
 
     Args:

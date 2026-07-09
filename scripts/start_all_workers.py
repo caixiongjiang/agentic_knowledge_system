@@ -27,16 +27,19 @@
     Worker 列表（第一层：任务流转）:
     1. file_parser      - 文件解析 (knowledge_base.index.start → knowledge_base.parse.end)
     2. text_splitter    - 文本分割 (knowledge_base.parse.end → knowledge_base.split.end)
-    3. file_summary     - 文件摘要 (knowledge_base.split.end → knowledge_base.summary.end)
-    4. kg_extractor     - 知识图谱抽取 (knowledge_base.summary.end → knowledge_base.graph.end)
-    5. image_understand - 图片理解 (knowledge_base.summary.end → knowledge_base.image.end)
-    6. text_analyzer    - 文本分析 (knowledge_base.image.end → 完成)
-    
+    3. section_summary  - Section 摘要 (knowledge_base.split.end → knowledge_base.section_summary.end)
+    4. file_summary     - 文件摘要 (knowledge_base.section_summary.end → knowledge_base.summary.end)
+    5. kg_extractor     - 知识图谱抽取 (knowledge_base.summary.end → knowledge_base.graph.end)
+    6. text_analyzer    - 文本分析 / Atomic QA (knowledge_base.summary.end → db_write.embedding.start)
+
     Writer 列表（第二层：数据库写入）:
     7. embedding_milvus_writer - 向量写入 (db_write.embedding.start → Milvus)
     8. neo4j_writer     - 图谱写入 (db_write.graph.start → Neo4j)
     9. mysql_writer     - 元数据写入 (db_write.meta.start → MySQL)
     10. mongo_writer    - 文档写入 (db_write.mongo.start → MongoDB)
+
+    注: image_understand 已从后台 pipeline 移除，图片理解改为 agent 需要时临时调用
+        （见 src/service/chat/image_chunk_reader_service.py）。
     
     前置条件:
     - Kafka: 192.168.201.14:9092
@@ -66,7 +69,11 @@ from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
 from src.db.kafka.types import ConsumerGroup
 from src.types.messages.index import IndexStartMessage, ParseEndMessage, SplitEndMessage
-from src.types.messages.extract import SummaryEndMessage, GraphEndMessage, ImageEndMessage
+from src.types.messages.extract import (
+    SummaryEndMessage,
+    GraphEndMessage,
+    SectionSummaryEndMessage,
+)
 from src.types.messages.db_write import (
     EmbeddingWriteMessage, GraphWriteMessage, MetaWriteMessage, MongoWriteMessage,
     MongoCollection, MySQLTable, MilvusCollection,
@@ -159,15 +166,30 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         group_id=ConsumerGroup.TEXT_SPLITTER,
         description="文本分割 Worker (递归分割、语言检测、生成 Chunk)"
     ),
+    "section_summary": WorkerConfig(
+        name="section_summary",
+        class_name="SectionSummaryWorker",
+        module_path="src.db.kafka.workers.section_summary_worker",
+        input_topic=KafkaTopics.SPLIT_END,
+        output_topics=[
+            KafkaTopics.SECTION_SUMMARY_END,
+            KafkaTopics.DB_WRITE_META,
+            KafkaTopics.DB_WRITE_MONGO,
+            KafkaTopics.DB_WRITE_EMBEDDING,
+        ],
+        message_class=SplitEndMessage,
+        group_id=ConsumerGroup.SECTION_SUMMARY,
+        description="Section 摘要 Worker (基于 section 下 chunk 生成 section 级摘要)"
+    ),
     "file_summary": WorkerConfig(
         name="file_summary",
         class_name="FileSummaryWorker",
         module_path="src.db.kafka.workers.file_summary_worker",
-        input_topic=KafkaTopics.SPLIT_END,
+        input_topic=KafkaTopics.SECTION_SUMMARY_END,
         output_topics=[KafkaTopics.SUMMARY_END],
-        message_class=SplitEndMessage,
+        message_class=SectionSummaryEndMessage,
         group_id=ConsumerGroup.FILE_SUMMARY,
-        description="文件摘要 Worker (生成文件级摘要)"
+        description="文件摘要 Worker (基于 section 摘要 rollup 生成文件级摘要)"
     ),
     "kg_extractor": WorkerConfig(
         name="kg_extractor",
@@ -179,25 +201,15 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         group_id=ConsumerGroup.KG_EXTRACTOR,
         description="知识图谱抽取 Worker (抽取实体关系、事件)"
     ),
-    "image_understand": WorkerConfig(
-        name="image_understand",
-        class_name="ImageUnderstandWorker",
-        module_path="src.db.kafka.workers.image_understand_worker",
-        input_topic=KafkaTopics.SUMMARY_END,
-        output_topics=[KafkaTopics.IMAGE_END, KafkaTopics.DB_WRITE_EMBEDDING],
-        message_class=SummaryEndMessage,
-        group_id=ConsumerGroup.IMAGE_UNDERSTAND,
-        description="图片理解 Worker (VLM 生成图片描述)"
-    ),
     "text_analyzer": WorkerConfig(
         name="text_analyzer",
         class_name="TextAnalyzerWorker",
         module_path="src.db.kafka.workers.text_analyzer_worker",
-        input_topic=KafkaTopics.IMAGE_END,
+        input_topic=KafkaTopics.SUMMARY_END,
         output_topics=[KafkaTopics.DB_WRITE_EMBEDDING],
-        message_class=ImageEndMessage,
+        message_class=SummaryEndMessage,
         group_id=ConsumerGroup.TEXT_ANALYZER,
-        description="文本分析 Worker (生成 summary 和 atomic_qa)"
+        description="文本分析 Worker (Atomic QA 抽取，与 KGExtractor 并行消费 summary.end)"
     ),
     
     # ==================== 第二层：DB Writers ====================
@@ -414,6 +426,7 @@ class WorkerManager:
                 chunk_section_document_repo,
                 section_document_repo,
             )
+            from src.db.mysql.repositories.extract import section_summary_repo
             worker._session_factory = self.mysql_manager.SessionLocal
             worker.register_repositories({
                 MySQLTable.ELEMENT_META_INFO: element_meta_info_repo,
@@ -421,6 +434,7 @@ class WorkerManager:
                 MySQLTable.SECTION_META_INFO: section_meta_info_repo,
                 MySQLTable.CHUNK_SECTION_DOCUMENT: chunk_section_document_repo,
                 MySQLTable.SECTION_DOCUMENT: section_document_repo,
+                MySQLTable.SECTION_SUMMARY: section_summary_repo,
             })
         elif worker_name == "embedding_milvus_writer":
             from src.client.embedding import create_embedding_client, create_sparse_embedding_client
@@ -428,7 +442,8 @@ class WorkerManager:
                 ChunkRepository,
                 SectionRepository,
                 EnhancedChunkRepository,
-                SummaryRepository,
+                FileSummaryRepository,
+                SectionSummaryRepository,
                 AtomicQARepository,
                 SPORepository,
                 TagRepository,
@@ -441,7 +456,8 @@ class WorkerManager:
                 MilvusCollection.CHUNK: ChunkRepository,
                 MilvusCollection.SECTION: SectionRepository,
                 MilvusCollection.ENHANCED_CHUNK: EnhancedChunkRepository,
-                MilvusCollection.SUMMARY: SummaryRepository,
+                MilvusCollection.FILE_SUMMARY: FileSummaryRepository,
+                MilvusCollection.SECTION_SUMMARY: SectionSummaryRepository,
                 MilvusCollection.ATOMIC_QA: AtomicQARepository,
                 MilvusCollection.SPO: SPORepository,
                 MilvusCollection.TAG: TagRepository,
@@ -578,7 +594,7 @@ def print_worker_list():
     
     # 第一层：Pipeline Workers（每个独立 Group）
     print("\n【第一层：Pipeline Workers】（每个 Worker 独立 Group）")
-    for name in ["file_parser", "text_splitter", "file_summary", "kg_extractor", "image_understand", "text_analyzer"]:
+    for name in ["file_parser", "text_splitter", "section_summary", "file_summary", "kg_extractor", "text_analyzer"]:
         if name in WORKER_CONFIGS:
             config = WORKER_CONFIGS[name]
             print(f"    {name:25} - {config.description}  [{config.group_id}]")
@@ -593,7 +609,7 @@ def print_worker_list():
     print("\n" + "=" * 80)
     print("用法:")
     print("  启动所有 Workers:        uv run python scripts/start_all_workers.py")
-    print("  启动所有 Pipeline Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,file_summary,kg_extractor,image_understand,text_analyzer")
+    print("  启动所有 Pipeline Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,section_summary,file_summary,kg_extractor,text_analyzer")
     print("  启动所有 DB Writers:     uv run python scripts/start_all_workers.py --workers embedding_milvus_writer,neo4j_writer,mysql_writer,mongo_writer")
     print("  启动指定 Workers:        uv run python scripts/start_all_workers.py --workers file_parser,text_splitter")
     print("  查看可用 Workers:        uv run python scripts/start_all_workers.py --list")

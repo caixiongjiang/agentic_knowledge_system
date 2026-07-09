@@ -29,7 +29,8 @@ def _register_defaults() -> Dict[str, Type[BaseCapability]]:
         EnhancedChunkVectorSearch,
         QAVectorSearch,
         SectionVectorSearch,
-        SummaryVectorSearch,
+        SectionSummaryVectorSearch,
+        FileSummaryVectorSearch,
     )
     from src.retrieve.capabilities.lexical import (
         BM25Search,
@@ -42,7 +43,8 @@ def _register_defaults() -> Dict[str, Type[BaseCapability]]:
         "enhanced_chunk_dense": EnhancedChunkVectorSearch,
         "section_dense": SectionVectorSearch,
         "qa_dense": QAVectorSearch,
-        "summary_dense": SummaryVectorSearch,
+        "section_summary_dense": SectionSummaryVectorSearch,
+        "file_summary_dense": FileSummaryVectorSearch,
         "bm25_sparse": BM25Search,
         "exact_match": ExactMatch,
         "boolean_search": BooleanSearch,

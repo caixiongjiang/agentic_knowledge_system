@@ -9,13 +9,13 @@
     TextSplitter Service - 文本切分服务
     
     核心职责:
-    - 从数据库加载 ParseResult
+    - 从 ParseEndMessage 自包含 payload 构造 ParseResult（不读数据库）
     - 执行文本切分
     - 生成 SplitResult
     
     架构说明:
     TextSplitterService (本类) → 完整流程编排
-      1. 从 MySQL/MongoDB 加载 ParseResult
+      1. 从 ParseEndMessage.elements 构造 ParseResult（自包含，不读库）
       2. 调用切分器处理文本、表格、图片、代码
       3. 生成 Section 和 Chunk
       4. 返回 SplitResult
@@ -27,9 +27,8 @@
 
 from typing import List, Optional, Dict, Any, Tuple
 from loguru import logger
-from sqlalchemy.orm import Session
 
-from src.types.models.parse_result import ParseResult, ElementInfo, ElementType
+from src.types.models.parse_result import ParseResult, ParseStatus, ElementInfo, ElementType
 from src.types.models.split_result import (
     SplitResult,
     SplitStatus,
@@ -37,15 +36,12 @@ from src.types.models.split_result import (
     ChunkInfo
 )
 from src.utils.component_config_manager import get_component_config_manager
+from src.utils.language_detector import detect_language
 from src.index.common_file_extract.splitter.models import SplitConfig
 from src.index.common_file_extract.splitter.text_splitter import TextSplitter
 from src.index.common_file_extract.splitter.table_splitter import TableSplitter
 from src.index.common_file_extract.splitter.element_processor import ElementProcessor
 from src.index.common_file_extract.splitter.text_cleaner import TextCleaner
-
-# 数据库导入
-from src.db.mysql.repositories.base.element_meta_info_repo import element_meta_info_repo
-from src.db.mongodb.repositories.element_data_repository import element_data_repository
 
 
 class TextSplitterService:
@@ -53,9 +49,14 @@ class TextSplitterService:
     文本切分服务
     
     核心功能：
-    - 从数据库加载 ParseResult
+    - 从 ParseEndMessage 自包含 payload 构造 ParseResult（不读数据库）
     - 执行文本切分
     - 生成 SplitResult
+    
+    设计原则：
+    - **不读数据库**：parse 阶段的 element 写库走 db_write.* 异步 Consumer，
+      与 parse.end 的消费无顺序保证；故 split 的输入必须完全来自
+      ParseEndMessage 消息体本身，避免「读库时数据尚未落盘」的竞态。
     """
     
     def __init__(self, config: Optional[SplitConfig] = None):
@@ -79,111 +80,101 @@ class TextSplitterService:
         self.element_processor = ElementProcessor()
         self.text_cleaner = TextCleaner()
     
-    async def load_parse_result_from_db(
-        self,
-        user_id: str,
-        file_id: str,
-        document_id: str,
-        mysql_session: Session,
-        knowledge_base_id: Optional[str] = None
-    ) -> ParseResult:
+    @staticmethod
+    def _list_to_str(value: Any) -> Optional[str]:
+        """将 list 转为 str（取首个元素），兼容已是 str / None 的情况。
+
+        MinerU 的 image_caption/image_footnote/table_caption/table_footnote 在 content_list
+        里是 list 形态，ElementInfo 需要 str。与历史 load 逻辑保持一致。
         """
-        从数据库加载 ParseResult
-        
+        if isinstance(value, list) and len(value) > 0:
+            return value[0]
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def build_parse_result_from_payload(message: "ParseEndMessage") -> ParseResult:
+        """
+        从 ParseEndMessage 的自包含 elements payload 构造 ParseResult。
+
+        不访问任何数据库；输入完全来自消息体，消除 parse 写库异步导致的
+        parse→split 读库竞态（历史问题：MySQL element_meta 已写、MongoDB
+        element_data 未写时 split 读到空 text，产生空标题 section / 空 chunk）。
+
         Args:
-            user_id: 用户ID
-            file_id: 文件ID
-            document_id: Document ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）
-            mysql_session: MySQL会话
-            knowledge_base_id: 知识库ID
-        
+            message: ParseEndMessage（含 elements 自包含字段）
+
         Returns:
-            ParseResult
+            ParseResult（elements 已填充）
         """
-        logger.info(f"从数据库加载ParseResult: user_id={user_id}, document_id={document_id}")
-        
-        # 1. 从 MySQL 通过 document_id 获取所有 ElementMetaInfo
-        elements_meta = element_meta_info_repo.get_by_document_id(mysql_session, document_id)
-        
-        logger.debug(f"从MySQL加载了 {len(elements_meta)} 个元素元信息")
-        
-        if not elements_meta:
-            logger.warning(f"未找到任何元素元信息: document_id={document_id}")
-            return ParseResult(
-                user_id=user_id,
-                file_id=file_id,
+        elements_data = message.elements or []
+        document_id = message.document_id
+        list_to_str = TextSplitterService._list_to_str
+
+        elements: List[ElementInfo] = []
+        for e in elements_data:
+            element_id = e.get("element_id")
+            if not element_id:
+                continue
+            try:
+                element_type = ElementType(e.get("element_type"))
+            except Exception:
+                logger.warning(
+                    f"build_parse_result_from_payload: 未知 element_type={e.get('element_type')}，"
+                    f"按 text 兜底"
+                )
+                element_type = ElementType.TEXT
+
+            elements.append(ElementInfo(
+                element_id=element_id,
                 document_id=document_id,
-                filename="unknown",
-                status="failed",
-                error_message="未找到解析数据",
-                elements=[],
-                knowledge_base_id=knowledge_base_id
-            )
-        
-        # 2. 提取所有 element_id
-        element_ids = [elem.element_id for elem in elements_meta]
-        
-        # 3. 从 MongoDB 批量获取内容
-        elements_data = await element_data_repository.get_by_ids(element_ids)
-        logger.debug(f"从MongoDB加载了 {len(elements_data)} 个元素内容")
-        
-        # 4. 构建 element_id -> content 的映射
-        content_map = {elem.id: elem for elem in elements_data}
-        
-        # 5. 合并元信息和内容，构建 ElementInfo 列表
-        elements = []
-        for elem_meta in elements_meta:
-            elem_content = content_map.get(elem_meta.element_id)
-            
-            # 辅助函数：将列表转换为字符串（MongoDB 存储为列表，ElementInfo 需要字符串）
-            def list_to_str(value):
-                """将列表转换为字符串，如果是列表则取第一个元素"""
-                if isinstance(value, list) and len(value) > 0:
-                    return value[0]
-                return value if isinstance(value, str) else None
-            
-            # 构建 ElementInfo
-            element_info = ElementInfo(
-                element_id=elem_meta.element_id,
-                document_id=elem_meta.document_id,
-                element_index=elem_meta.element_index,
-                element_type=ElementType(elem_meta.element_type),
-                page_index=elem_meta.page_index,
-                page_position=eval(elem_meta.page_position) if elem_meta.page_position else None,
-                # 文本特定字段
-                text=elem_content.content.get("text") if elem_content else None,
-                text_level=elem_meta.text_level,
-                # 图片特定字段
-                bucket_name=elem_meta.bucket_name,
-                image_file_path=elem_meta.image_file_path,
-                image_file_name=elem_meta.image_file_name,
-                image_file_type=elem_meta.image_file_type,
-                image_file_format=elem_meta.image_file_format,
-                image_file_suffix=elem_meta.image_file_suffix,
-                image_caption=list_to_str(elem_content.content.get("image_caption")) if elem_content else None,
-                image_footnote=list_to_str(elem_content.content.get("image_footnote")) if elem_content else None,
-                # 表格特定字段
-                table_body=elem_content.content.get("table_body") if elem_content else None,
-                table_caption=list_to_str(elem_content.content.get("table_caption")) if elem_content else None,
-                table_footnote=list_to_str(elem_content.content.get("table_footnote")) if elem_content else None,
-            )
-            elements.append(element_info)
-        
-        # 6. 构建 ParseResult
-        parse_result = ParseResult(
-            user_id=user_id,
-            file_id=file_id,
-            document_id=document_id,
-            filename="unknown",  # TODO: 从 workspace_file_system 表获取
-            status="success",
-            elements=elements,
-            total_pages=max((e.page_index or 0) for e in elements) + 1 if elements else 0,
-            knowledge_base_id=knowledge_base_id
+                element_index=int(e.get("element_index") or 0),
+                element_type=element_type,
+                page_index=e.get("page_index"),
+                page_position=e.get("page_position") or None,
+                # 文本特定
+                text=e.get("text"),
+                text_level=e.get("text_level"),
+                # 图片特定
+                bucket_name=e.get("bucket_name"),
+                image_file_path=e.get("image_file_path"),
+                image_file_name=e.get("image_file_name"),
+                image_file_type=e.get("image_file_type"),
+                image_file_format=e.get("image_file_format"),
+                image_file_suffix=e.get("image_file_suffix"),
+                image_caption=list_to_str(e.get("image_caption")),
+                image_footnote=list_to_str(e.get("image_footnote")),
+                # 表格特定
+                table_body=e.get("table_body"),
+                table_caption=list_to_str(e.get("table_caption")),
+                table_footnote=list_to_str(e.get("table_footnote")),
+            ))
+
+        total_pages = message.total_pages or (
+            max((el.page_index or 0) for el in elements) + 1 if elements else 0
         )
-        
-        logger.info(f"ParseResult加载完成: {len(elements)} 个元素, {parse_result.total_pages} 页")
+        status = ParseStatus.SUCCESS if message.status == "success" else ParseStatus.FAILED
+
+        parse_result = ParseResult(
+            user_id=message.user_id,
+            file_id=message.file_id,
+            document_id=document_id,
+            filename=message.filename or "unknown",
+            status=status,
+            elements=elements,
+            parse_tool=message.parse_tool or "unknown",
+            total_pages=total_pages,
+            total_chars=message.total_chars or 0,
+            document_language=message.document_language or "unknown",
+            knowledge_base_id=message.knowledge_base_id,
+            knowledge_base_name=message.knowledge_base_name,
+        )
+
+        logger.info(
+            f"ParseResult 从消息 payload 构造完成: elements={len(elements)}, "
+            f"pages={parse_result.total_pages}"
+        )
         return parse_result
-    
+
     def _map_chunks_to_elements(
         self,
         merged_text: str,
@@ -383,7 +374,8 @@ class TextSplitterService:
                 image_chunk = self.element_processor.create_image_chunk(
                     element=element,
                     section_id=current_section_id,
-                    document_id=document_id
+                    document_id=document_id,
+                    language=parse_result.document_language
                 )
                 chunks.append(image_chunk)
                 
@@ -483,6 +475,24 @@ class TextSplitterService:
                 f"填充 vector_text: {vector_count}/{len(chunks)}，"
                 f"enhanced_vector_text: {enhanced_count}/{len(chunks)}"
             )
+
+        # chunk 级语言检测：对每个 chunk 的 vector_text 跑 detect_language（Unicode 脚本
+        # 统计，无第三方依赖），覆盖前面 create_*_chunk 传入的文档级语言初值。
+        # - text/table/code chunk：按实际正文检测，混合语言文档可区分到 chunk 级
+        # - image chunk：按 caption/footnote 拼出的 vector_text 检测
+        # - vector_text 为空（理论上不应出现）：回退文档级 document_language
+        # 与 SectionSummaryService 的 per-section 检测策略一致。
+        detected_count = 0
+        doc_lang = parse_result.document_language or "unknown"
+        for chunk in chunks:
+            chunk_language = detect_language(chunk.vector_text, fallback=doc_lang)
+            chunk.language = chunk_language
+            if chunk_language != "unknown":
+                detected_count += 1
+        logger.debug(
+            f"chunk 语言检测完成: {detected_count}/{len(chunks)} 识别成功，"
+            f"document_language={doc_lang}"
+        )
         
         # 计算总字符数
         total_chars = sum(

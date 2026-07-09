@@ -45,7 +45,8 @@ SEMANTIC_ROUTE_TARGETS = {
     "enhanced_chunk_dense": SemanticTarget.ENHANCED,
     "section_dense": SemanticTarget.SECTION,
     "qa_dense": SemanticTarget.ATOMIC_QA,
-    "summary_dense": SemanticTarget.SUMMARY,
+    "section_summary_dense": SemanticTarget.SECTION_SUMMARY,
+    "file_summary_dense": SemanticTarget.FILE_SUMMARY,
 }
 
 #: 字面 / 词法类路由名集合

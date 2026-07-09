@@ -24,8 +24,10 @@ SCHEMA: ToolSchema = {
         "name": NAME,
         "description": (
             "获取文档的骨架结构（目录树），帮助理解整体组织。"
-            "返回每个章节的标题 / section_id / 层级 (Lk) / 片段数，仅含目录、不含正文。"
+            "返回每个章节的标题 / section_id / 层级(Lk) / 是否叶子 / 片段数 / 摘要预览，"
+            "含目录和章节摘要，不含 chunk 正文。"
             "适用于单文档问答的「先看地图」入口，或需要定位相关章节时使用。"
+            "命中目标 section 后可用 read_chunks 或 drill_down 下钻其 chunk_id_list。"
         ),
         "parameters": {
             "type": "object",

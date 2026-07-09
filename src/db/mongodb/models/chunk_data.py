@@ -34,6 +34,7 @@ class ChunkData(BaseDocument):
     - ``enhanced_text``  ↔ Milvus ``enhanced_chunk_store`` 展示增强文本（可空）
     - ``translation``    多语言翻译
     - ``atomic_qa``      原子问答对（后续填充）
+    - ``language``       chunk 语言（split 阶段按 vector_text 实测，与 Milvus 一致）
     - ``vlm_description`` VLM 图片描述历史快照（可选，高级阶段写入）
 
     text_meta 结构（按 chunk_type）：
@@ -93,6 +94,15 @@ class ChunkData(BaseDocument):
     atomic_qa: List[Any] = Field(
         default_factory=list,
         description="chunk原子问答对列表"
+    )
+
+    language: Optional[str] = Field(
+        None,
+        description=(
+            "chunk 语言（zh / en / ja / ko / ru / ar / hi / th / unknown），"
+            "由 split 阶段对 vector_text 跑 detect_language 得到，按 chunk 级实测；"
+            "供 MongoDB 元数据层按语言过滤，与 Milvus chunk_store.language 一致。"
+        )
     )
 
     vlm_description: Optional[str] = Field(

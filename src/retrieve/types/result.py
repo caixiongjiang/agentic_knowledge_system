@@ -83,11 +83,23 @@ class ElementItem(BaseModel):
 
 
 class SkeletonNode(BaseModel):
-    """文档骨架树的节点"""
+    """文档骨架树的节点
+
+    每个 section 节点携带：
+    - title: section 标题
+    - summary: section 摘要文本（由 SectionSummaryService 生成，父节点为 rollup 聚合）
+    - is_leaf: 是否叶子 section（True=挂 chunk 的叶子；False=父 section）
+    - chunk_count: 该 section 直接关联的 chunk 数量
+    - chunk_id_list: 该 section 及其所有后代叶子的 chunk_id 列表（用于 agent 直接下钻）
+    - children: 子 section 节点
+    """
     section_id: str
     title: Optional[str] = None
     level: int = 1
     chunk_count: int = 0
+    summary: Optional[str] = None
+    is_leaf: Optional[bool] = None
+    chunk_id_list: List[str] = Field(default_factory=list)
     children: List["SkeletonNode"] = Field(default_factory=list)
 
 

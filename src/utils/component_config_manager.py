@@ -26,10 +26,10 @@ class ComponentConfigManager:
     负责加载和管理 config/components.json 中的所有组件配置，包括：
     - FileParser（文件解析器）
     - TextSplitter（文本切分器）
+    - SectionSummary（Section 摘要）
     - FileSummary（文件摘要）
     - KGExtractor（知识图谱提取）
-    - ImageUnderstand（图片理解）
-    - TextAnalyzer（文本分析器）
+    - TextAnalyzer（文本分析器 / Atomic QA）
     - RoutePlanner（检索管线 LLM₁；支持 llm 内联或 llm_preset）
     - 各种 Writers（MySQL、MongoDB、Neo4j、Embedding+Milvus）
     """
@@ -142,14 +142,14 @@ class ComponentConfigManager:
     def get_file_summary_config(self) -> Dict[str, Any]:
         """获取 FileSummary 组件配置"""
         return self.get_component_config("file_summary")
+
+    def get_section_summary_config(self) -> Dict[str, Any]:
+        """获取 SectionSummary 组件配置"""
+        return self.get_component_config("section_summary")
     
     def get_kg_extractor_config(self) -> Dict[str, Any]:
         """获取 KGExtractor 组件配置"""
         return self.get_component_config("kg_extractor")
-    
-    def get_image_understand_config(self) -> Dict[str, Any]:
-        """获取 ImageUnderstand 组件配置"""
-        return self.get_component_config("image_understand")
     
     def get_text_analyzer_config(self) -> Dict[str, Any]:
         """获取 TextAnalyzer 组件配置"""

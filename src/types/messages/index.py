@@ -218,6 +218,18 @@ class ParseEndMessage(BaseMessage):
         description="文档中的表格信息列表"
     )
 
+    # Elements（自包含，供下游 TextSplitterWorker 直接消费，避免 parse→split 读库竞态）
+    elements: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "文档全部元素（自包含）。每项字段：element_id, element_index, page_index, "
+            "element_type, page_position, text_level, text, image_caption, image_footnote, "
+            "table_body, table_caption, table_footnote, bucket_name, image_file_path, "
+            "image_file_name, image_file_type, image_file_format, image_file_suffix。"
+            "split 阶段从此字段构造 ParseResult，不回读 MySQL/MongoDB。"
+        )
+    )
+
 
 class SplitEndMessage(BaseMessage):
     """
@@ -225,8 +237,9 @@ class SplitEndMessage(BaseMessage):
     
     文本分割完成，生成多个 Chunk。
     发送到: knowledge_base.split.end
-    消费者: 
-    - FileSummary（后台串行）
+    消费者:
+    - SectionSummary（后台串行，基础抽取第一步）
+    - FileSummary（历史，已重新布线到 section_summary.end）
     - EmbeddingMilvusWriter（数据库写入）
     """
     
@@ -234,7 +247,20 @@ class SplitEndMessage(BaseMessage):
     chunks: List[Dict[str, Any]] = Field(
         ...,
         min_length=1,
-        description="分割后的文本 Chunks"
+        description=(
+            "分割后的文本 Chunks（自包含，供下游后台 Worker 直接消费，避免读库竞态）。"
+            "每项字段：chunk_id, section_id, chunk_type, text, image_caption, "
+            "image_footnote, page_index, language。"
+        )
+    )
+
+    # Sections（v1.1 新增，自包含，供 SectionSummaryWorker 直接消费）
+    sections: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "文档 section 树（自包含）。每项字段：section_id, title, level, "
+            "page_index, chunk_id_list。后台阶段从此字段取数，不回读 MySQL/MongoDB。"
+        )
     )
     
     # 分割策略
@@ -272,4 +298,20 @@ class SplitEndMessage(BaseMessage):
     brief_summary: Optional[str] = Field(
         default=None,
         description="文档简短摘要（前台显示用）"
+    )
+
+    # ========== 后台抽取链路所需溯源字段（v1.1 新增，可选）==========
+    # 供下游 SectionSummaryWorker / FileSummaryWorker 加载数据用；
+    # 留空时下游需自行按 file_id 反查 workspace_file_system。
+    document_id: Optional[str] = Field(
+        default=None,
+        description="文档 ID（document-{uuid}，基于 file_sha256 的后台唯一标识）"
+    )
+    knowledge_base_id: Optional[str] = Field(
+        default=None,
+        description="知识库 ID"
+    )
+    knowledge_base_name: Optional[str] = Field(
+        default=None,
+        description="知识库名称"
     )

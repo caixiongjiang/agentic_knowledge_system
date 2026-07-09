@@ -353,36 +353,74 @@ class TextSplitterServiceE2ETest:
         self.mysql_session.commit()
         logger.success(f"✓ 成功插入 {len(elements)} 个 Element 到数据库")
     
-    async def test_load_from_db(self) -> ParseResult:
+    async def test_load_from_db(self, elements: List[ElementInfo]) -> ParseResult:
         """
-        测试从数据库加载 ParseResult
+        测试从 ParseEndMessage 自包含 payload 构造 ParseResult（替代历史读库路径）
+        
+        Args:
+            elements: 模拟的 ElementInfo 列表（用于构造 ParseEndMessage.elements payload）
         
         Returns:
             ParseResult
         """
         logger.info("-" * 80)
-        logger.info("测试1: 从数据库加载 ParseResult")
+        logger.info("测试1: 从 ParseEndMessage payload 构造 ParseResult")
         logger.info("-" * 80)
-        
-        parse_result = await self.split_service.load_parse_result_from_db(
+
+        from src.types.messages.index import ParseEndMessage
+
+        # 从 ElementInfo 列表构造自包含 elements payload（与 file_parser_service 产出形态一致）
+        elements_payload = []
+        for element in elements:
+            elements_payload.append({
+                "element_id": element.element_id,
+                "element_index": element.element_index,
+                "page_index": element.page_index,
+                "element_type": element.element_type,
+                "page_position": element.page_position,
+                "text_level": element.text_level,
+                "bucket_name": element.bucket_name,
+                "image_file_path": element.image_file_path,
+                "image_file_name": element.image_file_name,
+                "image_file_type": element.image_file_type,
+                "image_file_format": element.image_file_format,
+                "image_file_suffix": element.image_file_suffix,
+                "text": element.text or "",
+                "image_caption": [element.image_caption] if element.image_caption else None,
+                "image_footnote": [element.image_footnote] if element.image_footnote else None,
+                "table_body": element.table_body or "",
+                "table_caption": [element.table_caption] if element.table_caption else None,
+                "table_footnote": [element.table_footnote] if element.table_footnote else None,
+            })
+
+        parse_end_msg = ParseEndMessage(
             user_id=self.user_id,
             file_id=self.file_id,
+            filename=self.filename,
+            status="success",
+            total_pages=1,
+            total_chars=0,
+            parse_tool="mineru",
+            document_language="zh",
             document_id=self.document_id,
-            mysql_session=self.mysql_session,
-            knowledge_base_id=self.knowledge_base_id
+            knowledge_base_id=self.knowledge_base_id,
+            knowledge_base_name=self.knowledge_base_name,
+            elements=elements_payload,
         )
-        
+
+        parse_result = self.split_service.build_parse_result_from_payload(parse_end_msg)
+
         # 验证
         assert parse_result is not None, "ParseResult 不应为 None"
         assert parse_result.user_id == self.user_id
         assert parse_result.file_id == self.file_id
         assert len(parse_result.elements) == 5, f"应该有5个元素，实际有{len(parse_result.elements)}个"
-        
-        logger.success("✓ 成功从数据库加载 ParseResult")
+
+        logger.success("✓ 成功从 ParseEndMessage payload 构造 ParseResult")
         logger.info(f"  - user_id: {parse_result.user_id}")
         logger.info(f"  - file_id: {parse_result.file_id}")
         logger.info(f"  - elements: {len(parse_result.elements)}")
-        
+
         return parse_result
     
     async def test_split_document(self, parse_result: ParseResult) -> SplitResult:
@@ -616,8 +654,8 @@ class TextSplitterServiceE2ETest:
             elements = self.create_mock_elements()
             await self.insert_elements_to_db(elements)
             
-            # 测试1: 从数据库加载
-            parse_result = await self.test_load_from_db()
+            # 测试1: 从 ParseEndMessage payload 构造 ParseResult
+            parse_result = await self.test_load_from_db(elements)
             
             # 测试2: 执行切分
             split_result = await self.test_split_document(parse_result)

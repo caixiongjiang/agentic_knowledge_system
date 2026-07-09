@@ -75,9 +75,9 @@ class ConsumerGroup:
     # Pipeline Worker Groups（各自独立）
     FILE_PARSER = "group-file-parser"
     TEXT_SPLITTER = "group-text-splitter"
+    SECTION_SUMMARY = "group-section-summary"
     FILE_SUMMARY = "group-file-summary"
     KG_EXTRACTOR = "group-kg-extractor"
-    IMAGE_UNDERSTAND = "group-image-understand"
     TEXT_ANALYZER = "group-text-analyzer"
     
     # DB Writer Group（4 个 Writer 共享，各自消费不同 Topic）
@@ -119,13 +119,13 @@ class ProcessingStage(str, Enum):
     INDEX_START = "index_start"
     PARSE_END = "parse_end"
     SPLIT_END = "split_end"
-    
-    # 后台串行1
+
+    # 后台串行1：section 摘要 → file 摘要
+    SECTION_SUMMARY_END = "section_summary_end"
     SUMMARY_END = "summary_end"
     
     # 后台并行
     GRAPH_END = "graph_end"
-    IMAGE_END = "image_end"
     
     # 后台串行2
     ANALYZE_END = "analyze_end"

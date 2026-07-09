@@ -42,6 +42,7 @@ class MySQLTable(StrEnum):
     - chunk_summary: Chunk 摘要
     - chunk_atomic_qa: Chunk 原子QA
     - document_summary: Document 摘要
+    - section_summary: Section 摘要
     """
     CHUNK_META_INFO = "chunk_meta_info"
     SECTION_META_INFO = "section_meta_info"
@@ -53,6 +54,7 @@ class MySQLTable(StrEnum):
     CHUNK_SUMMARY = "chunk_summary"
     CHUNK_ATOMIC_QA = "chunk_atomic_qa"
     DOCUMENT_SUMMARY = "document_summary"
+    SECTION_SUMMARY = "section_summary"
 
 
 class MongoCollection(StrEnum):
@@ -80,7 +82,8 @@ class MilvusCollection(StrEnum):
     - enhanced_chunk: 增强 Chunk 向量
 
     Extract 层：
-    - summary: 摘要向量
+    - file_summary: 文档级摘要向量
+    - section_summary: 章节级摘要向量
     - atomic_qa: 原子QA 向量
 
     KG 层：
@@ -90,7 +93,8 @@ class MilvusCollection(StrEnum):
     CHUNK = "chunk"
     SECTION = "section"
     ENHANCED_CHUNK = "enhanced_chunk"
-    SUMMARY = "summary"
+    FILE_SUMMARY = "file_summary"
+    SECTION_SUMMARY = "section_summary"
     ATOMIC_QA = "atomic_qa"
     SPO = "spo"
     TAG = "tag"

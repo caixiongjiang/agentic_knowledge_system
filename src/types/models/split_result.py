@@ -323,6 +323,7 @@ class ChunkInfo(BaseModel):
             "enhanced_text": enhanced_display,
             "translation": self.content.get("translations", []),
             "atomic_qa": [],  # 后续填充
+            "language": self.language,
         }
         return data
 

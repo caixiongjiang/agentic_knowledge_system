@@ -105,7 +105,7 @@ class FileParserService:
         knowledge_type: Optional[str] = None,
         creator: str = "system",
         store_images: bool = True
-    ) -> Tuple[ParseResult, List[Dict], List[Dict]]:
+    ) -> Tuple[ParseResult, List[Dict], List[Dict], List[Dict]]:
         """
         解析文件(核心方法)
         
@@ -114,9 +114,9 @@ class FileParserService:
         2. 保存到临时文件
         3. 调用 FileParser.parse() 进行解析
         4. 上传图片到 MinIO
-        5. 构建 MySQL/MongoDB 数据
+        5. 构建 MySQL/MongoDB 数据 + 自包含 element payload
         6. 清理临时文件
-        7. 返回 ParseResult 和数据库消息
+        7. 返回 ParseResult、数据库消息、elements_payload
         
         Args:
             user_id: 用户ID
@@ -134,10 +134,11 @@ class FileParserService:
             store_images: 是否上传图片到 MinIO
             
         Returns:
-            Tuple[ParseResult, List[Dict], List[Dict]]: 
+            Tuple[ParseResult, List[Dict], List[Dict], List[Dict]]:
                 - ParseResult: 解析结果
                 - MySQL消息列表
                 - MongoDB消息列表
+                - elements_payload（供 ParseEndMessage 自包含携带，消除 parse→split 读库竞态）
             
         Raises:
             Exception: 下载、解析或处理失败
@@ -159,6 +160,7 @@ class FileParserService:
         temp_file_path = None
         mysql_messages = []
         mongodb_messages = []
+        elements_payload: List[Dict[str, Any]] = []
         
         try:
             # 1. 下载文件
@@ -187,9 +189,9 @@ class FileParserService:
                 "knowledge_type": knowledge_type
             }
             
-            # 5. 处理解析结果：上传图片 + 构建数据库消息
+            # 5. 处理解析结果：上传图片 + 构建数据库消息 + 构建 element payload
             logger.info("处理解析结果...")
-            mysql_messages, mongodb_messages = await self._process_parse_result(
+            mysql_messages, mongodb_messages, elements_payload = await self._process_parse_result(
                 parse_result=parse_result,
                 user_id=user_id,
                 file_id=file_id,
@@ -199,7 +201,10 @@ class FileParserService:
                 creator=creator,
                 store_images=store_images
             )
-            logger.info(f"消息构建完成: MySQL={len(mysql_messages)}, MongoDB={len(mongodb_messages)}")
+            logger.info(
+                f"消息构建完成: MySQL={len(mysql_messages)}, MongoDB={len(mongodb_messages)}, "
+                f"elements_payload={len(elements_payload)}"
+            )
             
             # 6. 转换为标准 ParseResult
             result = self._convert_to_parse_result(
@@ -216,7 +221,7 @@ class FileParserService:
             )
             
             logger.info(f"文件解析成功: {result.get_summary()}")
-            return result, mysql_messages, mongodb_messages
+            return result, mysql_messages, mongodb_messages, elements_payload
             
         except Exception as e:
             # 错误处理
@@ -224,7 +229,7 @@ class FileParserService:
             logger.error(error_msg, exc_info=True)
             result.status = ParseStatus.FAILED
             result.error_message = error_msg
-            return result, mysql_messages, mongodb_messages
+            return result, mysql_messages, mongodb_messages, elements_payload
             
         finally:
             # 7. 清理临时文件
@@ -308,9 +313,9 @@ class FileParserService:
         knowledge_base_info: Dict[str, Any],
         creator: str,
         store_images: bool
-    ) -> Tuple[List[Dict], List[Dict]]:
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
         """
-        处理解析结果：上传图片 + 构建数据库消息
+        处理解析结果：上传图片 + 构建数据库消息 + 构建自包含 element payload
         
         Args:
             parse_result: FileParser.parse() 的返回结果
@@ -323,13 +328,15 @@ class FileParserService:
             store_images: 是否上传图片
             
         Returns:
-            Tuple[List[Dict], List[Dict]]: MySQL消息列表, MongoDB消息列表
+            Tuple[List[Dict], List[Dict], List[Dict]]:
+                MySQL消息列表, MongoDB消息列表, elements_payload（供 ParseEndMessage 自包含携带）
         """
         struct_content = parse_result.get("struct_content", {})
         root_pages = struct_content.get("root", [])
         
         mysql_messages = []
         mongodb_messages = []
+        elements_payload: List[Dict[str, Any]] = []
         
         # 遍历每一页
         for page_data in root_pages:
@@ -378,8 +385,32 @@ class FileParserService:
                     element=element
                 )
                 mongodb_messages.append(mongodb_message)
+
+                # 构建自包含 element payload（供 ParseEndMessage 携带，split 阶段直接消费，不读库）
+                # 内容字段保留 MinerU 原始形态（image_caption/footnote、table_caption/footnote 为 list），
+                # 由下游 build_parse_result_from_payload 统一做 list→str 转换。
+                elements_payload.append({
+                    "element_id": element_id,
+                    "element_index": element_index,
+                    "page_index": page_idx,
+                    "element_type": element_type,
+                    "page_position": bbox or None,
+                    "text_level": mysql_message.get("text_level"),
+                    "bucket_name": bucket_name,
+                    "image_file_path": image_file_path,
+                    "image_file_name": mysql_message.get("image_file_name"),
+                    "image_file_type": mysql_message.get("image_file_type"),
+                    "image_file_format": mysql_message.get("image_file_format"),
+                    "image_file_suffix": mysql_message.get("image_file_suffix"),
+                    "text": element.get("text", ""),
+                    "image_caption": element.get("image_caption"),
+                    "image_footnote": element.get("image_footnote"),
+                    "table_body": element.get("table_body", ""),
+                    "table_caption": element.get("table_caption"),
+                    "table_footnote": element.get("table_footnote"),
+                })
         
-        return mysql_messages, mongodb_messages
+        return mysql_messages, mongodb_messages, elements_payload
     
     async def _upload_image(
         self,
@@ -589,7 +620,17 @@ class FileParserService:
         
         # 提取统计信息
         total_pages = parse_result.get("total_pages", 0)
-        
+
+        # 检测文档主语言：MinerU 输出不带语言信息，从全文 md_content 按脚本统计推断。
+        # 采样前 20000 字符以控制开销；结果沿 ParseEndMessage → split → section_summary 透传。
+        from src.utils.language_detector import detect_language
+        md_content = parse_result.get("content", "") or ""
+        document_language = detect_language(md_content[:20000], fallback="unknown")
+        if document_language == "unknown":
+            logger.warning("文档语言检测未识别到可识别脚本，回退 unknown")
+        else:
+            logger.info(f"文档语言检测: {document_language} (sample_chars={min(len(md_content), 20000)})")
+
         # 构建 ParseResult
         result = ParseResult(
             user_id=user_id,
@@ -600,7 +641,8 @@ class FileParserService:
             elements=[],  # 数据将通过 Kafka 异步写入数据库
             parse_tool="mineru",
             total_pages=total_pages,
-            total_chars=0,  # 可以从 MongoDB 异步统计
+            total_chars=len(md_content),
+            document_language=document_language,
             storage_path=storage_path,
             knowledge_base_id=knowledge_base_id,
             knowledge_base_name=knowledge_base_name

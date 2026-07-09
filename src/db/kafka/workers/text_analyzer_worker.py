@@ -3,8 +3,8 @@
 """
 TextAnalyzer Worker
 
-监听: knowledge_base:image:end
-功能: 生成 chunk 级别的 summary 和 atomic_qa
+监听: knowledge_base:summary:end（file_summary 完成后触发）
+功能: 生成 chunk 级 atomic_qa（文档级摘要已在 FileSummary 完成）
 输出: db_write:embedding:start
 """
 
@@ -14,28 +14,28 @@ from loguru import logger
 from src.db.kafka.workers.base_worker import BaseWorker
 from src.db.kafka.producer import KafkaProducer
 from src.db.kafka.topics import KafkaTopics
-from src.types.messages.extract import ImageEndMessage
+from src.types.messages.extract import SummaryEndMessage
 from src.types.messages.db_write import EmbeddingWriteMessage, MilvusCollection
 
 
 class TextAnalyzerWorker(BaseWorker):
     """
     TextAnalyzer Worker
-    
+
     职责:
-    - 监听 image:end 事件(依赖图片理解结果,因为图片是 chunk 的一部分)
-    - 加载文本 chunk 和图片描述
-    - 调用 LLM 生成 chunk 级别的 summary 和 atomic_qa
-    - 发送原始文本到向量化队列
-    
-    输入消息: ImageEndMessage
+    - 监听 summary:end 事件（file_summary 完成后触发，与 KGExtractor 并行）
+    - 加载文本 chunk（图片理解已移出后台 pipeline，图片仅在 agent 需要时临时调用）
+    - 调用 LLM 生成 chunk 级 atomic_qa
+    - 发送 QA 文本到向量化队列
+
+    输入消息: SummaryEndMessage
     输出消息: EmbeddingWriteMessage
-    
+
     配置要求:
     - 资源: 4 CPU, 8GB RAM
     - 扩容触发: Kafka lag > 50
     """
-    
+
     def __init__(
         self,
         *args,
@@ -44,24 +44,24 @@ class TextAnalyzerWorker(BaseWorker):
     ):
         """
         初始化 TextAnalyzer Worker
-        
+
         Args:
             text_analyzer_service: 文本分析服务实例（封装所有业务逻辑）
         """
         super().__init__(*args, **kwargs)
         self._analyzer_service = text_analyzer_service
-    
+
     def get_original_topic(self) -> str:
         """返回监听的 Topic"""
-        return KafkaTopics.IMAGE_END
-    
-    async def process_message_impl(self, message: ImageEndMessage) -> bool:
+        return KafkaTopics.SUMMARY_END
+
+    async def process_message_impl(self, message: SummaryEndMessage) -> bool:
         """
-        处理图片理解完成消息,分析文本
-        
+        处理 file_summary 完成消息，抽取 chunk 级 atomic_qa。
+
         Args:
-            message: ImageEndMessage
-            
+            message: SummaryEndMessage
+
         Returns:
             bool: 是否处理成功
         """
@@ -109,11 +109,11 @@ class TextAnalyzerWorker(BaseWorker):
     
     async def _send_embedding_messages(
         self,
-        message: ImageEndMessage,
+        message: SummaryEndMessage,
         analysis_results: List[Dict]
     ) -> None:
         """
-        发送向量化消息 (summary 和 atomic_qa 文本)
+        发送向量化消息 (atomic_qa 文本)
         
         Args:
             message: 原始消息
@@ -124,25 +124,6 @@ class TextAnalyzerWorker(BaseWorker):
             return
         
         for result in analysis_results:
-            # 发送 summary
-            summary_msg = EmbeddingWriteMessage(
-                user_id=message.user_id,
-                file_id=message.file_id,
-                collection_type=MilvusCollection.SUMMARY,
-                items=[{
-                    "id": f"{result['chunk_id']}_summary",
-                    "text": result["summary"],
-                    "metadata": {"chunk_id": result["chunk_id"]}
-                }],
-                source_stage="text_analyzer",
-                language="zh"
-            )
-            
-            await self._producer.send_message(
-                topic=KafkaTopics.DB_WRITE_EMBEDDING,
-                message=summary_msg
-            )
-            
             # 发送 atomic_qa
             for qa in result["atomic_qa"]:
                 qa_text = f"Q: {qa['question']}\nA: {qa['answer']}"

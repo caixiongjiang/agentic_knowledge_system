@@ -147,7 +147,7 @@ class FileParserWorker(BaseWorker):
             
             # 2. 调用 Service 解析文件
             logger.info("调用 FileParserService.parse_file()...")
-            parse_result, mysql_messages, mongodb_messages = await parser_service.parse_file(
+            parse_result, mysql_messages, mongodb_messages, elements_payload = await parser_service.parse_file(
                 user_id=message.user_id,
                 file_id=message.file_id,
                 filename=message.filename,
@@ -183,7 +183,8 @@ class FileParserWorker(BaseWorker):
             logger.info(
                 f"文件解析成功: file_id={message.file_id}, "
                 f"mysql_messages={len(mysql_messages)}, "
-                f"mongodb_messages={len(mongodb_messages)}"
+                f"mongodb_messages={len(mongodb_messages)}, "
+                f"elements_payload={len(elements_payload)}"
             )
             
             # 3. 发送 MySQL 写入消息到 Kafka
@@ -194,8 +195,8 @@ class FileParserWorker(BaseWorker):
             if mongodb_messages:
                 await self._send_mongodb_messages(message, mongodb_messages)
             
-            # 5. 发送解析完成消息
-            await self._send_parse_end_message(message, parse_result)
+            # 5. 发送解析完成消息（自包含 elements payload，供 split 阶段直接消费）
+            await self._send_parse_end_message(message, parse_result, elements_payload)
             
             # 6. 更新 Redis 进度到 parse_end (40%)
             await self._update_file_progress(
@@ -338,14 +339,16 @@ class FileParserWorker(BaseWorker):
     async def _send_parse_end_message(
         self,
         message: IndexStartMessage,
-        parse_result
+        parse_result,
+        elements_payload: List[Dict[str, Any]]
     ) -> None:
         """
-        发送解析完成消息
+        发送解析完成消息（自包含 elements payload）
         
         Args:
             message: 原始消息
             parse_result: ParseResult 对象
+            elements_payload: 全部 element 数据（供下游 TextSplitterWorker 直接消费，不读库）
         """
         if not self._producer:
             logger.warning("Producer 未配置，无法发送解析完成消息")
@@ -368,7 +371,9 @@ class FileParserWorker(BaseWorker):
             document_id=message.document_id,
             knowledge_base_id=getattr(parse_result, 'knowledge_base_id', None) or message.knowledge_base_id,
             knowledge_base_name=getattr(parse_result, 'knowledge_base_name', None) or message.knowledge_base_name,
-            error_message=parse_result.error_message
+            error_message=parse_result.error_message,
+            # 自包含 element 数据：split 阶段从此字段构造 ParseResult，消除 parse→split 读库竞态
+            elements=elements_payload,
         )
         
         await self._producer.send_message(
@@ -376,7 +381,10 @@ class FileParserWorker(BaseWorker):
             message=parse_end_msg
         )
         
-        logger.debug(f"发送 ParseEndMessage: file_id={message.file_id}")
+        logger.debug(
+            f"发送 ParseEndMessage: file_id={message.file_id}, "
+            f"elements={len(elements_payload)}"
+        )
     
     async def cleanup(self):
         """清理资源"""

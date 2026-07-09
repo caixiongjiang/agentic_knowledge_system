@@ -40,7 +40,8 @@ class EmbeddingMilvusWriter(BaseWriter):
     数据来源:
     - TextSplitter: 原始文本 chunk → MilvusCollection.CHUNK
     - TextSplitter: Section标题+Chunk文本 → MilvusCollection.ENHANCED_CHUNK
-    - Summary: 摘要 → MilvusCollection.SUMMARY
+    - SectionSummary: 章节摘要 → MilvusCollection.SECTION_SUMMARY
+    - FileSummary: 文档摘要 → MilvusCollection.FILE_SUMMARY
     - AtomicQA: 原子QA → MilvusCollection.ATOMIC_QA
     - KG Extract: SPO/Tag → MilvusCollection.SPO / MilvusCollection.TAG
 
@@ -387,6 +388,12 @@ class EmbeddingMilvusWriter(BaseWriter):
         """
         构建 Milvus 插入数据
 
+        通用字段（所有 Collection 都有）从 msg 级别 meta 取；
+        Collection 特有字段（role / type / parent_knowledge_base_id /
+        agent_ids / knowledge_type / label_id / timestamp 等）从
+        item.metadata 取——不同来源（chunk / summary / qa）只需在
+        metadata 里放对应字段，writer 统一透传到 record。
+
         Args:
             item_metadata: 元数据列表
             embeddings: 稠密向量列表
@@ -398,6 +405,18 @@ class EmbeddingMilvusWriter(BaseWriter):
         import time
         now_ts = int(time.time())
         insert_data = []
+
+        # item.metadata 里可能携带的扩展字段名（存在则填入 record）
+        _EXT_FIELDS = (
+            "role",
+            "type",
+            "parent_knowledge_base_id",
+            "parent_knowledge_base_name",
+            "agent_ids",
+            "knowledge_type",
+            "label_id",
+            "timestamp",
+        )
 
         for idx, (meta, embedding) in enumerate(zip(item_metadata, embeddings)):
             chunk_meta = meta.get("item_metadata", {})
@@ -412,6 +431,14 @@ class EmbeddingMilvusWriter(BaseWriter):
                 "create_time": now_ts,
                 "update_time": now_ts,
             }
+
+            # 从 item.metadata 透传扩展字段（非 None 才写入，避免覆盖默认值）
+            for field_name in _EXT_FIELDS:
+                if field_name in ("type",):
+                    continue  # type 已在上面处理
+                value = chunk_meta.get(field_name)
+                if value is not None:
+                    record[field_name] = value
 
             if sparse_vectors is not None:
                 record["sparse_vector"] = sparse_vectors[idx]

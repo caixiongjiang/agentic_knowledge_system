@@ -11,7 +11,6 @@ from src.db.kafka.workers.file_parser_worker import FileParserWorker
 from src.db.kafka.workers.text_splitter_worker import TextSplitterWorker
 from src.db.kafka.workers.file_summary_worker import FileSummaryWorker
 from src.db.kafka.workers.kg_extractor_worker import KGExtractorWorker
-from src.db.kafka.workers.image_understand_worker import ImageUnderstandWorker
 from src.db.kafka.workers.text_analyzer_worker import TextAnalyzerWorker
 
 __all__ = [
@@ -20,6 +19,5 @@ __all__ = [
     "TextSplitterWorker",
     "FileSummaryWorker",
     "KGExtractorWorker",
-    "ImageUnderstandWorker",
     "TextAnalyzerWorker",
 ]

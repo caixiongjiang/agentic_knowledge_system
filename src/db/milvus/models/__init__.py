@@ -23,7 +23,10 @@ from src.db.milvus.models.enhanced.enhanced_chunk_schema import EnhancedChunkSch
 
 # ========== Extract层 Schema ==========
 from src.db.milvus.models.extract.atomic_qa_schema import AtomicQASchema
-from src.db.milvus.models.extract.summary_schema import SummarySchema
+from src.db.milvus.models.extract.summary_schema import (
+    FileSummarySchema,
+    SectionSummarySchema,
+)
 
 # ========== KG层 Schema ==========
 from src.db.milvus.models.kg.spo_schema import SPOSchema
@@ -39,7 +42,8 @@ ALL_SCHEMAS = [
     EnhancedChunkSchema,
     # Extract层
     AtomicQASchema,
-    SummarySchema,
+    FileSummarySchema,
+    SectionSummarySchema,
     # KG层
     SPOSchema,
     TagSchema,
@@ -56,7 +60,8 @@ SCHEMAS_BY_LAYER = {
     ],
     "extract": [
         AtomicQASchema,
-        SummarySchema,
+        FileSummarySchema,
+        SectionSummarySchema,
     ],
     "kg": [
         SPOSchema,
@@ -82,7 +87,8 @@ __all__ = [
     
     # ========== Extract层 ==========
     "AtomicQASchema",
-    "SummarySchema",
+    "FileSummarySchema",
+    "SectionSummarySchema",
     
     # ========== KG层 ==========
     "SPOSchema",

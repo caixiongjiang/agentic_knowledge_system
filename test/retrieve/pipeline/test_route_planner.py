@@ -133,8 +133,8 @@ def _scenario_hints(case_id: str, route_names: Set[str]) -> List[str]:
         if "bm25_sparse" not in route_names:
             hints.append("预期含 bm25_sparse，当前未出现")
     elif case_id == "2.2":
-        if "section_dense" not in route_names and "summary_dense" not in route_names:
-            hints.append("预期含 section_dense 或 summary_dense（主题探索），当前均未出现")
+        if "section_dense" not in route_names and "section_summary_dense" not in route_names and "file_summary_dense" not in route_names:
+            hints.append("预期含 section_dense / section_summary_dense / file_summary_dense（主题探索），当前均未出现")
     elif case_id == "2.3":
         if "qa_dense" not in route_names:
             hints.append("预期含 qa_dense（问答型），当前未出现")

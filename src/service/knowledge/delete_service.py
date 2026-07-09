@@ -39,7 +39,11 @@ from src.db.mongodb.repositories import (
 
 from src.db.milvus.repositories.base import ChunkRepository, SectionRepository
 from src.db.milvus.repositories.enhanced import EnhancedChunkRepository
-from src.db.milvus.repositories.extract import AtomicQARepository, SummaryRepository
+from src.db.milvus.repositories.extract import (
+    AtomicQARepository,
+    FileSummaryRepository,
+    SectionSummaryRepository,
+)
 from src.db.milvus.repositories.kg import SPORepository, TagRepository
 
 from src.db.storage.manager import StorageManager
@@ -324,7 +328,8 @@ class KnowledgeDeleteService:
             ("chunk", lambda: ChunkRepository().delete_by_document(document_id)),
             ("section", lambda: SectionRepository().delete_by_document(document_id)),
             ("enhanced_chunk", lambda: EnhancedChunkRepository().delete_by_document(document_id)),
-            ("summary", lambda: SummaryRepository().delete_by_document(document_id)),
+            ("file_summary", lambda: FileSummaryRepository().delete_by_document(document_id)),
+            ("section_summary", lambda: SectionSummaryRepository().delete_by_document(document_id)),
             ("atomic_qa", lambda: AtomicQARepository().delete_by_document(document_id)),
             ("tag", lambda: TagRepository().delete_by_document(document_id)),
             ("spo", lambda: SPORepository().delete_by_document(document_id)),

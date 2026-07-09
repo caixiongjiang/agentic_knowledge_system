@@ -294,10 +294,10 @@ class FileParserServiceE2ETest:
         try:
             if self.kafka_mode:
                 # Kafka 模式：发送消息到 Kafka，等待 Worker 处理
-                result, mysql_messages, mongodb_messages = await self._parse_via_kafka(storage_path)
+                result, mysql_messages, mongodb_messages, elements_payload = await self._parse_via_kafka(storage_path)
             else:
                 # Service 模式：直接调用 Service
-                result, mysql_messages, mongodb_messages = await self._parse_via_service(storage_path)
+                result, mysql_messages, mongodb_messages, elements_payload = await self._parse_via_service(storage_path)
             
             # 打印解析结果摘要
             logger.info(f"\n{'=' * 60}")
@@ -309,23 +309,24 @@ class FileParserServiceE2ETest:
             logger.info(f"解析工具: {result.parse_tool}")
             logger.info(f"MySQL 消息数: {len(mysql_messages)}")
             logger.info(f"MongoDB 消息数: {len(mongodb_messages)}")
+            logger.info(f"elements_payload: {len(elements_payload)}")
             logger.info(f"{'=' * 60}\n")
             
             logger.success("=" * 80)
             logger.success("✓ 测试 2 通过: 文件解析成功")
             logger.success("=" * 80)
             
-            return result, mysql_messages, mongodb_messages
+            return result, mysql_messages, mongodb_messages, elements_payload
             
         except Exception as e:
             logger.error(f"❌ 测试 2 失败: {e}", exc_info=True)
             raise
     
-    async def _parse_via_service(self, storage_path: str) -> Tuple[ParseResult, List[Dict], List[Dict]]:
+    async def _parse_via_service(self, storage_path: str) -> Tuple[ParseResult, List[Dict], List[Dict], List[Dict]]:
         """Service 模式：直接调用 Service"""
         logger.info("直接调用 FileParserService...")
         
-        result, mysql_messages, mongodb_messages = await self.service.parse_file(
+        result, mysql_messages, mongodb_messages, elements_payload = await self.service.parse_file(
             user_id=self.user_id,
             file_id=self.file_id,
             filename=self.filename,
@@ -338,7 +339,7 @@ class FileParserServiceE2ETest:
         )
         
         logger.success("✓ Service 调用完成")
-        return result, mysql_messages, mongodb_messages
+        return result, mysql_messages, mongodb_messages, elements_payload
     
     async def _parse_via_kafka(self, storage_path: str) -> Tuple[ParseResult, List[Dict], List[Dict]]:
         """Kafka 模式：发送消息到 Kafka，等待 Worker 处理"""
@@ -386,7 +387,12 @@ class FileParserServiceE2ETest:
             error_message=parse_end.get("error_message")
         )
         
-        return result, self.received_messages["mysql_messages"], self.received_messages["mongodb_messages"]
+        return (
+            result,
+            self.received_messages["mysql_messages"],
+            self.received_messages["mongodb_messages"],
+            parse_end.get("elements", []),
+        )
     
     async def _wait_for_kafka_messages(self, timeout: int = 300):
         """等待并接收 Kafka 下游消息"""

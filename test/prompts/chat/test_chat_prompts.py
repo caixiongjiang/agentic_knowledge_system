@@ -118,7 +118,11 @@ def test_system_prompt() -> bool:
 
     # 不传任何槽位，模板要能渲染
     base = build_chat_system_prompt()
-    if "{tools_description}" in base or "{custom_addendum}" in base:
+    if (
+        "{tools_description}" in base
+        or "{custom_addendum}" in base
+        or "{explicit_skills_override}" in base
+    ):
         _fail("槽位未替换")
         return False
     if "(本会话未启用导航工具)" not in base:

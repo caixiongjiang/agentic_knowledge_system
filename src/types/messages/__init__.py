@@ -15,7 +15,6 @@ from src.types.messages.index import (
 from src.types.messages.extract import (
     SummaryEndMessage,
     GraphEndMessage,
-    ImageEndMessage,
 )
 from src.types.messages.db_write import (
     EmbeddingWriteMessage,
@@ -39,7 +38,6 @@ __all__ = [
     # 提取相关消息
     "SummaryEndMessage",
     "GraphEndMessage",
-    "ImageEndMessage",
     # 数据库写入消息
     "EmbeddingWriteMessage",
     "GraphWriteMessage",

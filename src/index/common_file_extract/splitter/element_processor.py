@@ -95,18 +95,21 @@ class ElementProcessor:
     def create_image_chunk(
         element: ElementInfo,
         section_id: Optional[str],
-        document_id: Optional[str] = None
+        document_id: Optional[str] = None,
+        language: str = "unknown"
     ) -> ChunkInfo:
         """
         从图片元素创建Chunk
-        
+
         注意：图片已经在 FileParser 阶段上传到对象存储
-        
+
         Args:
             element: 原始图片元素
             section_id: 所属Section ID
             document_id: 文档ID
-        
+            language: 文档语言（作为 chunk 级语言初值，split 阶段后续会按
+                caption/footnote 实测覆盖）
+
         Returns:
             ChunkInfo
         """
@@ -119,6 +122,7 @@ class ElementProcessor:
                 "translations": []
             },
             page_index=element.page_index,
+            language=language,
             # 图片存储信息（从 ElementInfo 继承）
             bucket_name=element.bucket_name,
             image_file_path=element.image_file_path,

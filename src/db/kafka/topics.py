@@ -53,10 +53,11 @@ class KafkaTopics:
     
     # 后台串行阶段 Topics
     SUMMARY_END = "knowledge_base.summary.end"      # 文件摘要完成
+    SECTION_SUMMARY_END = "knowledge_base.section_summary.end"  # Section 摘要完成（file_summary 前置）
     
     # 后台并行阶段 Topics
     GRAPH_END = "knowledge_base.graph.end"          # 知识图谱抽取完成
-    IMAGE_END = "knowledge_base.image.end"          # 图片理解完成
+    # 注: 图片理解已从后台 pipeline 移除，改为 agent 需要时临时调用
     
     # ==================== 第二层：数据库写入 Topics ====================
     
@@ -95,8 +96,8 @@ class KafkaTopics:
             cls.PARSE_END,
             cls.SPLIT_END,
             cls.SUMMARY_END,
+            cls.SECTION_SUMMARY_END,
             cls.GRAPH_END,
-            cls.IMAGE_END,
             # 第二层：数据库写入
             cls.DB_WRITE_EMBEDDING,
             cls.DB_WRITE_GRAPH,
@@ -126,8 +127,8 @@ class KafkaTopics:
         parse_end_partitions = topics_config.get("parse_end_partitions", 32)
         split_end_partitions = topics_config.get("split_end_partitions", 32)
         summary_end_partitions = topics_config.get("summary_end_partitions", 16)
+        section_summary_end_partitions = topics_config.get("section_summary_end_partitions", 16)
         graph_end_partitions = topics_config.get("graph_end_partitions", 16)
-        image_end_partitions = topics_config.get("image_end_partitions", 16)
         embedding_start_partitions = topics_config.get("embedding_start_partitions", 32)
         graph_start_partitions = topics_config.get("graph_start_partitions", 16)
         meta_start_partitions = topics_config.get("meta_start_partitions", 32)
@@ -169,17 +170,17 @@ class KafkaTopics:
                 min_insync_replicas=min_insync_replicas,
                 cleanup_policy=cleanup_policy,
             ),
-            cls.GRAPH_END: TopicConfig(
-                name=cls.GRAPH_END,
-                num_partitions=graph_end_partitions,
+            cls.SECTION_SUMMARY_END: TopicConfig(
+                name=cls.SECTION_SUMMARY_END,
+                num_partitions=section_summary_end_partitions,
                 replication_factor=replication_factor,
                 retention_ms=retention_ms,
                 min_insync_replicas=min_insync_replicas,
                 cleanup_policy=cleanup_policy,
             ),
-            cls.IMAGE_END: TopicConfig(
-                name=cls.IMAGE_END,
-                num_partitions=image_end_partitions,
+            cls.GRAPH_END: TopicConfig(
+                name=cls.GRAPH_END,
+                num_partitions=graph_end_partitions,
                 replication_factor=replication_factor,
                 retention_ms=retention_ms,
                 min_insync_replicas=min_insync_replicas,

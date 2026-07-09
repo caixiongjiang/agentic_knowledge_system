@@ -15,7 +15,11 @@ from src.db.milvus.repositories.base import ChunkRepository, SectionRepository
 from src.db.milvus.repositories.enhanced import EnhancedChunkRepository
 
 # Extract层 Repositories
-from src.db.milvus.repositories.extract import AtomicQARepository, SummaryRepository
+from src.db.milvus.repositories.extract import (
+    AtomicQARepository,
+    FileSummaryRepository,
+    SectionSummaryRepository,
+)
 
 # KG层 Repositories
 from src.db.milvus.repositories.kg import SPORepository, TagRepository
@@ -34,7 +38,8 @@ __all__ = [
     
     # Extract layer
     "AtomicQARepository",
-    "SummaryRepository",
+    "FileSummaryRepository",
+    "SectionSummaryRepository",
     
     # KG layer
     "SPORepository",

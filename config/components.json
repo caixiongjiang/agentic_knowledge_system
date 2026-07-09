@@ -6,55 +6,54 @@
     "   可选 api_base / api_key / temperature / max_tokens / timeout / thinking_budget / extra_params；",
     "3) 'llm' 与 'llm_preset' 同时存在时，以 'llm' 字段为准（见 ComponentConfigManager.get_llm_client_for_component）。"
   ],
-
   "file_parser": {
     "enabled": true,
     "max_pages": 1000,
     "timeout": 300,
     "comment": "文件解析组件（Mineru）"
   },
-
   "text_splitter": {
     "enabled": true,
     "split_method": "structure_first",
     "chunk_size": 1000,
     "chunk_overlap": 200,
-    "separators": ["\n", "。", "，", " "],
+    "separators": [
+      "\n",
+      "。",
+      "，",
+      " "
+    ],
     "enable_text_clean": true,
     "comment": "文本切分组件（TextSplitter）"
   },
-
   "file_summary": {
     "enabled": true,
     "llm_preset": "fast",
     "max_retries": 3,
     "comment": "文件摘要组件（FileSummary）"
   },
-
+  "section_summary": {
+    "enabled": true,
+    "llm_preset": "fast",
+    "max_concurrency": 4,
+    "max_retries": 2,
+    "comment": "Section 摘要组件（SectionSummary，基础抽取第一步，紧接 split.end）"
+  },
   "kg_extractor": {
     "enabled": true,
-    "llm_preset": "quality",
+    "llm_preset": "fast",
     "max_entities": 100,
     "max_relations": 200,
     "comment": "知识图谱提取组件（KGExtractor）"
   },
-
-  "image_understand": {
-    "enabled": true,
-    "llm_preset": "multimodal",
-    "max_retries": 3,
-    "comment": "图片理解组件（ImageUnderstand）"
-  },
-
   "text_analyzer": {
     "enabled": true,
-    "llm_preset": "quality",
+    "llm_preset": "fast",
     "generate_summary": true,
     "generate_qa": true,
     "max_qa_pairs": 5,
-    "comment": "文本分析组件（TextAnalyzer）"
+    "comment": "文本分析组件（TextAnalyzer，Atomic QA 抽取）"
   },
-
   "route_planner": {
     "enabled": true,
     "llm_preset": "reasoning",
@@ -66,28 +65,24 @@
     },
     "comment": "LLM₁ 路由规划器（推理型；llm 字段优先于 llm_preset）。model 必须是 LiteLLM Proxy 上真实可路由的模型，推荐显式 ``litellm_proxy/<alias>`` 走透传分支"
   },
-
   "mysql_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
     "max_retries": 3,
     "comment": "MySQL批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
-
   "mongo_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
     "max_retries": 3,
     "comment": "MongoDB批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
-
   "neo4j_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
     "max_retries": 3,
     "comment": "Neo4j批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
-
   "embedding_milvus_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,

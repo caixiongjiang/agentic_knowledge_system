@@ -6,9 +6,13 @@ Extract Layer Models
 """
 
 from src.db.milvus.models.extract.atomic_qa_schema import AtomicQASchema
-from src.db.milvus.models.extract.summary_schema import SummarySchema
+from src.db.milvus.models.extract.summary_schema import (
+    FileSummarySchema,
+    SectionSummarySchema,
+)
 
 __all__ = [
     "AtomicQASchema",
-    "SummarySchema",
+    "FileSummarySchema",
+    "SectionSummarySchema",
 ]

@@ -17,7 +17,6 @@ from datetime import datetime
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import inspect as sqla_inspect
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from src.db.mysql.models.base_model import BaseModel
 
@@ -475,7 +474,8 @@ class BaseRepository(Generic[ModelType]):
             prepared.append(r)
 
         bind = session.bind
-        dialect_name = sqla_inspect(bind).get_dialect().name if bind is not None else "mysql"
+        # SQLAlchemy 2.0 移除了 Inspector.get_dialect()；Engine 直接暴露 .dialect
+        dialect_name = bind.dialect.name if bind is not None else "mysql"
 
         if dialect_name == "mysql":
             try:

@@ -46,7 +46,6 @@ from src.db.kafka.workers import (
     TextSplitterWorker,
     FileSummaryWorker,
     KGExtractorWorker,
-    ImageUnderstandWorker,
     TextAnalyzerWorker,
 )
 
@@ -92,7 +91,6 @@ __all__ = [
     "TextSplitterWorker",
     "FileSummaryWorker",
     "KGExtractorWorker",
-    "ImageUnderstandWorker",
     "TextAnalyzerWorker",
     # Phase 4: Writer 组件
     "BaseWriter",

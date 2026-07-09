@@ -82,14 +82,16 @@ class SemanticTarget(str, Enum):
     """语义检索目标 Collection 类型
 
     与 Milvus 中的 Collection 一一对应：
-    - CHUNK        → chunk_store
-    - SECTION      → section_store
-    - ENHANCED     → enhanced_chunk_store
-    - ATOMIC_QA    → atomic_qa_store
-    - SUMMARY      → summary_store
+    - CHUNK           → chunk_store
+    - SECTION         → section_store
+    - ENHANCED        → enhanced_chunk_store
+    - ATOMIC_QA       → atomic_qa_store
+    - FILE_SUMMARY    → file_summary_store
+    - SECTION_SUMMARY → section_summary_store
     """
     CHUNK = "chunk"
     SECTION = "section"
     ENHANCED = "enhanced"
     ATOMIC_QA = "atomic_qa"
-    SUMMARY = "summary"
+    FILE_SUMMARY = "file_summary"
+    SECTION_SUMMARY = "section_summary"

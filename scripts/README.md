@@ -43,7 +43,7 @@ uv run python scripts/start_all_workers.py --list
 uv run python scripts/start_all_workers.py
 
 # 启动所有任务流转 Workers（6个）
-uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,file_summary,kg_extractor,image_understand,text_analyzer
+uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,section_summary,file_summary,kg_extractor,text_analyzer
 
 # 启动所有 DB Writers（4个）
 uv run python scripts/start_all_workers.py --workers embedding_milvus_writer,neo4j_writer,mysql_writer,mongo_writer
@@ -59,10 +59,10 @@ uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,e
 **第一层：任务流转 Workers**:
 - `file_parser` - 文件解析
 - `text_splitter` - 文本分割
+- `section_summary` - Section 摘要
 - `file_summary` - 文件摘要
 - `kg_extractor` - 知识图谱抽取
-- `image_understand` - 图片理解
-- `text_analyzer` - 文本分析
+- `text_analyzer` - 文本分析 / Atomic QA
 
 **第二层：数据库写入 Writers**:
 - `embedding_milvus_writer` - 向量写入（批量 Embedding + Milvus）

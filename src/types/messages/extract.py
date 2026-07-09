@@ -4,15 +4,73 @@
 提取相关消息模型
 
 定义后台提取流程的各阶段消息：
+- SectionSummaryEndMessage: Section 摘要完成
 - SummaryEndMessage: 文件摘要完成
 - GraphEndMessage: 知识图谱抽取完成
-- ImageEndMessage: 图片理解完成
+
+注: ImageEndMessage 已移除；图片理解不再作为后台 pipeline 一环，
+    改为 agent 需要时临时调用（见 src/service/chat/image_chunk_reader_service.py）。
 """
 
 from typing import Dict, List, Optional, Any
 from pydantic import Field
 
 from src.types.messages.base import BaseMessage
+
+
+class SectionSummaryEndMessage(BaseMessage):
+    """
+    Section 摘要完成消息
+
+    文档内所有 section 的摘要生成完成。
+    发送到: knowledge_base.section_summary.end
+    消费者:
+    - FileSummaryWorker（基于 section 摘要 rollup 生成 file_summary）
+    - EmbeddingMilvusWriter（section 摘要向量写入 Milvus summary collection）
+
+    设计说明：
+    - 仅携带轻量统计，不携带全部摘要文本（避免大消息）；
+      下游若需正文，按 document_id 从 MySQL section_summary / MongoDB section_data 读取。
+    - 后台阶段消息，不影响前台进度。
+    """
+
+    # 所属文档 ID
+    document_id: str = Field(
+        ...,
+        description="所属文档 ID（document-{uuid}）"
+    )
+
+    # section 摘要列表（仅统计字段，不含正文）
+    section_summaries: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="各 section 摘要统计：{section_id, summary_id, chunk_count, summary_length}"
+    )
+
+    # section 总数
+    total_sections: int = Field(
+        default=0,
+        ge=0,
+        description="文档 section 总数"
+    )
+
+    # 成功生成摘要的 section 数
+    successful_sections: int = Field(
+        default=0,
+        ge=0,
+        description="成功生成摘要的 section 数"
+    )
+
+    # 使用的 LLM 模型
+    llm_model: str = Field(
+        ...,
+        description="使用的 LLM 模型"
+    )
+
+    # Token 使用统计
+    token_usage: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Token 使用统计（input, output, total）"
+    )
 
 
 class SummaryEndMessage(BaseMessage):
@@ -146,58 +204,3 @@ class GraphEndMessage(BaseMessage):
         description="关系类型分布统计"
     )
 
-
-class ImageEndMessage(BaseMessage):
-    """
-    图片理解完成消息
-    
-    对文档中的图片进行理解和描述。
-    发送到: knowledge_base.image.end
-    消费者: EmbeddingMilvusWriter（数据库写入图片描述向量）
-    """
-    
-    # 图片理解结果
-    image_understandings: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="图片理解结果列表"
-    )
-    
-    # 处理的图片数量
-    total_images: int = Field(
-        default=0,
-        ge=0,
-        description="处理的图片总数"
-    )
-    
-    # 成功处理的图片数量
-    successful_images: int = Field(
-        default=0,
-        ge=0,
-        description="成功处理的图片数量"
-    )
-    
-    # 使用的视觉模型
-    vision_model: str = Field(
-        ...,
-        description="使用的视觉模型"
-    )
-    
-    # Token 使用统计
-    token_usage: Dict[str, int] = Field(
-        default_factory=dict,
-        description="Token 使用统计"
-    )
-    
-    # 图片类型分布
-    image_type_distribution: Dict[str, int] = Field(
-        default_factory=dict,
-        description="图片类型分布（chart, diagram, photo 等）"
-    )
-    
-    # 平均理解质量（0-1）
-    average_quality: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="平均理解质量评分"
-    )

@@ -49,13 +49,13 @@ def _init_milvus() -> None:
     from src.db.milvus.repositories import (
         ChunkRepository, SectionRepository,
         EnhancedChunkRepository,
-        SummaryRepository, AtomicQARepository,
+        FileSummaryRepository, SectionSummaryRepository, AtomicQARepository,
         SPORepository, TagRepository,
     )
     for cls in [
         ChunkRepository, SectionRepository,
         EnhancedChunkRepository,
-        SummaryRepository, AtomicQARepository,
+        FileSummaryRepository, SectionSummaryRepository, AtomicQARepository,
         SPORepository, TagRepository,
     ]:
         try:

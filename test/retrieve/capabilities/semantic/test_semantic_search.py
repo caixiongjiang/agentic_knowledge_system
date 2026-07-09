@@ -196,7 +196,8 @@ async def run_all_tests() -> int:
         from src.retrieve.capabilities.semantic.section_vector_search import SectionVectorSearch
         from src.retrieve.capabilities.semantic.enhanced_chunk_vector_search import EnhancedChunkVectorSearch
         from src.retrieve.capabilities.semantic.qa_vector_search import QAVectorSearch
-        from src.retrieve.capabilities.semantic.summary_vector_search import SummaryVectorSearch
+        from src.retrieve.capabilities.semantic.section_summary_vector_search import SectionSummaryVectorSearch
+        from src.retrieve.capabilities.semantic.file_summary_vector_search import FileSummaryVectorSearch
         from src.retrieve.types.enums import SemanticTarget
 
         # 初始化基础设施
@@ -255,13 +256,22 @@ async def run_all_tests() -> int:
                 SemanticTarget.ATOMIC_QA,
             ))
 
-            # Summary
-            summary_search = SummaryVectorSearch(embedding_client=emb_client, milvus_manager=manager)
+            # Section Summary
+            section_summary_search = SectionSummaryVectorSearch(embedding_client=emb_client, milvus_manager=manager)
             test_cases.append((
-                "SummaryVectorSearch",
-                summary_search,
-                summary_search._repository,
-                SemanticTarget.SUMMARY,
+                "SectionSummaryVectorSearch",
+                section_summary_search,
+                section_summary_search._repository,
+                SemanticTarget.SECTION_SUMMARY,
+            ))
+
+            # File Summary
+            file_summary_search = FileSummaryVectorSearch(embedding_client=emb_client, milvus_manager=manager)
+            test_cases.append((
+                "FileSummaryVectorSearch",
+                file_summary_search,
+                file_summary_search._repository,
+                SemanticTarget.FILE_SUMMARY,
             ))
 
             results = []
