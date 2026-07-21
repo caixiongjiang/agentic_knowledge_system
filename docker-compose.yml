@@ -1,0 +1,31 @@
+services:
+  # ==================== AKS API (FastAPI 业务后端) ====================
+  aks-api:
+    build: .
+    container_name: aks-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.production
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - aks-network
+
+  # ==================== AKS Workers (Kafka 消费端) ====================
+  aks-workers:
+    build: .
+    container_name: aks-workers
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - ./config:/app/config:ro
+    command: ["uv", "run", "python", "scripts/start_all_workers.py"]
+    networks:
+      - aks-network
+
+networks:
+  aks-network:
+    driver: bridge
