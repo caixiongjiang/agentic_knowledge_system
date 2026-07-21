@@ -90,6 +90,42 @@ async def handle(
             request,
             on_progress=on_progress,
         )
+
+        # v1.1 直答短路：qa_dense 高置信命中时直接返回 answer + 来源标注
+        direct = response.direct_answer
+        if direct is not None:
+            tc_id = get_current_tool_call_id()
+            if tc_id:
+                params_da: Dict[str, Any] = {
+                    "query_text": query_text,
+                    "top_k": top_k,
+                    "direct_answer": direct.model_dump(exclude_none=True),
+                }
+                if chunk_type:
+                    params_da["chunk_type"] = chunk_type
+            if response.route_plan:
+                params_da["route_plan"] = response.route_plan.model_dump(
+                    exclude_none=True,
+                )
+            recall_stats_da = (
+                response.recall_stats.model_dump(exclude_none=True)
+                if response.recall_stats is not None
+                else None
+            )
+            kit.search_results[tc_id] = ([], params_da, recall_stats_da)
+            kit.note_result_count(0)
+            if response.planner_model:
+                kit.note_execution_model(response.planner_model)
+            source_chunks = ", ".join(direct.source_chunk_ids) or "（无）"
+            logger.info(
+                f"search_knowledge_base({query_text!r}) → 直答短路 "
+                f"qa_id={direct.qa_id} score={direct.score:.4f}"
+            )
+            return (
+                f"{direct.answer}\n\n"
+                f"（来源：atomic_qa {direct.qa_id}；依据 chunk: {source_chunks}）"
+            )
+
         items = list(response.items or [])
         kit.supplemented.extend(items)
         kit.note_result_count(len(items))
@@ -119,7 +155,12 @@ async def handle(
                 params["route_plan"] = response.route_plan.model_dump(
                     exclude_none=True,
                 )
-            kit.search_results[tc_id] = (chunks_brief, params)
+            recall_stats_dict = (
+                response.recall_stats.model_dump(exclude_none=True)
+                if response.recall_stats is not None
+                else None
+            )
+            kit.search_results[tc_id] = (chunks_brief, params, recall_stats_dict)
 
         return format_chunks_for_llm(
             items,

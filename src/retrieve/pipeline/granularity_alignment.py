@@ -172,10 +172,42 @@ class GranularityAligner:
             return []
 
     async def _resolve_qa_to_chunk(self, item: ChunkItem) -> List[ChunkItem]:
-        """QA → Chunk 溯源"""
+        """QA → Chunk 溯源（v1.1：按 source_chunk_ids 展开）
+
+        v1.1 TextAnalyzer 的 QA 在 section 级抽取，可横跨多 chunk，溯源信息
+        在 metadata["source_chunk_ids"]（由 QAVectorSearch Mongo 下钻回填）。
+        本方法把 QA 展开为它所依据的若干真实 ChunkItem，注入候选池参与融合，
+        保留 answer / qa_id 在 metadata 供后续 rerank / tool 渲染。
+        """
+        decay = _SCORE_DECAY.get("qa", 1.0)
+        qa_id = item.metadata.get("_qa_id")
+        answer = item.metadata.get("answer")
+        source_chunk_ids = item.metadata.get("source_chunk_ids") or []
+
+        # 优先走 v1.1 多 chunk 溯源
+        if source_chunk_ids:
+            items: List[ChunkItem] = []
+            for cid in list(source_chunk_ids)[: self._drilldown_top_n]:
+                if not cid:
+                    continue
+                items.append(ChunkItem(
+                    chunk_id=cid,
+                    score=item.score * decay,
+                    document_id=item.document_id,
+                    knowledge_base_id=item.knowledge_base_id,
+                    metadata={
+                        "_source_route": "qa_traceback",
+                        "_qa_id": qa_id,
+                        "answer": answer,
+                    },
+                ))
+            if items:
+                return items
+            # source_chunk_ids 全空 → 落到下方兜底
+
+        # 兼容旧路径：metadata 单 chunk_id（v1.0 chunk 级 QA 遗留）
         chunk_id = item.metadata.get("chunk_id")
         if chunk_id:
-            decay = _SCORE_DECAY.get("qa", 1.0)
             return [ChunkItem(
                 chunk_id=chunk_id,
                 score=item.score * decay,
@@ -183,11 +215,12 @@ class GranularityAligner:
                 knowledge_base_id=item.knowledge_base_id,
                 metadata={
                     "_source_route": "qa_traceback",
-                    "_qa_id": item.metadata.get("_qa_id"),
-                    "answer": item.metadata.get("answer"),
+                    "_qa_id": qa_id,
+                    "answer": answer,
                 },
             )]
-        # QA 元数据中无 chunk_id 时，保留 QA 项本身
+
+        # 无任何溯源信息：保留 QA 项本身（question 作为 text 参与 rerank）
         return [item]
 
     async def _drilldown_summary(

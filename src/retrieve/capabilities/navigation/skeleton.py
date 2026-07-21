@@ -14,11 +14,13 @@
     2026/07/05 - 改用 MongoDB section_data 的 parent_section_id 建树
                  （编号解析推断，比 MinerU text_level 更准），
                  每个 node 带上 summary / is_leaf / chunk_id_list。
+    2026/07/17 - 拓扑（parent_section_id / is_leaf）由 MongoDB section_data 迁到
+                 MySQL section_document，建树 + 排序收敛为单次三表 JOIN
+                 （get_sections_with_order），消除原先 2N 次逐条查询的 N+1；
+                 内容（title/summary/chunk_id_list）仍取自 MongoDB section_data。
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-from sqlalchemy.orm import Session
 
 from src.db.mongodb.models.section_data import SectionData
 from src.db.mongodb.repositories.document_data_repository import (
@@ -47,10 +49,13 @@ class Skeleton(BaseCapability):
     每个 section 节点携带 summary / is_leaf / chunk_id_list，
     帮助 Agent 快速了解文档结构并定位下钻目标。
 
-    建树依据：MongoDB section_data.parent_section_id
-    （由 SectionSummaryService 从标题编号推断，比 MinerU text_level 更准）。
-    排序依据：MySQL section_meta_info.element_id → element_meta_info 的
-    (page_index, element_index)，保留文档阅读顺序。
+    建树依据：MySQL section_document.parent_section_id / is_leaf
+    （由 SectionSummaryService 从标题编号推断写入）。v1.1（2026/07/17）起拓扑从
+    MongoDB section_data 迁到 MySQL section_document，骨架树重建由原先的
+    「1 次 section_document + 2N 次 (section_meta_info / element_meta_info) 逐条查」
+    收敛为单次三表 JOIN（get_sections_with_order），消除 N+1。
+    排序依据：JOIN 带出的 element_meta_info.(page_index, element_index)，保留文档阅读顺序。
+    内容（title / summary / chunk_id_list）仍取自 MongoDB section_data（单批 $in）。
     """
 
     def __init__(
@@ -83,11 +88,11 @@ class Skeleton(BaseCapability):
 
         manager = self._get_mysql_manager()
         with manager.get_session() as session:
-            # 1. MySQL 获取该文档的所有 section_id（section_document 关系表）
-            section_rels = self._section_doc_repo.get_by_document_id(
+            # 1. 单次 JOIN 取该文档所有 section 的拓扑 + 排序键（消除 N+1）
+            section_rows = self._section_doc_repo.get_sections_with_order(
                 session, document_id,
             )
-            if not section_rels:
+            if not section_rows:
                 item = SkeletonItem(
                     document_id=document_id,
                     score=1.0,
@@ -98,20 +103,25 @@ class Skeleton(BaseCapability):
                 await self._enrich_document_title(item)
                 return RetrieveResult(items=[item], total_count=1)
 
-            section_ids = [rel.section_id for rel in section_rels]
+            section_ids = [r["section_id"] for r in section_rows if r.get("section_id")]
 
-            # 2. MySQL 排序：按标题 element 的 (page_index, element_index)
-            order_map = self._build_section_order_map(session, section_rels)
+            # 2. 按 element 位置构建 section_id → 顺序序号 的映射
+            order_map = self._build_section_order_map(section_rows)
 
-            # 3. MongoDB 批量取 section_data（title/summary/is_leaf/chunk_id_list/parent_id）
+            # 3. 拓扑（parent_section_id / is_leaf）已随 JOIN 带出，直接构表
+            section_meta_map: Dict[str, Dict[str, Any]] = {
+                r["section_id"]: r for r in section_rows if r.get("section_id")
+            }
+
+            # 4. MongoDB 批量取 section_data（title/summary/chunk_id_list 内容）
             section_data_map = await self._get_section_data_map(section_ids)
 
-            # 4. 用 MongoDB parent_section_id 建树
+            # 5. 用 MySQL parent_section_id 建树，内容从 Mongo 取
             outline_tree = self._build_outline_tree(
-                section_ids, section_data_map, order_map, max_depth,
+                section_ids, section_meta_map, section_data_map, order_map, max_depth,
             )
 
-            # 5. 统计 total_chunks：所有 chunk_id_list 的并集
+            # 6. 统计 total_chunks：所有 chunk_id_list 的并集
             all_chunk_ids: Set[str] = set()
             for sd in section_data_map.values():
                 all_chunk_ids.update(sd.chunk_id_list or [])
@@ -129,27 +139,24 @@ class Skeleton(BaseCapability):
 
     # ---- 排序辅助 ----
 
-    def _get_element_sort_key(
-        self, session: Session, element_id: Optional[str],
-    ) -> Tuple[int, int]:
-        if not element_id:
-            return (999999, 999999)
-        meta = self._element_meta_repo.get_by_id(session, element_id)
-        if not meta:
-            return (999999, 999999)
-        return (meta.page_index or 0, meta.element_index or 0)
+    @staticmethod
+    def _row_sort_key(row: Dict[str, Any]) -> Tuple[int, int]:
+        """单行排序键：(page_index, element_index)，缺失兜底大值排末尾。"""
+        page = row.get("page_index")
+        elem = row.get("element_index")
+        return (
+            page if isinstance(page, int) else 999999,
+            elem if isinstance(elem, int) else 999999,
+        )
 
     def _build_section_order_map(
-        self, session: Session, section_rels: list,
+        self, section_rows: List[Dict[str, Any]],
     ) -> Dict[str, int]:
-        """按标题 element 位置构建 section_id → 顺序序号 的映射"""
-        keyed: List[Tuple[Tuple[int, int], str]] = []
-        for rel in section_rels:
-            meta = self._section_meta_repo.get_by_id(session, rel.section_id)
-            eid = meta.element_id if meta else None
-            sort_key = self._get_element_sort_key(session, eid)
-            keyed.append((sort_key, rel.section_id))
-        keyed.sort(key=lambda x: x[0])
+        """按标题 element 位置构建 section_id → 顺序序号 的映射（单次内存排序，无 DB 查询）。"""
+        keyed = sorted(
+            ((self._row_sort_key(r), r["section_id"]) for r in section_rows if r.get("section_id")),
+            key=lambda x: x[0],
+        )
         return {sid: i for i, (_, sid) in enumerate(keyed)}
 
     # ---- MongoDB 数据获取 ----
@@ -157,7 +164,7 @@ class Skeleton(BaseCapability):
     async def _get_section_data_map(
         self, section_ids: List[str],
     ) -> Dict[str, SectionData]:
-        """批量从 MongoDB section_data 取所有 section 的完整数据"""
+        """批量从 MongoDB section_data 取所有 section 的内容（title/summary/chunk_id_list）"""
         section_data_list = await self._section_data_repo.get_by_ids(section_ids)
         return {str(sd.id): sd for sd in section_data_list}
 
@@ -166,21 +173,23 @@ class Skeleton(BaseCapability):
     def _build_outline_tree(
         self,
         section_ids: List[str],
+        section_meta_map: Dict[str, Dict[str, Any]],
         section_data_map: Dict[str, SectionData],
         order_map: Dict[str, int],
         max_depth: int,
     ) -> List[SkeletonNode]:
-        """用 MongoDB parent_section_id 建树，每个 node 带 summary/is_leaf/chunk_id_list。
+        """用 MySQL parent_section_id 建树，每个 node 带 summary/is_leaf/chunk_id_list。
 
-        - parent_section_id 来自编号解析推断（SectionSummaryService 写入）
-        - 未在 section_data_map 中的 section（MongoDB 缺数据）视为 root 孤儿
+        - parent_section_id / is_leaf 来自 MySQL section_document（JOIN 带出）
+        - title / summary / chunk_id_list 来自 MongoDB section_data
+        - 未在 section_meta_map 中的 section（MySQL 缺拓扑）视为 root 孤儿
         - 环路检测防止异常数据导致死循环
         """
         # section_id → 子 section_id 列表
         children_map: Dict[Optional[str], List[str]] = {}
         for sid in section_ids:
-            sd = section_data_map.get(sid)
-            parent_id = sd.parent_section_id if sd else None
+            meta = section_meta_map.get(sid)
+            parent_id = meta.get("parent_section_id") if meta else None
             children_map.setdefault(parent_id, []).append(sid)
 
         # 每个父节点下的子节点按 element 位置排序
@@ -196,9 +205,10 @@ class Skeleton(BaseCapability):
             visited.add(section_id)
 
             sd = section_data_map.get(section_id)
+            meta = section_meta_map.get(section_id)
             title = (sd.text or "[未命名章节]") if sd else "[未命名章节]"
             chunk_id_list = list(sd.chunk_id_list or []) if sd else []
-            is_leaf = sd.is_leaf if sd else None
+            is_leaf = meta.get("is_leaf") if meta else None
             summary_text = None
             if sd and sd.summary:
                 summary_text = sd.summary.get("text")
@@ -223,12 +233,13 @@ class Skeleton(BaseCapability):
 
             return node
 
-        # root 节点：parent_section_id 为 None 或 MongoDB 中不存在该 section
+        # root 节点：parent_section_id 为 None 或指向集合外
         root_ids: List[str] = []
+        known = set(section_ids)
         for sid in section_ids:
-            sd = section_data_map.get(sid)
-            parent_id = sd.parent_section_id if sd else None
-            if parent_id is None or parent_id not in section_data_map:
+            meta = section_meta_map.get(sid)
+            parent_id = meta.get("parent_section_id") if meta else None
+            if parent_id is None or parent_id not in known:
                 root_ids.append(sid)
 
         # 去重 + 排序

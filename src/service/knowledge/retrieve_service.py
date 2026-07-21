@@ -28,18 +28,28 @@ from src.retrieve.pipeline.parallel_recall import (
 from src.retrieve.pipeline.rerank import RerankStage
 from src.retrieve.pipeline.route_registry import RouteRegistry
 from src.retrieve.pipeline.types import (
+    DirectAnswer,
     FusedCandidate,
     FusionStrategy,
     PhaseTimings,
     RecallResult,
+    RecallStats,
     RetrieveRequest,
     RetrieveResponse,
     RouteConfig,
     RoutePlan,
+    RouteRecallStat,
 )
 from src.retrieve.types.enums import SearchMode
 from src.retrieve.types.query import MetadataFilter
 from src.retrieve.types.result import ChunkItem, RetrieveResult
+
+
+# v1.1 直答短路：qa_dense top1 score ≥ 此阈值且 answer 存在时，跳过 align/fusion/rerank
+_DEFAULT_DIRECT_ANSWER_THRESHOLD = 0.9
+
+# v1.1 召回统计：chunk_id 列表截断上限，避免响应膨胀
+_RECALL_STATS_CHUNK_ID_CAP = 20
 
 
 class RetrieveService:
@@ -68,6 +78,10 @@ class RetrieveService:
         self._rerank_stage = RerankStage()
 
         self._planner = None
+
+        # v1.1 直答短路配置
+        self._direct_answer_enabled: bool = True
+        self._direct_answer_threshold: float = _DEFAULT_DIRECT_ANSWER_THRESHOLD
 
     def _get_embedding_client(self) -> EmbeddingClient:
         if self._embedding_client is None:
@@ -120,7 +134,7 @@ class RetrieveService:
         route_plan = self._apply_search_mode(route_plan, request.search_mode, request)
         timings.planning_ms = (time.perf_counter() - t) * 1000
 
-        items, phase_timings_partial = await self._execute_pipeline(
+        items, phase_timings_partial, direct_answer, recall_stats = await self._execute_pipeline(
             route_plan=route_plan,
             query_text=request.query_text,
             filters=request.filters,
@@ -150,6 +164,8 @@ class RetrieveService:
             execution_time_ms=total_ms,
             phase_timings=timings,
             planner_model=planner_model,
+            direct_answer=direct_answer,
+            recall_stats=recall_stats,
         )
 
     # ==================== 自定义路由 ====================
@@ -169,7 +185,7 @@ class RetrieveService:
 
         route_plan = RoutePlan(route_plan=routes)
 
-        items, timings = await self._execute_pipeline(
+        items, timings, direct_answer, recall_stats = await self._execute_pipeline(
             route_plan=route_plan,
             query_text=query_text,
             filters=filters,
@@ -186,6 +202,8 @@ class RetrieveService:
             route_plan=route_plan,
             execution_time_ms=total_ms,
             phase_timings=timings,
+            direct_answer=direct_answer,
+            recall_stats=recall_stats,
         )
 
     # ==================== 单能力旁路 ====================
@@ -208,9 +226,18 @@ class RetrieveService:
         enable_rerank: bool,
         rerank_score_threshold: Optional[float] = None,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
-    ) -> tuple[List[ChunkItem], PhaseTimings]:
-        """执行 Phase 2-5 确定性管道"""
+    ) -> tuple[List[ChunkItem], PhaseTimings, Optional[DirectAnswer], Optional[RecallStats]]:
+        """执行 Phase 2-5 确定性管道
+
+        v1.1：Phase 2 后插入「直答短路」判断——qa_dense top1 score ≥ θ_direct
+        且 answer 存在时，跳过 Phase 3-5，返回空 items + DirectAnswer。
+
+        v1.1 召回统计：各阶段计数 + chunk_id 截断列表汇总到 RecallStats，
+        供前端「召回链路」栏目渲染（覆盖 recall → align → fuse → rerank → threshold）。
+        """
         timings = PhaseTimings()
+        direct_answer: Optional[DirectAnswer] = None
+        recall_stats = RecallStats()
 
         await self._emit_progress(on_progress, "searching")
 
@@ -223,8 +250,27 @@ class RetrieveService:
         )
         timings.recall_ms = (time.perf_counter() - t) * 1000
 
+        # 路由 top_k 查表（recall_results 里没有 top_k，从 plan 取）
+        top_k_map = {r.route: r.top_k for r in route_plan.route_plan}
+        # Phase 2 统计：每路原始召回数 + 前 N 个 chunk_id
+        recall_stats.routes = self._build_route_stats(
+            recall_results, top_k_map, aligned=False,
+        )
+
         if not recall_results:
-            return [], timings
+            return [], timings, None, recall_stats
+
+        # v1.1 直答短路：qa_dense 高置信命中 → 直接返回 answer，跳过 align/fusion/rerank
+        if self._direct_answer_enabled:
+            direct_answer = self._maybe_direct_answer(recall_results)
+            if direct_answer is not None:
+                logger.info(
+                    f"直答短路命中: qa_id={direct_answer.qa_id}, "
+                    f"score={direct_answer.score:.4f} ≥ "
+                    f"θ={self._direct_answer_threshold:.2f}"
+                )
+                recall_stats.short_circuited = True
+                return [], timings, direct_answer, recall_stats
 
         # 获取 query 向量（用于跨粒度对齐的 in-memory 精排）
         query_vector = None
@@ -240,6 +286,8 @@ class RetrieveService:
             recall_results, query_vector,
         )
         timings.alignment_ms = (time.perf_counter() - t) * 1000
+        # Phase 3 统计：回填每路对齐后 chunk 数（section/qa/summary 路由展开后会变）
+        self._fill_aligned_counts(recall_stats.routes, aligned_results)
 
         # Phase 4: 融合 + 去重（按 RoutePlan.fusion_strategy 选择策略）
         t = time.perf_counter()
@@ -252,8 +300,14 @@ class RetrieveService:
         )
         timings.fusion_ms = (time.perf_counter() - t) * 1000
 
+        # Phase 4 统计：融合去重后候选数 + chunk_id 截断列表
+        recall_stats.fused_count = len(fused)
+        recall_stats.fused_chunk_ids = [
+            f.chunk_id for f in fused[:_RECALL_STATS_CHUNK_ID_CAP]
+        ]
+
         if not fused:
-            return [], timings
+            return [], timings, None, recall_stats
 
         # Phase 5: Rerank（可选）
         await self._emit_progress(on_progress, "reranking")
@@ -273,13 +327,103 @@ class RetrieveService:
             before_count = len(items)
             items = [it for it in items if it.score >= rerank_score_threshold]
             filtered_count = before_count - len(items)
+            recall_stats.dropped_by_threshold = filtered_count
             if filtered_count:
                 logger.info(
                     f"精排后阈值过滤: {filtered_count}/{before_count} 条结果 "
                     f"score < {rerank_score_threshold} 被过滤"
                 )
 
-        return items, timings
+        # Phase 5 统计：rerank 后最终 chunk_id 列表（按分数降序，截断）
+        recall_stats.rerank_count = len(items)
+        recall_stats.final_chunk_ids = [
+            it.chunk_id for it in items[:_RECALL_STATS_CHUNK_ID_CAP]
+        ]
+
+        # Phase 5 每路 final_count：按 FusedCandidate.source_routes 归属统计
+        # （一个 final chunk 若被多路命中，对各路各计 1 次）
+        final_id_set = {it.chunk_id for it in items}
+        fused_source_map = {f.chunk_id: f.source_routes for f in fused}
+        route_final_count: Dict[str, int] = {rs.route: 0 for rs in recall_stats.routes}
+        for cid in final_id_set:
+            for rt in fused_source_map.get(cid, []):
+                if rt in route_final_count:
+                    route_final_count[rt] += 1
+        for rs in recall_stats.routes:
+            rs.final_count = route_final_count.get(rs.route, 0)
+
+        return items, timings, None, recall_stats
+
+    @staticmethod
+    def _build_route_stats(
+        recall_results: List[RecallResult],
+        top_k_map: Dict[str, int],
+        aligned: bool = False,
+    ) -> List[RouteRecallStat]:
+        """从召回结果构建每路统计（Phase 2 原始召回数 + 前 N 个 chunk_id）。"""
+        stats: List[RouteRecallStat] = []
+        for rr in recall_results:
+            sample = [
+                it.chunk_id for it in rr.items[:_RECALL_STATS_CHUNK_ID_CAP]
+                if getattr(it, "chunk_id", None)
+            ]
+            stats.append(RouteRecallStat(
+                route=rr.route,
+                top_k=top_k_map.get(rr.route, 0),
+                recalled_count=rr.total_count or len(rr.items),
+                execution_time_ms=rr.execution_time_ms,
+                sample_chunk_ids=sample,
+            ))
+        return stats
+
+    @staticmethod
+    def _fill_aligned_counts(
+        route_stats: List[RouteRecallStat],
+        aligned_results: List[RecallResult],
+    ) -> None:
+        """回填 Phase 3 对齐后每路 chunk 数（section/qa/summary 路由展开后会变）。"""
+        aligned_map = {rr.route: len(rr.items) for rr in aligned_results}
+        for rs in route_stats:
+            if rs.route in aligned_map:
+                rs.aligned_count = aligned_map[rs.route]
+
+    def _maybe_direct_answer(
+        self,
+        recall_results: List[RecallResult],
+    ) -> Optional[DirectAnswer]:
+        """v1.1 直答短路判断：扫描 qa_dense 路由召回，取 top1 QA。
+
+        - 仅认 route == "qa_dense" 的结果（已由 normalize_to_chunk_items 归一为
+          ChunkItem，metadata携带 _original_type="qa" / answer / source_chunk_ids / section_id）
+        - top1 score ≥ θ_direct 且 answer 非空 → 返回 DirectAnswer
+        - 否则返回 None（走正常 align/fusion/rerank）
+        """
+        best: Optional[ChunkItem] = None
+        for rr in recall_results:
+            if rr.route != "qa_dense":
+                continue
+            for it in rr.items:
+                if it.metadata.get("_original_type") != "qa":
+                    continue
+                if best is None or it.score > best.score:
+                    best = it
+        if best is None:
+            return None
+        answer = (best.metadata.get("answer") or "").strip()
+        if not answer:
+            return None
+        if best.score < self._direct_answer_threshold:
+            return None
+        return DirectAnswer(
+            answer=answer,
+            qa_id=str(best.metadata.get("_qa_id") or best.chunk_id.replace("qa:", "", 1)),
+            question=str(best.metadata.get("question") or best.text or ""),
+            score=float(best.score),
+            source_chunk_ids=list(best.metadata.get("source_chunk_ids") or []),
+            document_id=best.document_id,
+            section_id=best.metadata.get("section_id"),
+            knowledge_base_id=best.knowledge_base_id,
+        )
 
     @staticmethod
     async def _emit_progress(
