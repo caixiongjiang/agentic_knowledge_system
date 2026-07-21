@@ -113,6 +113,7 @@ class SectionSummarizer:
                     item = SectionSummaryItem(
                         section_id=section.section_id,
                         document_id=document_id,
+                        title=section.title,
                         summary_text=summary_text,
                         chunk_count=chunk_count,
                         chunk_id_list=list(section.chunk_id_list),
@@ -236,6 +237,7 @@ class SectionSummarizer:
         item = SectionSummaryItem(
             section_id=node.section_id,
             document_id=document_id,
+            title=node.title,
             summary_text=summary_text,
             chunk_count=chunk_count,
             chunk_id_list=list(descendant_chunk_ids),

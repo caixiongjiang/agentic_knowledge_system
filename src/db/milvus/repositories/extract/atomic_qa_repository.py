@@ -36,16 +36,20 @@ class AtomicQARepository(BaseRepository):
         top_k: int = 10,
         user_id: Optional[str] = None,
         document_id: Optional[str] = None,
-        knowledge_type: Optional[str] = None
+        section_id: Optional[str] = None,
+        knowledge_type: Optional[str] = None,
+        output_fields: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """根据问题向量搜索相似的QA对
-        
+
         Args:
             question_vector: 问题的向量表示
             top_k: 返回Top-K结果
             user_id: 限定用户ID
             document_id: 限定文档ID
+            section_id: 限定 Section ID（v1.1）
             knowledge_type: 限定知识类型
+            output_fields: 指定返回的标量字段（默认含 qa_id/section_id/document_id）
             
         Returns:
             搜索结果列表
@@ -56,17 +60,25 @@ class AtomicQARepository(BaseRepository):
             filter_parts.append(f"user_id == '{user_id}'")
         if document_id:
             filter_parts.append(f"document_id == '{document_id}'")
+        if section_id:
+            filter_parts.append(f"section_id == '{section_id}'")
         if knowledge_type:
             filter_parts.append(f"knowledge_type == '{knowledge_type}'")
         
         filter_expr = " and ".join(filter_parts) if filter_parts else None
+
+        # v1.1：默认返回含 section_id 的标量，供检索侧下钻 Mongo section_data
+        if output_fields is None:
+            output_fields = ["user_id", "document_id", "section_id",
+                             "knowledge_base_id", "type"]
         
         # 执行搜索
         results = self.search(
             vectors=[question_vector],
             vector_field="vector",
             top_k=top_k,
-            filter_expr=filter_expr
+            filter_expr=filter_expr,
+            output_fields=output_fields
         )
         
         return results[0] if results else []

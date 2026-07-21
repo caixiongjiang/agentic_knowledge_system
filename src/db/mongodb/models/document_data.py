@@ -40,15 +40,30 @@ class DocumentData(BaseDocument):
         description="消息ID：消息唯一标识符，来自global_id_generator"
     )
     
-    # ========== 摘要字段 ==========
+    # ========== 摘要字段（旧，deprecated）==========
+    # ⚠️ 已废弃：改为使用下方结构化 summary 字段（与 section_data.summary 风格对齐）。
+    # 保留字段不删，向后兼容；新代码应读写 summary 字段。
     summary_zh: Optional[str] = Field(
         None,
-        description="文档的中文摘要"
+        description="[deprecated] 文档的中文摘要（已改用 summary 结构化字段）"
     )
     
     summary_en: Optional[str] = Field(
         None,
-        description="文档的英文摘要"
+        description="[deprecated] 文档的英文摘要（已改用 summary 结构化字段）"
+    )
+
+    # ========== 摘要字段（新，结构化子文档）==========
+    # 由 FileSummaryService 通过 UPSERT $set 写入，与 section_data.summary 风格对齐。
+    # 结构：{summary_id, text, keywords, topics, document_type,
+    #        section_count, chunk_count, language}
+    summary: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "文件级摘要子文档（由 FileSummaryService 通过 UPSERT $set 写入）。"
+            "结构：{summary_id, text, keywords, topics, document_type, "
+            "section_count, chunk_count, language}。"
+        )
     )
     
     # ========== 元数据 ==========

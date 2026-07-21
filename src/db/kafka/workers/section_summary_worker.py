@@ -6,7 +6,7 @@ SectionSummary Worker
 监听: knowledge_base.split.end
 功能: 对文档内每个 section 生成 section 级摘要，写入 MySQL/MongoDB/Milvus
 输出:
-  - db_write.meta.start   (MySQL section_summary 关联表)
+  - db_write.meta.start   (MySQL section_summary 关联表 + section_document 拓扑回写)
   - db_write.mongo.start  (MongoDB section_data.summary 字段，局部 $set)
   - db_write.embedding.start (Milvus summary collection, role=section_summary)
   - knowledge_base.section_summary.end (触发下游 FileSummaryWorker)
@@ -173,8 +173,8 @@ class SectionSummaryWorker(BaseWorker):
                     f"SectionSummary: 文档无 section 摘要产出（可能无 section 或全部失败）: "
                     f"file_id={message.file_id}, document_id={document_id}"
                 )
-                # 暂不触发下游 file_summary：注释掉 SectionSummaryEndMessage 发送
-                # await self._send_section_summary_end_message(message, result)
+                # 无 section 摘要产出时仍发送 end 消息，让下游 FileSummary 知晓并跳过
+                await self._send_section_summary_end_message(message, result)
                 return True
 
             # 4. 分发到 db_write.*
@@ -183,8 +183,7 @@ class SectionSummaryWorker(BaseWorker):
             await self._send_embedding_messages(message, result)
 
             # 5. 发送 SectionSummaryEndMessage（触发下游 file_summary）
-            #    暂不往 file_summary 跑：注释掉触发消息发送，保留方法与 FileSummaryWorker 代码不动。
-            # await self._send_section_summary_end_message(message, result)
+            await self._send_section_summary_end_message(message, result)
 
             logger.info(
                 f"Section 摘要处理完成: file_id={message.file_id}, "
@@ -206,23 +205,37 @@ class SectionSummaryWorker(BaseWorker):
         message: SplitEndMessage,
         result: SectionSummaryResult,
     ) -> None:
-        """发送 MySQL section_summary 表写入消息。"""
+        """发送 MySQL 写入消息：section_summary 关联表 + section_document 拓扑回写。"""
         if not self._producer:
             logger.warning("Producer 未配置，无法发送 MySQL 消息")
             return
 
         mysql_data = result.get_mysql_data()
-        records = mysql_data.get("section_summary", [])
-        if not records:
-            return
-
         meta_msgs: List[MetaWriteMessage] = []
-        for record in records:
+
+        # 1) section_summary 关联表（UPSERT，按 section_id 主键）
+        for record in mysql_data.get("section_summary", []):
             record_id = record.get("section_id") or message.file_id
             meta_msgs.append(MetaWriteMessage(
                 user_id=message.user_id,
                 file_id=message.file_id,
                 table_name=MySQLTable.SECTION_SUMMARY,
+                record_data=record,
+                operation=WriteOperation.UPSERT,
+                record_id=record_id,
+            ))
+
+        # 2) section_document 拓扑回写（parent_section_id / is_leaf）。
+        #    v1.1：拓扑从 Mongo section_data 迁到 MySQL section_document，骨架树重建与
+        #    TextAnalyzer 叶子过滤都在 MySQL 完成。UPSERT 走 ON DUPLICATE KEY UPDATE，
+        #    与 split 阶段的 section_document 写入互不覆盖（各自只更新自己写入的列），
+        #    消除「split 写库异步 → section_summary 读库竞态」与跨消费者乱序问题。
+        for record in mysql_data.get("section_document", []):
+            record_id = record.get("section_id") or message.file_id
+            meta_msgs.append(MetaWriteMessage(
+                user_id=message.user_id,
+                file_id=message.file_id,
+                table_name=MySQLTable.SECTION_DOCUMENT,
                 record_data=record,
                 operation=WriteOperation.UPSERT,
                 record_id=record_id,
@@ -234,7 +247,8 @@ class SectionSummaryWorker(BaseWorker):
                 messages=meta_msgs,
             )
         logger.debug(
-            f"SectionSummary MySQL 消息发送完成: {len(meta_msgs)} 条 (section_summary)"
+            f"SectionSummary MySQL 消息发送完成: {len(meta_msgs)} 条 "
+            f"(section_summary + section_document 拓扑)"
         )
 
     async def _send_mongodb_messages(
@@ -321,7 +335,15 @@ class SectionSummaryWorker(BaseWorker):
             user_id=message.user_id,
             file_id=message.file_id,
             document_id=message.document_id or "",
+            # 轻量统计（给状态管理器/日志）
             section_summaries=result.get_section_summaries_stats(),
+            # 完整 payload（含正文，给 FileSummaryWorker 自包含消费）
+            section_summaries_payload=result.get_section_summaries_payload(),
+            # 透传字段（供 FileSummary 的 LLM prompt 与语言检测使用）
+            document_title=(message.filename or ""),
+            language=message.language or "unknown",
+            knowledge_base_id=message.knowledge_base_id,
+            knowledge_base_name=message.knowledge_base_name,
             total_sections=result.total_sections,
             successful_sections=result.successful_sections,
             llm_model=result.llm_model,
@@ -334,5 +356,6 @@ class SectionSummaryWorker(BaseWorker):
         )
         logger.info(
             f"发送 SectionSummaryEndMessage: file_id={message.file_id}, "
-            f"sections={result.total_sections}"
+            f"sections={result.total_sections}, "
+            f"payload_items={len(end_msg.section_summaries_payload)}"
         )

@@ -13,13 +13,13 @@
 =================================================="""
 
 from src.db.mysql.models.extract.chunk_summary import ChunkSummary
-from src.db.mysql.models.extract.chunk_atomic_qa import ChunkAtomicQA
 from src.db.mysql.models.extract.document_summary import DocumentSummary
 from src.db.mysql.models.extract.section_summary import SectionSummary
+from src.db.mysql.models.extract.section_atomic_qa import SectionAtomicQA
 
 __all__ = [
     "ChunkSummary",
-    "ChunkAtomicQA",
     "DocumentSummary",
     "SectionSummary",
+    "SectionAtomicQA",
 ]

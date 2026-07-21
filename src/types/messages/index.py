@@ -303,6 +303,10 @@ class SplitEndMessage(BaseMessage):
     # ========== 后台抽取链路所需溯源字段（v1.1 新增，可选）==========
     # 供下游 SectionSummaryWorker / FileSummaryWorker 加载数据用；
     # 留空时下游需自行按 file_id 反查 workspace_file_system。
+    filename: Optional[str] = Field(
+        default=None,
+        description="文件名（从 ParseEndMessage 透传，供 FileSummary 的 document_title 使用）"
+    )
     document_id: Optional[str] = Field(
         default=None,
         description="文档 ID（document-{uuid}，基于 file_sha256 的后台唯一标识）"

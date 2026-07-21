@@ -355,6 +355,8 @@ title_model_preset = "fast"
 # （temperature / max_tokens / thinking_budget / extra_params 取自该 preset，
 #  model 字段被前端选定的字符串覆盖）
 user_chat_template_preset = "fast"
+# read_image_chunks 工具内 VLM 的 preset（引用 [llm.presets.multimodal]）
+multimodal_model_preset = "multimodal"
 # 会话默认交互模式（agent=工具循环 / plan=先规划再执行）
 default_mode = "agent"
 # 是否默认启用思考链（仅 reasoning 类模型生效）

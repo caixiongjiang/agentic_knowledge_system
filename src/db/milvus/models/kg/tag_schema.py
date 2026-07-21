@@ -76,40 +76,47 @@ class TagSchema(BaseSchema):
             self.create_text_field(
                 name="knowledge_base_name",
                 max_length=255,
-                description="知识库名称，便于查询和展示"
+                description="知识库名称，便于查询和展示",
+                nullable=True,
             ),
             self.create_text_field(
                 name="parent_knowledge_base_id",
                 max_length=64,
-                description="父知识库ID，用于表示知识库之间的层次关系"
+                description="父知识库ID，用于表示知识库之间的层次关系",
+                nullable=True,
             ),
             self.create_text_field(
                 name="parent_knowledge_base_name",
                 max_length=255,
-                description="父知识库名称，便于查询和展示"
+                description="父知识库名称，便于查询和展示",
+                nullable=True,
             ),
             
             # ========== Agent追踪信息（JSON） ==========
             self.create_json_field(
                 name="agent_ids",
-                description="Agent追踪信息（JSON格式），包含message_id, session_id, task_id, agent_id等所有agent生命周期相关字段"
+                description="Agent追踪信息（JSON格式），包含message_id, session_id, task_id, agent_id等所有agent生命周期相关字段",
+                nullable=True,
             ),
             
             # ========== 类型和分类 ==========
             self.create_text_field(
                 name="type",
                 max_length=32,
-                description="标签类型，如：keyword/category/entity_type/topic"
+                description="标签类型，如：keyword/category/entity_type/topic",
+                nullable=True,
             ),
             self.create_text_field(
                 name="role",
                 max_length=64,
-                description="角色标识，如：auto-extracted/user-defined/system"
+                description="角色标识，如：auto-extracted/user-defined/system",
+                nullable=True,
             ),
             self.create_text_field(
                 name="knowledge_type",
                 max_length=255,
-                description="知识类型，标识标签的领域或分类"
+                description="知识类型，标识标签的领域或分类",
+                nullable=True,
             ),
             
             # ========== 文档和标签关联 ==========
@@ -121,16 +128,18 @@ class TagSchema(BaseSchema):
             self.create_text_field(
                 name="label_id",
                 max_length=64,
-                description="标签ID，用于分类和过滤"
+                description="标签ID，用于分类和过滤",
+                nullable=True,
             ),
             
             # ========== 时间戳 ==========
             self.create_int_field(
                 name="timestamp",
-                description="业务时间戳，记录业务发生时间"
+                description="业务时间戳，记录业务发生时间",
+                nullable=True,
             ),
-            self.create_timestamp_field(name="create_time"),
-            self.create_timestamp_field(name="update_time"),
+            self.create_timestamp_field(name="create_time", nullable=True),
+            self.create_timestamp_field(name="update_time", nullable=True),
         ]
     
     def get_index_params(self) -> Dict[str, Any]:

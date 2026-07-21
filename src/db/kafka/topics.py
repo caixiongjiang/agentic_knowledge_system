@@ -52,11 +52,12 @@ class KafkaTopics:
     SPLIT_END = "knowledge_base.split.end"          # 文本分割完成（前台进度100%）
     
     # 后台串行阶段 Topics
-    SUMMARY_END = "knowledge_base.summary.end"      # 文件摘要完成
+    FILE_SUMMARY_END = "knowledge_base.file_summary.end"  # 文件摘要完成（由 section_summary 汇总生成）
     SECTION_SUMMARY_END = "knowledge_base.section_summary.end"  # Section 摘要完成（file_summary 前置）
     
     # 后台并行阶段 Topics
     GRAPH_END = "knowledge_base.graph.end"          # 知识图谱抽取完成
+    ANALYZE_END = "knowledge_base.analyze.end"      # 文本分析（atomic_qa 抽取）完成，供 status manager 标记后台阶段完成
     # 注: 图片理解已从后台 pipeline 移除，改为 agent 需要时临时调用
     
     # ==================== 第二层：数据库写入 Topics ====================
@@ -95,9 +96,10 @@ class KafkaTopics:
             cls.INDEX_START,
             cls.PARSE_END,
             cls.SPLIT_END,
-            cls.SUMMARY_END,
+            cls.FILE_SUMMARY_END,
             cls.SECTION_SUMMARY_END,
             cls.GRAPH_END,
+            cls.ANALYZE_END,
             # 第二层：数据库写入
             cls.DB_WRITE_EMBEDDING,
             cls.DB_WRITE_GRAPH,
@@ -126,9 +128,10 @@ class KafkaTopics:
         index_start_partitions = topics_config.get("index_start_partitions", 32)
         parse_end_partitions = topics_config.get("parse_end_partitions", 32)
         split_end_partitions = topics_config.get("split_end_partitions", 32)
-        summary_end_partitions = topics_config.get("summary_end_partitions", 16)
+        summary_end_partitions = topics_config.get("file_summary_end_partitions", 16)
         section_summary_end_partitions = topics_config.get("section_summary_end_partitions", 16)
         graph_end_partitions = topics_config.get("graph_end_partitions", 16)
+        analyze_end_partitions = topics_config.get("analyze_end_partitions", 16)
         embedding_start_partitions = topics_config.get("embedding_start_partitions", 32)
         graph_start_partitions = topics_config.get("graph_start_partitions", 16)
         meta_start_partitions = topics_config.get("meta_start_partitions", 32)
@@ -162,8 +165,8 @@ class KafkaTopics:
                 cleanup_policy=cleanup_policy,
             ),
             # 后台阶段 Topics
-            cls.SUMMARY_END: TopicConfig(
-                name=cls.SUMMARY_END,
+            cls.FILE_SUMMARY_END: TopicConfig(
+                name=cls.FILE_SUMMARY_END,
                 num_partitions=summary_end_partitions,
                 replication_factor=replication_factor,
                 retention_ms=retention_ms,
@@ -181,6 +184,14 @@ class KafkaTopics:
             cls.GRAPH_END: TopicConfig(
                 name=cls.GRAPH_END,
                 num_partitions=graph_end_partitions,
+                replication_factor=replication_factor,
+                retention_ms=retention_ms,
+                min_insync_replicas=min_insync_replicas,
+                cleanup_policy=cleanup_policy,
+            ),
+            cls.ANALYZE_END: TopicConfig(
+                name=cls.ANALYZE_END,
+                num_partitions=analyze_end_partitions,
                 replication_factor=replication_factor,
                 retention_ms=retention_ms,
                 min_insync_replicas=min_insync_replicas,

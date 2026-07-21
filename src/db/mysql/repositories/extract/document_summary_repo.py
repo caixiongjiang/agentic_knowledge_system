@@ -55,6 +55,33 @@ class DocumentSummaryRepository(BaseRepository[DocumentSummary]):
             logger.error(f"根据summary_id查询失败: {e}")
             return None
 
+    def get_by_document_id(
+        self,
+        session: Session,
+        document_id: str
+    ) -> Optional[DocumentSummary]:
+        """
+        根据 document_id 查询 DocumentSummary（一个文档对应一条摘要）。
+
+        Args:
+            session: 数据库会话
+            document_id: 文档 ID
+
+        Returns:
+            DocumentSummary 实例，未找到返回 None
+        """
+        try:
+            result = session.query(self.model).filter(
+                self.model.document_id == document_id,
+                self.model.deleted == 0
+            ).first()
+            if not result:
+                logger.debug(f"未找到DocumentSummary: document_id={document_id}")
+            return result
+        except SQLAlchemyError as e:
+            logger.error(f"根据document_id查询失败: {e}")
+            return None
+
 
 # 全局实例
 document_summary_repo = DocumentSummaryRepository()

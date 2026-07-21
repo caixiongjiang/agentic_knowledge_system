@@ -40,6 +40,11 @@ class SectionSummaryItem(BaseModel):
         description="所属 Document ID"
     )
 
+    # Section 标题（供下游 FileSummary 的 LLM prompt 使用；不落 MySQL/Mongo summary 子文档）
+    title: str = Field(
+        default="",
+        description="Section 标题（供 FileSummary prompt 使用，不落 summary 子文档）"
+    )
 
     # Milvus 主键 + MySQL 关联键；全局唯一
     summary_id: str = Field(
@@ -76,13 +81,13 @@ class SectionSummaryItem(BaseModel):
         description="摘要语言（zh / en / mixed / unknown）"
     )
 
-    # ========== 结构层级（用于父子 section 拼树 / rollup）==========
+    # ========== 结构层级（用于父子 section 拼树 / rollup；v1.1 写 MySQL section_document）==========
     parent_section_id: Optional[str] = Field(
         default=None,
         description=(
             "直接父 section ID（顶级 section 为 None）。"
             "由 SectionSummaryService 建 section 树时按标题编号推断得到，"
-            "前端骨架接口据此递归组树。"
+            "写入 MySQL section_document.parent_section_id，前端骨架接口据此递归组树。"
         )
     )
 
@@ -90,8 +95,8 @@ class SectionSummaryItem(BaseModel):
         default=True,
         description=(
             "是否叶子 section。True=叶子（挂有 chunk，走 LLM 生成摘要）；"
-            "False=父节点（rollup，由子节点摘要合成）。用于日志/统计区分，"
-            "两类 item 结构一致，下游存储路径无差异。"
+            "False=父节点（rollup，由子节点摘要合成）。写入 MySQL section_document.is_leaf，"
+            "用于日志/统计区分及 TextAnalyzer 叶子过滤，两类 item 结构一致，下游存储路径无差异。"
         )
     )
 
@@ -118,6 +123,25 @@ class SectionSummaryItem(BaseModel):
             "knowledge_base_name": self.knowledge_base_name or "",
         }
 
+    def to_section_document_update_dict(self) -> Dict[str, Any]:
+        """
+        转换为 MySQL section_document 表的局部更新字典（UPSERT）。
+
+        v1.1（2026/07/17）：parent_section_id / is_leaf 由 MongoDB section_data 迁移到
+        MySQL section_document，骨架树重建与叶子过滤都在 MySQL 完成。这里只回写拓扑
+        两字段 + document_id（兜底，避免极端竞态下写出缺 document_id 的残行），
+        不触碰 knowledge_base_* 等 mixin 字段（由 split 阶段负责）。
+
+        UPSERT 走 ON DUPLICATE KEY UPDATE：列只出现在 INSERT 子句里才会被更新，
+        故本字典未包含的列（kb mixin）不会被覆盖。
+        """
+        return {
+            "section_id": self.section_id,
+            "document_id": self.document_id,
+            "parent_section_id": self.parent_section_id,
+            "is_leaf": self.is_leaf,
+        }
+
     def to_mongodb_update_dict(self) -> Dict[str, Any]:
         """
         转换为 MongoDB section_data 的局部更新字典。
@@ -125,13 +149,12 @@ class SectionSummaryItem(BaseModel):
         MongoDB Writer 走 UPSERT（$set 局部合并），故只需携带 _id 与 summary 字段，
         不会破坏 section_data 已有的 text / translation 等字段。
 
-        parent_section_id / is_leaf 一并写入 section_data 顶层，方便前端骨架接口
-        直接读取拼树。
+        v1.1（2026/07/17）：parent_section_id / is_leaf 已迁移到 MySQL section_document，
+        不再写入 section_data。chunk_id_list 仍写 Mongo（检索侧「summary 命中 → chunk 下钻」
+        需要它，且属内容型字段，留在 Mongo 与 text/summary 一致）。
         """
         return {
             "_id": self.section_id,
-            "parent_section_id": self.parent_section_id,
-            "is_leaf": self.is_leaf,
             "chunk_id_list": self.chunk_id_list,
             "summary": {
                 "summary_id": self.summary_id,
@@ -206,10 +229,14 @@ class SectionSummaryResult(BaseModel):
         获取用于 MySQL 的所有数据。
 
         Returns:
-            {"section_summary": [item.to_mysql_dict() ...]}
+            {
+                "section_summary": [item.to_mysql_dict() ...],
+                "section_document": [item.to_section_document_update_dict() ...],
+            }
         """
         return {
             "section_summary": [item.to_mysql_dict() for item in self.items],
+            "section_document": [item.to_section_document_update_dict() for item in self.items],
         }
 
     def get_mongodb_data(self) -> Dict[str, List[Dict[str, Any]]]:
@@ -240,6 +267,31 @@ class SectionSummaryResult(BaseModel):
                 "summary_id": item.summary_id,
                 "chunk_count": item.chunk_count,
                 "summary_length": len(item.summary_text),
+            }
+            for item in self.items
+        ]
+
+    def get_section_summaries_payload(self) -> List[Dict[str, Any]]:
+        """
+        供 SectionSummaryEndMessage.section_summaries_payload 携带的完整数据（含正文）。
+
+        下游 FileSummaryWorker 据此自包含消费，不读数据库，消除写库竞态。
+
+        Returns:
+            各 section 摘要的完整字段列表：
+            {section_id, summary_id, title, summary_text,
+             is_leaf, parent_section_id, chunk_count, language}
+        """
+        return [
+            {
+                "section_id": item.section_id,
+                "summary_id": item.summary_id,
+                "title": item.title,
+                "summary_text": item.summary_text,
+                "is_leaf": item.is_leaf,
+                "parent_section_id": item.parent_section_id or "",
+                "chunk_count": item.chunk_count,
+                "language": item.language,
             }
             for item in self.items
         ]

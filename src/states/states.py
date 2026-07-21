@@ -30,7 +30,7 @@ class IndexStage(str, Enum):
     PARSE_END = "parse_end"
     SPLIT_END = "split_end"
     SECTION_SUMMARY_END = "section_summary_end"
-    SUMMARY_END = "summary_end"
+    FILE_SUMMARY_END = "file_summary_end"
     GRAPH_END = "graph_end"
     ANALYZE_END = "analyze_end"
 

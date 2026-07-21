@@ -122,12 +122,10 @@ class ProcessingStage(str, Enum):
 
     # 后台串行1：section 摘要 → file 摘要
     SECTION_SUMMARY_END = "section_summary_end"
-    SUMMARY_END = "summary_end"
+    FILE_SUMMARY_END = "file_summary_end"
     
-    # 后台并行
+    # 后台并行（file_summary.end 触发，与 KGExtractor 并行）
     GRAPH_END = "graph_end"
-    
-    # 后台串行2
     ANALYZE_END = "analyze_end"
 
 

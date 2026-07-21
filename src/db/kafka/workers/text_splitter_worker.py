@@ -363,6 +363,16 @@ class TextSplitterWorker(BaseWorker):
         # P2 #7：跨表汇总后一次性批量发送（同一 Topic）
         meta_msgs: List[MetaWriteMessage] = []
 
+        # 各表的写入操作：section_document 用 UPSERT，其余用 INSERT。
+        # v1.1（2026/07/17）：section_summary 阶段会把 parent_section_id / is_leaf 回写
+        # 到 section_document（UPSERT，只更新这两列 + document_id）。由于 split 与
+        # section_summary 分属不同 Consumer、无跨消费者顺序保证，split 这里也用 UPSERT，
+        # 使两路写入无论谁先落库都不互相覆盖（各自 ON DUPLICATE KEY UPDATE 只动自己
+        # 写入的列），避免「summary 先到 → 残行 → split INSERT 撞主键失败」的竞态。
+        table_operations: Dict[str, WriteOperation] = {
+            "section_document": WriteOperation.UPSERT,
+        }
+
         for table_name_str, records in mysql_data.items():
             if not records:
                 continue
@@ -371,6 +381,8 @@ class TextSplitterWorker(BaseWorker):
             if not table_enum:
                 logger.error(f"未知的 MySQL 表名: {table_name_str}")
                 continue
+
+            operation = table_operations.get(table_name_str, WriteOperation.INSERT)
 
             for record in records:
                 record_id = (
@@ -384,7 +396,7 @@ class TextSplitterWorker(BaseWorker):
                     file_id=message.file_id,
                     table_name=table_enum,
                     record_data=record,
-                    operation=WriteOperation.INSERT,
+                    operation=operation,
                     record_id=record_id,
                 ))
 
@@ -643,6 +655,7 @@ class TextSplitterWorker(BaseWorker):
                 f"包含 {split_result.total_sections} 个章节"
             ),
             # 透传溯源字段，供下游 SectionSummaryWorker / FileSummaryWorker 使用
+            filename=message.filename,
             document_id=message.document_id,
             knowledge_base_id=message.knowledge_base_id,
             knowledge_base_name=message.knowledge_base_name,

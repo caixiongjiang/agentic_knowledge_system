@@ -13,7 +13,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from src.db.mongodb.repositories.base_repository import BaseRepository
@@ -123,6 +123,44 @@ class SectionDataRepository(BaseRepository[SectionData]):
         }).to_list()
         
         return results
+
+    async def get_atomic_qa_by_qa_ids(
+        self,
+        qa_ids: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        检索侧下钻：按 qa_id 列表反查所属 section_data.atomic_qa 条目。
+
+        遵循「Milvus 返回 id → Mongo 取数」原则：
+        Milvus atomic_qa_store 命中后拿到 qa_id/section_id，
+        本方法按 qa_id 在 section_data.atomic_qa[] 中定位，取出
+        question/answer/source_chunk_ids 供 QAItem 填充。
+
+        Args:
+            qa_ids: qa_id 列表
+
+        Returns:
+            {qa_id: atomic_qa_dict} 映射（dict 含 question/answer/source_chunk_ids/qa_type/relevance）
+        """
+        if not qa_ids:
+            return {}
+        # 利用 idx_atomic_qa_qa_id 索引
+        results = await SectionData.find({
+            "deleted": 0,
+            "atomic_qa.qa_id": {"$in": qa_ids},
+        }).to_list()
+
+        qa_map: Dict[str, Dict[str, Any]] = {}
+        for sec in results:
+            section_id = sec.id
+            for qa in (sec.atomic_qa or []):
+                qid = qa.get("qa_id")
+                if qid and qid in qa_ids:
+                    # 注入 section_id，供检索侧下钻回填 QAItem.metadata
+                    entry = dict(qa)
+                    entry["section_id"] = section_id
+                    qa_map[qid] = entry
+        return qa_map
 
 
 # ========== 全局实例 ==========

@@ -91,3 +91,33 @@ class SectionNode(BaseModel):
 
 # 解析 SectionNode 内 parent / children 的自引用前向引用
 SectionNode.model_rebuild()
+
+
+# ========== Atomic QA 抽取（v1.1 TextAnalyzer）==========
+
+
+class QAChunk(BaseModel):
+    """单个 chunk 的 QA 抽取输入项（来自 DB，纯内存结构）。"""
+
+    chunk_id: str
+    text: str = ""
+    chunk_type: str = "text"
+
+
+class QASection(BaseModel):
+    """
+    单个 section 的 QA 抽取输入聚合体（来自 DB 读数）。
+
+    由 qa_context.build_qa_sections_from_db_data 构造：
+    - section_id / title：来自 section_data（text 字段即 section 标题/正文）
+    - chunks：来自 chunk_data.search_text，按 section_data.chunk_id_list 顺序
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    section_id: str
+    title: str = ""
+    chunks: List[QAChunk] = Field(default_factory=list)
+
+    @property
+    def chunk_count(self) -> int:
+        return len(self.chunks)

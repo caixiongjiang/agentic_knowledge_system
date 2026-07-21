@@ -32,6 +32,13 @@ class KGExtractorWorker(BaseWorker):
     
     输入消息: SummaryEndMessage
     输出消息: GraphEndMessage, GraphWriteMessage
+
+    下游接通状态：
+    - KGExtractor 尚未实现（当前为 mock 数据），暂不发送 GraphWriteMessage 到
+      db_write.graph.start（_send_graph_write_message 调用已注释，方法保留），
+      避免 neo4j_writer 消费后因 Neo4j 未配置而报错。GraphEndMessage 仍正常
+      发送，供 status manager 标记后台阶段完成。待 KGExtractor 落地后取消
+      process_message_impl 中 _send_graph_write_message 注释即可接通。
     
     配置要求:
     - 资源: 4 CPU, 8GB RAM
@@ -55,7 +62,7 @@ class KGExtractorWorker(BaseWorker):
     
     def get_original_topic(self) -> str:
         """返回监听的 Topic"""
-        return KafkaTopics.SUMMARY_END
+        return KafkaTopics.FILE_SUMMARY_END
     
     async def process_message_impl(self, message: SummaryEndMessage) -> bool:
         """
@@ -93,8 +100,10 @@ class KGExtractorWorker(BaseWorker):
             }
             
             # 发送 GraphWriteMessage
-            await self._send_graph_write_message(message, cleaned_triples)
-            
+            # 图谱抽取尚未实现（当前为 mock 数据），暂不发送 GraphWriteMessage，
+            # 避免 neo4j_writer 消费后因 Neo4j 未配置而报错。待 KGExtractor 落地后取消注释。
+            # await self._send_graph_write_message(message, cleaned_triples)
+
             # 发送 GraphEndMessage
             await self._send_graph_end_message(message, stats)
             

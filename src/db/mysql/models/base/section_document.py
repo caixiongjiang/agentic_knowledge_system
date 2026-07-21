@@ -12,7 +12,7 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from sqlalchemy import Column, String
+from sqlalchemy import Boolean, Column, String
 from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 
 # TODO: 建立索引
@@ -20,37 +20,47 @@ from src.db.mysql.models.base_model import BaseModel, KnowledgeMixin
 class SectionDocument(BaseModel, KnowledgeMixin):
     """
     Section-Document 两层关系表
-    
+
     存储章节（Section）与文档（Document）之间的关系。
-    用于追溯 Section 所属的文档。
-    
+    用于追溯 Section 所属的文档，并承载 section 树拓扑（parent_section_id / is_leaf）。
+
     关系链：
     - Section -> Parent Section（可选，用于嵌套章节结构）
     - Section -> Document（所属文档）
+
+    v1.1（2026/07/17）：parent_section_id / is_leaf 由 MongoDB section_data 迁移到本表，
+    骨架树重建可在 MySQL 单次 JOIN 完成（消除 N+1），并按 (document_id, parent_section_id)
+    / (document_id, is_leaf) 建索引加速子树/叶子查询。
     """
     __tablename__ = "section_document"
-    
+
     # 主键
     section_id = Column(
-        String(255), 
-        primary_key=True, 
+        String(255),
+        primary_key=True,
         index=True,
         comment="Section唯一标识符（UUID格式）"
     )
-    
+
     # 关系字段
     parent_section_id = Column(
-        String(255), 
+        String(255),
         nullable=True,
-        comment="父Section ID（用于表示嵌套的章节层级关系）"
+        comment="父Section ID（用于表示嵌套的章节层级关系；由 SectionSummaryService 从标题编号推断写入）"
     )
-    
+
     document_id = Column(
-        String(255), 
+        String(255),
         nullable=True,
         comment="所属Document的ID"
     )
-    
+
+    is_leaf = Column(
+        Boolean,
+        nullable=True,
+        comment="是否叶子 section：True=挂有 chunk 的结构叶子，False=父 section（rollup）。由 SectionSummaryService 写入。"
+    )
+
     # BaseModel 和 KnowledgeMixin 字段会自动继承：
     # - knowledge_base_id, knowledge_base_name, parent_knowledge_base_id, parent_knowledge_base_name, knowledge_type
     # - status, creator, create_time, updater, update_time, deleted

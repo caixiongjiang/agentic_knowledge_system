@@ -40,9 +40,9 @@ class MySQLTable(StrEnum):
 
     Extract 层（提取类表）：
     - chunk_summary: Chunk 摘要
-    - chunk_atomic_qa: Chunk 原子QA
     - document_summary: Document 摘要
     - section_summary: Section 摘要
+    - section_atomic_qa: Section 原子QA（v1.1 section 级抽取）
     """
     CHUNK_META_INFO = "chunk_meta_info"
     SECTION_META_INFO = "section_meta_info"
@@ -52,9 +52,9 @@ class MySQLTable(StrEnum):
     WORKSPACE_FILE_SYSTEM = "workspace_file_system"
     WORKSPACE_FOLDER = "workspace_folder"
     CHUNK_SUMMARY = "chunk_summary"
-    CHUNK_ATOMIC_QA = "chunk_atomic_qa"
     DOCUMENT_SUMMARY = "document_summary"
     SECTION_SUMMARY = "section_summary"
+    SECTION_ATOMIC_QA = "section_atomic_qa"
 
 
 class MongoCollection(StrEnum):
@@ -153,11 +153,13 @@ class EmbeddingWriteMessage(BaseMessage):
 
     document_id: str = Field(
         ...,
+        min_length=1,
         description="文档ID（格式: document-{uuid}，基于file_sha256的后台唯一标识）"
     )
 
-    knowledge_base_id: Optional[str] = Field(
-        default=None,
+    knowledge_base_id: str = Field(
+        ...,
+        min_length=1,
         description="知识库ID"
     )
 

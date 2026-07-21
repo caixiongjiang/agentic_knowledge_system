@@ -16,10 +16,6 @@ from src.db.mysql.repositories.extract.chunk_summary_repo import (
     ChunkSummaryRepository,
     chunk_summary_repo
 )
-from src.db.mysql.repositories.extract.chunk_atomic_qa_repo import (
-    ChunkAtomicQARepository,
-    chunk_atomic_qa_repo
-)
 from src.db.mysql.repositories.extract.document_summary_repo import (
     DocumentSummaryRepository,
     document_summary_repo
@@ -28,14 +24,18 @@ from src.db.mysql.repositories.extract.section_summary_repo import (
     SectionSummaryRepository,
     section_summary_repo
 )
+from src.db.mysql.repositories.extract.section_atomic_qa_repo import (
+    SectionAtomicQARepository,
+    section_atomic_qa_repo
+)
 
 __all__ = [
     "ChunkSummaryRepository",
     "chunk_summary_repo",
-    "ChunkAtomicQARepository",
-    "chunk_atomic_qa_repo",
     "DocumentSummaryRepository",
     "document_summary_repo",
     "SectionSummaryRepository",
     "section_summary_repo",
+    "SectionAtomicQARepository",
+    "section_atomic_qa_repo",
 ]

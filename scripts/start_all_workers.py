@@ -28,9 +28,9 @@
     1. file_parser      - 文件解析 (knowledge_base.index.start → knowledge_base.parse.end)
     2. text_splitter    - 文本分割 (knowledge_base.parse.end → knowledge_base.split.end)
     3. section_summary  - Section 摘要 (knowledge_base.split.end → knowledge_base.section_summary.end)
-    4. file_summary     - 文件摘要 (knowledge_base.section_summary.end → knowledge_base.summary.end)
-    5. kg_extractor     - 知识图谱抽取 (knowledge_base.summary.end → knowledge_base.graph.end)
-    6. text_analyzer    - 文本分析 / Atomic QA (knowledge_base.summary.end → db_write.embedding.start)
+    4. file_summary     - 文件摘要 (knowledge_base.section_summary.end → knowledge_base.file_summary.end)
+    5. kg_extractor     - 知识图谱抽取 (knowledge_base.file_summary.end → knowledge_base.graph.end)  [mock]
+    6. text_analyzer    - 文本分析 / Atomic QA (knowledge_base.file_summary.end → analyze.end + db_write.*)  [v1.1]
 
     Writer 列表（第二层：数据库写入）:
     7. embedding_milvus_writer - 向量写入 (db_write.embedding.start → Milvus)
@@ -186,30 +186,37 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         class_name="FileSummaryWorker",
         module_path="src.db.kafka.workers.file_summary_worker",
         input_topic=KafkaTopics.SECTION_SUMMARY_END,
-        output_topics=[KafkaTopics.SUMMARY_END],
+        output_topics=[KafkaTopics.FILE_SUMMARY_END, KafkaTopics.DB_WRITE_META, KafkaTopics.DB_WRITE_MONGO, KafkaTopics.DB_WRITE_EMBEDDING],
         message_class=SectionSummaryEndMessage,
         group_id=ConsumerGroup.FILE_SUMMARY,
-        description="文件摘要 Worker (基于 section 摘要 rollup 生成文件级摘要)"
+        description="文件摘要 Worker (基于 section 摘要汇总生成 file 级摘要 + keywords/topics/document_type)"
     ),
+    # ⚠️ KGExtractor 尚为 mock 实现，默认启动不包含（见 --workers 参数）。
+    # TextAnalyzer v1.1 已落地，默认不启动（后台并行阶段），在 --workers 列表加入即可接通。
     "kg_extractor": WorkerConfig(
         name="kg_extractor",
         class_name="KGExtractorWorker",
         module_path="src.db.kafka.workers.kg_extractor_worker",
-        input_topic=KafkaTopics.SUMMARY_END,
+        input_topic=KafkaTopics.FILE_SUMMARY_END,
         output_topics=[KafkaTopics.GRAPH_END, KafkaTopics.DB_WRITE_GRAPH],
         message_class=SummaryEndMessage,
         group_id=ConsumerGroup.KG_EXTRACTOR,
-        description="知识图谱抽取 Worker (抽取实体关系、事件)"
+        description="[mock] 知识图谱抽取 Worker (抽取实体关系、事件)"
     ),
     "text_analyzer": WorkerConfig(
         name="text_analyzer",
         class_name="TextAnalyzerWorker",
         module_path="src.db.kafka.workers.text_analyzer_worker",
-        input_topic=KafkaTopics.SUMMARY_END,
-        output_topics=[KafkaTopics.DB_WRITE_EMBEDDING],
+        input_topic=KafkaTopics.FILE_SUMMARY_END,
+        output_topics=[
+            KafkaTopics.DB_WRITE_EMBEDDING,
+            KafkaTopics.DB_WRITE_MONGO,
+            KafkaTopics.DB_WRITE_META,
+            KafkaTopics.ANALYZE_END,
+        ],
         message_class=SummaryEndMessage,
         group_id=ConsumerGroup.TEXT_ANALYZER,
-        description="文本分析 Worker (Atomic QA 抽取，与 KGExtractor 并行消费 summary.end)"
+        description="文本分析 Worker (v1.1 section 级 atomic_qa 抽取，与 KGExtractor 并行消费 file_summary.end)"
     ),
     
     # ==================== 第二层：DB Writers ====================
@@ -426,7 +433,7 @@ class WorkerManager:
                 chunk_section_document_repo,
                 section_document_repo,
             )
-            from src.db.mysql.repositories.extract import section_summary_repo
+            from src.db.mysql.repositories.extract import section_summary_repo, document_summary_repo, section_atomic_qa_repo
             worker._session_factory = self.mysql_manager.SessionLocal
             worker.register_repositories({
                 MySQLTable.ELEMENT_META_INFO: element_meta_info_repo,
@@ -435,6 +442,8 @@ class WorkerManager:
                 MySQLTable.CHUNK_SECTION_DOCUMENT: chunk_section_document_repo,
                 MySQLTable.SECTION_DOCUMENT: section_document_repo,
                 MySQLTable.SECTION_SUMMARY: section_summary_repo,
+                MySQLTable.DOCUMENT_SUMMARY: document_summary_repo,
+                MySQLTable.SECTION_ATOMIC_QA: section_atomic_qa_repo,
             })
         elif worker_name == "embedding_milvus_writer":
             from src.client.embedding import create_embedding_client, create_sparse_embedding_client
@@ -594,10 +603,16 @@ def print_worker_list():
     
     # 第一层：Pipeline Workers（每个独立 Group）
     print("\n【第一层：Pipeline Workers】（每个 Worker 独立 Group）")
-    for name in ["file_parser", "text_splitter", "section_summary", "file_summary", "kg_extractor", "text_analyzer"]:
+    # 默认已实现：file_parser / text_splitter / section_summary / file_summary
+    for name in ["file_parser", "text_splitter", "section_summary", "file_summary"]:
         if name in WORKER_CONFIGS:
             config = WORKER_CONFIGS[name]
             print(f"    {name:25} - {config.description}  [{config.group_id}]")
+    # 后台并行阶段：text_analyzer (v1.1 已落地) / kg_extractor (mock)，默认不启动
+    for name in ["text_analyzer", "kg_extractor"]:
+        if name in WORKER_CONFIGS:
+            config = WORKER_CONFIGS[name]
+            print(f"    {name:25} - {config.description}  [{config.group_id}]  [默认不启动]")
     
     # 第二层：DB Writers（共享 Group）
     print(f"\n【第二层：DB Writers】（共享 {ConsumerGroup.DB_WRITER}）")
@@ -609,7 +624,8 @@ def print_worker_list():
     print("\n" + "=" * 80)
     print("用法:")
     print("  启动所有 Workers:        uv run python scripts/start_all_workers.py")
-    print("  启动所有 Pipeline Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,section_summary,file_summary,kg_extractor,text_analyzer")
+    print("  启动所有 Pipeline Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,section_summary,file_summary")
+    print("  (后台并行: text_analyzer v1.1 已落地 / kg_extractor mock，在 --workers 列表追加即可接通)")
     print("  启动所有 DB Writers:     uv run python scripts/start_all_workers.py --workers embedding_milvus_writer,neo4j_writer,mysql_writer,mongo_writer")
     print("  启动指定 Workers:        uv run python scripts/start_all_workers.py --workers file_parser,text_splitter")
     print("  查看可用 Workers:        uv run python scripts/start_all_workers.py --list")

@@ -222,6 +222,10 @@ class EmbeddingMilvusWriter(BaseWriter):
                 logger.warning(f"Collection {collection_type} 没有待处理的文本")
                 return True
 
+            # 在调用 Embedding 前校验 Milvus A/B/D 类必填字段，避免无效消息
+            # 消耗 Embedding 配额后才被 Milvus 的 DataNotMatchException 拒绝。
+            self._validate_required_fields(item_metadata, collection_type)
+
             # 2. 批量调用稠密向量 Embedding API
             embeddings = await self._batch_embed(texts)
 
@@ -247,7 +251,7 @@ class EmbeddingMilvusWriter(BaseWriter):
 
             # 4. 构建 Milvus 插入数据
             insert_data = self._build_insert_data(
-                item_metadata, embeddings, sparse_vectors
+                item_metadata, embeddings, sparse_vectors, collection_type
             )
 
             # 5. 批量写入到具体 Repository
@@ -331,6 +335,40 @@ class EmbeddingMilvusWriter(BaseWriter):
 
         return texts, item_metadata
 
+    @staticmethod
+    def _validate_required_fields(
+        item_metadata: List[Dict[str, Any]],
+        collection_type: MilvusCollection,
+    ) -> None:
+        """
+        校验写入 Milvus 前的 A/B/D 类必填字段。
+
+        A 类 ``id`` 由每条 item 提供；B 类 ``user_id``、``document_id``、
+        ``knowledge_base_id`` 来自 EmbeddingWriteMessage。Atomic QA 的 D 类
+        ``section_id`` 必须从 item metadata 透传。
+        """
+        required_fields = ("id", "user_id", "document_id", "knowledge_base_id")
+
+        for meta in item_metadata:
+            item_metadata_fields = meta.get("item_metadata") or {}
+            missing_fields = [
+                field_name
+                for field_name in required_fields
+                if not str(meta.get(field_name) or "").strip()
+            ]
+            if collection_type == MilvusCollection.ATOMIC_QA:
+                if not str(item_metadata_fields.get("section_id") or "").strip():
+                    missing_fields.append("section_id")
+
+            if missing_fields:
+                raise ValueError(
+                    "Milvus 写入消息缺少必填字段: "
+                    f"collection_type={collection_type}, "
+                    f"file_id={meta.get('file_id')}, "
+                    f"item_id={meta.get('id')!r}, "
+                    f"missing={', '.join(missing_fields)}"
+                )
+
     async def _batch_embed(self, texts: List[str]) -> List[List[float]]:
         """
         批量调用稠密向量 Embedding API（分批处理）
@@ -384,6 +422,7 @@ class EmbeddingMilvusWriter(BaseWriter):
         item_metadata: List[Dict[str, Any]],
         embeddings: List[List[float]],
         sparse_vectors: Optional[List[Dict[int, float]]] = None,
+        collection_type: Optional[MilvusCollection] = None,
     ) -> List[Dict[str, Any]]:
         """
         构建 Milvus 插入数据
@@ -394,10 +433,20 @@ class EmbeddingMilvusWriter(BaseWriter):
         item.metadata 取——不同来源（chunk / summary / qa）只需在
         metadata 里放对应字段，writer 统一透传到 record。
 
+        字段白名单分两层：
+        - ``_COMMON_EXT_FIELDS``：所有 collection schema 都定义了的扩展字段，
+          任意 collection 都可透传。
+        - ``_COLLECTION_EXT_FIELDS``：仅特定 collection schema 才有的字段
+          （如 atomic_qa_store 的 section_id）。按 collection 白名单透传，
+          避免把 schema 未定义的字段写进去触发 DataNotMatchException
+          （section_summary_store 等不带 section_id，但 section_summary
+          消息 metadata 里携带 section_id，故必须按 collection 收敛）。
+
         Args:
             item_metadata: 元数据列表
             embeddings: 稠密向量列表
             sparse_vectors: 稀疏向量列表（仅 CHUNK / ENHANCED_CHUNK 需要）
+            collection_type: 当前批次的目标 collection，用于选取 per-collection 扩展字段
 
         Returns:
             Milvus 插入数据列表
@@ -406,10 +455,9 @@ class EmbeddingMilvusWriter(BaseWriter):
         now_ts = int(time.time())
         insert_data = []
 
-        # item.metadata 里可能携带的扩展字段名（存在则填入 record）
-        _EXT_FIELDS = (
+        # 通用扩展字段：所有 collection schema 都定义了这些（存在则透传，非 None 才写入）
+        _COMMON_EXT_FIELDS = (
             "role",
-            "type",
             "parent_knowledge_base_id",
             "parent_knowledge_base_name",
             "agent_ids",
@@ -417,6 +465,14 @@ class EmbeddingMilvusWriter(BaseWriter):
             "label_id",
             "timestamp",
         )
+        # 仅特定 collection schema 才有的扩展字段（按 collection 白名单）
+        _COLLECTION_EXT_FIELDS: Dict[MilvusCollection, tuple] = {
+            # v1.1 TextAnalyzer：atomic_qa_store 检索侧按 section_id 下钻 Mongo section_data
+            MilvusCollection.ATOMIC_QA: ("section_id",),
+        }
+
+        extra_fields = _COLLECTION_EXT_FIELDS.get(collection_type, ())
+        ext_fields = _COMMON_EXT_FIELDS + extra_fields
 
         for idx, (meta, embedding) in enumerate(zip(item_metadata, embeddings)):
             chunk_meta = meta.get("item_metadata", {})
@@ -425,7 +481,7 @@ class EmbeddingMilvusWriter(BaseWriter):
                 "vector": embedding,
                 "user_id": meta["user_id"],
                 "document_id": meta["document_id"],
-                "type": chunk_meta.get("chunk_type"),
+                "type": chunk_meta.get("type") or chunk_meta.get("chunk_type"),
                 "knowledge_base_id": meta.get("knowledge_base_id"),
                 "knowledge_base_name": meta.get("knowledge_base_name"),
                 "create_time": now_ts,
@@ -433,9 +489,7 @@ class EmbeddingMilvusWriter(BaseWriter):
             }
 
             # 从 item.metadata 透传扩展字段（非 None 才写入，避免覆盖默认值）
-            for field_name in _EXT_FIELDS:
-                if field_name in ("type",):
-                    continue  # type 已在上面处理
+            for field_name in ext_fields:
                 value = chunk_meta.get(field_name)
                 if value is not None:
                     record[field_name] = value

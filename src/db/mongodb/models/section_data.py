@@ -47,23 +47,6 @@ class SectionData(BaseDocument):
         description="section翻译内容列表（支持多语言）"
     )
 
-    # ========== 结构层级 ==========
-    parent_section_id: Optional[str] = Field(
-        None,
-        description=(
-            "直接父 section ID（顶级 section 为 None）。"
-            "由 SectionSummaryService 从标题编号推断得到，前端骨架接口据此拼树。"
-        )
-    )
-
-    is_leaf: Optional[bool] = Field(
-        None,
-        description=(
-            "是否叶子 section。True=挂有 chunk 的叶子 section；"
-            "False=父 section（rollup 摘要）。None 表示尚未由 section_summary 更新。"
-        )
-    )
-
     chunk_id_list: List[str] = Field(
         default_factory=list,
         description=(
@@ -80,6 +63,21 @@ class SectionData(BaseDocument):
             "结构：{summary_id, text, chunk_count, language}。"
         )
     )
+
+    # ========== 原子问答（v1.1 TextAnalyzer 抽取） ==========
+    atomic_qa: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "section 级 atomic_qa 列表（由 TextAnalyzerWorker 通过 UPSERT $set 写入）。"
+            "每项结构：{qa_id, question, answer, source_chunk_ids[], qa_type, relevance, created_at}。"
+            "QA 在 section 级抽取、可横跨多 chunk，故存 section_data；"
+            "chunk 级溯源由 source_chunk_ids 承担。"
+            "检索侧「Milvus 命中 qa_id → Mongo by section_id → 在本数组按 qa_id 定位」取数。"
+        )
+    )
+
+    # 注：parent_section_id / is_leaf 已于 v1.1（2026/07/17）迁移到 MySQL section_document，
+    #     骨架树重建与叶子过滤都在 MySQL 完成。本集合只保留内容型字段（text/summary/chunk_id_list/atomic_qa）。
     
     # ========== Pydantic 配置 ==========
     class Config:
@@ -104,10 +102,11 @@ class SectionData(BaseDocument):
                 [("summary.summary_id", ASCENDING)],
                 name="idx_summary_id"
             ),
-            # 按 parent_section_id 拼树（前端骨架接口 / agent 下钻）
+            # v1.1：检索侧「Milvus 命中 qa_id → Mongo by section_id → 在 atomic_qa[] 按 qa_id 定位」
+            # 用 qa_id 反查所属 section_data 文档（候选 QA 跨多 section 时批量取数）
             IndexModel(
-                [("parent_section_id", ASCENDING)],
-                name="idx_parent_section_id"
+                [("atomic_qa.qa_id", ASCENDING)],
+                name="idx_atomic_qa_qa_id"
             ),
         ]
     

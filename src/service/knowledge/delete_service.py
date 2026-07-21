@@ -25,9 +25,10 @@ from src.db.mysql.repositories.base.chunk_section_document_repo import chunk_sec
 from src.db.mysql.repositories.base.element_meta_info_repo import element_meta_info_repo
 from src.db.mysql.repositories.base.section_document_repo import section_document_repo
 from src.db.mysql.repositories.base.section_meta_info_repo import section_meta_info_repo
-from src.db.mysql.repositories.extract.chunk_atomic_qa_repo import chunk_atomic_qa_repo
+from src.db.mysql.repositories.extract.section_atomic_qa_repo import section_atomic_qa_repo
 from src.db.mysql.repositories.extract.chunk_summary_repo import chunk_summary_repo
 from src.db.mysql.repositories.extract.document_summary_repo import document_summary_repo
+from src.db.mysql.repositories.extract.section_summary_repo import section_summary_repo
 from src.db.mysql.repositories.business.workspace_file_system_repo import workspace_file_system_repo
 
 from src.db.mongodb.repositories import (
@@ -457,9 +458,14 @@ class KnowledgeDeleteService:
                 bool(element_ids),
             ),
             (
-                "chunk_atomic_qa",
-                lambda: chunk_atomic_qa_repo.bulk_delete_by_ids(session, chunk_ids, updater=updater),
-                bool(chunk_ids),
+                "section_atomic_qa",
+                lambda: section_atomic_qa_repo.delete_by_document_id(session, document_id, updater=updater),
+                True,
+            ),
+            (
+                "section_summary",
+                lambda: section_summary_repo.bulk_delete_by_ids(session, section_ids, updater=updater),
+                bool(section_ids),
             ),
             (
                 "chunk_summary",
