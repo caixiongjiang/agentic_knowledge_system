@@ -67,7 +67,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.22" },
     { name = "redis", extras = ["hiredis"], specifier = ">=7.1.0" },
     { name = "requests", specifier = ">=2.32.5" },
-    { name = "skill-core", path = "third_party/skill_core-0.2.0-py3-none-any.whl" },
+    { name = "skill-core", path = "third_party/skill_core-0.2.2-py3-none-any.whl" },
     { name = "sqlalchemy", specifier = ">=2.0.45" },
     { name = "toml", specifier = ">=0.10.2" },
     { name = "uvicorn", specifier = ">=0.41.0" },
@@ -2673,15 +2673,15 @@ wheels = [
 
 [[package]]
 name = "skill-core"
-version = "0.2.0"
-source = { path = "third_party/skill_core-0.2.0-py3-none-any.whl" }
+version = "0.2.2"
+source = { path = "third_party/skill_core-0.2.2-py3-none-any.whl" }
 dependencies = [
     { name = "loguru" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
 ]
 wheels = [
-    { filename = "skill_core-0.2.0-py3-none-any.whl", hash = "sha256:208f8908da076ab8662bf7fe30b4ba9b4ce31a1769f5b53b38b7615431d5875a" },
+    { filename = "skill_core-0.2.2-py3-none-any.whl", hash = "sha256:b3d278b97140060d222266fb5013c4aa5d6caeb224beb99bf44f3dcff3257dab" },
 ]
 
 [package.metadata]

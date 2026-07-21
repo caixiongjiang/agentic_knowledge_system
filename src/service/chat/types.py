@@ -301,7 +301,14 @@ class ChatTurnContext(BaseModel):
         "",
         description=(
             "Slash 显式召唤技能的正文块（已解析），注入到当轮 *给 LLM 的* user "
-            "消息尾部；无显式技能时为空串。由 ChatService._build_forced_skills_block 生成。"
+            "消息最末尾；无显式技能时为空串。由 ChatService._build_forced_skills_block 生成。"
+        ),
+    )
+    forced_skill_names: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Slash 显式召唤且成功解析的技能名列表；供 build_index(exclude_names=…) "
+            "与 system explicit_skills_override 使用。"
         ),
     )
 

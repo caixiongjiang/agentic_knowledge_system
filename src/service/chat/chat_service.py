@@ -22,8 +22,8 @@
     - 每轮 ``astream`` 流出文本/思考/tool_call 增量；
     - 若收到 tool_calls，并行 ``asyncio.gather`` 执行后把结果以
       ``role=tool`` 拼回 messages，进入下一轮；
-    - 工具循环上限 ``max_tool_rounds`` 由 ``ChatSession`` / 请求覆盖；
-    - 达上限后做一次**收尾轮**强制纯文本。
+    - **不限制工具循环轮数**：循环一直进行，直到模型自主决定不再调用
+      工具（返回纯文本）为止，由 LLM 自己负责"何时停止检索"。
 
     与现有模块的协作
     ----------------
@@ -168,6 +168,9 @@ class ChatServiceConfig:
     template preset 里读，保持 Agent 单轮的体验稳定。
     """
 
+    multimodal_model_preset: str = "multimodal"
+    """``read_image_chunks`` 工具内 VLM 的 preset 名（引用 ``[llm.presets.multimodal]``）"""
+
     # ---------- session 默认（仅当 ChatRequest 与 ChatSession 都未指定时使用） ----------
     default_mode: str = "agent"
     default_enable_thinking: bool = False
@@ -224,6 +227,11 @@ class ChatServiceConfig:
         inst.user_chat_template_preset = str(
             chat_cfg.get(
                 "user_chat_template_preset", inst.user_chat_template_preset,
+            ),
+        )
+        inst.multimodal_model_preset = str(
+            chat_cfg.get(
+                "multimodal_model_preset", inst.multimodal_model_preset,
             ),
         )
         inst.default_mode = str(
@@ -449,12 +457,19 @@ class ChatService:
         # Slash 显式召唤的技能正文：注入到当轮 user turn（见 chat_stream），
         # 而非 system prompt——避免污染稳定前缀、提升 KV cache 命中率。
         _forced_skills_block: str = ""
+        _resolved_forced_skill_names: List[str] = []
         try:
             from src.service.skill.registry_singleton import get_registry
             _reg = get_registry()
-            _skills_index = _reg.build_index(set(_enabled_tools))
-            _forced_skills_block = self._build_forced_skills_block(
-                request.forced_skill_names, _reg,
+            _forced_skills_block, _resolved_forced_skill_names = (
+                self._build_forced_skills_block(
+                    request.forced_skill_names, _reg,
+                )
+            )
+            _exclude_skills = frozenset(_resolved_forced_skill_names)
+            _skills_index = _reg.build_index(
+                set(_enabled_tools),
+                exclude_names=_exclude_skills if _exclude_skills else None,
             )
         except Exception as e:
             logger.warning(f"技能索引构建失败（不影响对话）: {e}")
@@ -466,6 +481,7 @@ class ChatService:
                 enabled_tools=_enabled_tools,
                 scope=scope_dict,
                 skills_index=_skills_index,
+                explicit_skill_names=_resolved_forced_skill_names,
             )
         )
 
@@ -504,6 +520,7 @@ class ChatService:
             include_subfolders=effective_include_subfolders,
             scope_document_ids=scope_document_ids,
             forced_skills_block=_forced_skills_block,
+            forced_skill_names=_resolved_forced_skill_names,
         )
 
     def _resolve_folder_document_ids(
@@ -800,35 +817,49 @@ class ChatService:
     def _build_forced_skills_block(
         forced_skill_names: Optional[List[str]],
         registry: Any,
-    ) -> str:
+    ) -> tuple[str, List[str]]:
         """把 Slash 显式召唤的技能正文拼成注入当轮 user turn 的「显式技能」块。
 
-        - 注入到 *给 LLM 的* user 消息尾部（而非 system prompt），使 system prompt
+        - 注入到 *给 LLM 的* user 消息**最末尾**（而非 system prompt），使 system prompt
           保持稳定前缀、提升 KV cache 命中率（Cursor 式 slash 指令即注入 user turn）。
-        - 停用 / 不存在的技能静默跳过；无有效技能时返回空串（user 消息保持原样）。
+        - 停用 / 不存在的技能静默跳过；无有效技能时返回 ``("", [])``。
 
         Args:
             forced_skill_names: 前端 `/` 选中的技能名列表。
             registry: SkillRegistry 单例（有 ``get(name) -> Skill | None``）。
+
+        Returns:
+            ``(block_text, resolved_names)`` — block 为注入 user 的文本；resolved_names
+            为成功解析的技能名（供 build_index 剔除与 system override）。
         """
         if not forced_skill_names:
-            return ""
+            return "", []
 
         parts: List[str] = []
+        resolved: List[str] = []
         for name in forced_skill_names:
             try:
                 skill = registry.get(name)
             except Exception:  # noqa: BLE001
                 skill = None
             if skill is not None:
+                resolved.append(name)
                 parts.append(f"## 技能：{name}\n\n{skill.body}")
         if not parts:
-            return ""
+            return "", []
 
-        return (
-            "\n\n---\n本条消息通过 “/” 显式调用了以下技能，请把它们的完整指令作为"
-            "本轮的最高优先级要求，严格遵循：\n\n" + "\n\n".join(parts)
+        block = (
+            "\n\n---\n"
+            "【显式技能 / 最高优先级】\n"
+            "本条消息通过 \"/\" 显式调用了以下技能。请把它们的完整 Procedure 与 "
+            "Verification 作为本轮最高优先级要求，严格遵循：\n\n"
+            "- 已注入的技能**无需**再 `skill_view` 加载同名技能；"
+            "Level-2 模板（如 templates/report.html）按需 `skill_view(path=…)`。\n"
+            "- 技能要求的结构化长文 / 完整 HTML 交付物不受 system「保持简洁」约束。\n"
+            "- 取证阶段按技能 Procedure；证据满足技能要求后再停止工具并输出最终交付物。\n\n"
+            + "\n\n".join(parts)
         )
+        return block, resolved
 
     async def _build_references_block(
         self, references: List[Dict[str, Any]],
@@ -1117,15 +1148,10 @@ class ChatService:
                     keep_recent_turns=self._cfg.summary_keep_recent_turns,
                 )
 
-        # ---- 6) Chat 模式：固定初始检索 ----
+        # ---- 6) 种子命中（固定初始检索已下线，恒空）----
+        # Chat 模式去掉后不再做固定初始检索，统一由 Agent 工具循环按需检索；
+        # seed_hits 保留为空列表占位，供下游 citations 构建函数签名兼容。
         seed_hits: List[ChunkItem] = []
-
-        # folder scope 但 scope 为空（空文件夹/文件夹被删/文件未索引完）→
-        # 软降级：直接跳过初始检索，让 LLM 仅基于历史 + system_prompt 回答。
-        # 此处不抛错；§6 提示词层会通过 scope_summary 告知 LLM"当前范围为空"。
-        scope_is_empty = (
-            ctx.scope_kind == "folder" and not ctx.scope_document_ids
-        )
 
         # ---- 7) 组装首轮 messages ----
         # Cursor 式 @ 内联引用：解析 mentions → 「引用资料」块（方案A 小文件全量注入 +
@@ -1137,15 +1163,15 @@ class ChatService:
             mentions=getattr(request, "mentions", None),
             knowledge_base_ids=ctx.knowledge_base_ids,
         )
-        # 顺序：用户原文 → 显式技能块（/ 召唤）→ @ 引用资料块。
+        # 顺序：用户原文 → @ 引用资料块 → 显式技能块（/ 召唤，置于最末尾以强化 recency）。
         # 三者仅拼进「给 LLM 的」user 副本；持久化/显示用的 user 消息仍是 ctx.query 原文。
         user_message_for_llm = (
             ctx.query
-            + ctx.forced_skills_block
             + await self._build_references_block(references)
+            + ctx.forced_skills_block
         )
 
-        # Chat 模式：检索结果以"参考片段"形式注入 user 消息之前
+        # 组装首轮 messages（seed_hits 现恒空，参考片段注入由 Agent 工具循环按需触发）
         # （compose_chat_messages 内部处理格式化 + alias 替换）
         messages: List[Dict[str, Any]] = compose_chat_messages(
             system_prompt=ctx.system_prompt,
@@ -1191,7 +1217,6 @@ class ChatService:
         tool_msg_ids: List[str] = []
 
         tools_schema = kit.schemas() if kit else None
-        max_rounds = max(1, ctx.max_tool_rounds)
         # 业务"开/关" → LLMClient 的三态 thinking_budget：
         #   ctx.enable_thinking=True  → cfg.thinking_budget（>0 → reasoning_effort 档位）
         #   ctx.enable_thinking=False → 0（显式 reasoning_effort="none"）
@@ -1212,7 +1237,6 @@ class ChatService:
                 result=result,
                 enrich_cache=enrich_cache,
                 alias_map=alias_map,
-                max_rounds=max_rounds,
                 tools_schema=tools_schema,
                 thinking_budget=thinking_budget,
                 search_progress_queue=search_progress_queue,
@@ -1299,7 +1323,6 @@ class ChatService:
         result: ChatTurnResult,
         enrich_cache: TurnEnrichCache,
         alias_map: ChunkAliasMap,
-        max_rounds: int,
         tools_schema: Optional[List[Dict[str, Any]]],
         thinking_budget: Optional[int],
         search_progress_queue: Optional[
@@ -1307,9 +1330,17 @@ class ChatService:
         ] = None,
         turn_citations: Optional[Dict[str, Citation]] = None,
     ) -> AsyncIterator[ChatEvent]:
-        """Agent 工具循环 + 收尾轮的执行体"""
+        """Agent 工具循环执行体
 
-        for round_idx in range(max_rounds):
+        循环**不设轮数上限**：每一轮流式拉取 LLM 输出，若模型返回
+        ``tool_calls`` 则并行执行工具并把结果拼回 messages 进入下一轮；
+        若模型返回纯文本（无 tool_calls）则持久化后退出。何时停止检索
+        完全交给 LLM 自主决策（system prompt 里的"何时停止检索"约束负责
+        引导其在拿到充分证据后立即作答）。
+        """
+
+        round_idx = 0
+        while True:
             assistant_msg_id = generate_message_id()
             acc = StreamAccumulator(model=client.model)
 
@@ -1465,7 +1496,7 @@ class ChatService:
             # enrich 检索工具的 chunks_brief（补充 file_name / section_title 等渲染元数据）
             if kit and kit._search_results:
                 all_brief_chunks: List[ChunkItem] = []
-                for cb_list, _ in kit._search_results.values():
+                for cb_list, _, _ in kit._search_results.values():
                     for cb in cb_list:
                         all_brief_chunks.append(ChunkItem(
                             chunk_id=cb["chunk_id"],
@@ -1478,7 +1509,7 @@ class ChatService:
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"enrich search chunks 失败: {e}")
                 # 把 enrich 后的元数据写回 chunks_brief
-                for cb_list, _ in kit._search_results.values():
+                for cb_list, _, _ in kit._search_results.values():
                     for cb in cb_list:
                         meta = enrich_cache.get(cb["chunk_id"])
                         if meta:
@@ -1573,6 +1604,8 @@ class ChatService:
                     if search_result:
                         completed_event["retrieval_chunks"] = search_result[0]
                         completed_event["retrieval_params"] = search_result[1]
+                        if len(search_result) > 2 and search_result[2] is not None:
+                            completed_event["recall_stats"] = search_result[2]
                 if kit:
                     execution_model = kit.execution_model_for(tc.id)
                     if execution_model:
@@ -1586,88 +1619,7 @@ class ChatService:
                 ChatEventType.TOOL_ROUND_DONE,
                 {"round": round_idx, "tool_calls": tool_round_brief},
             )
-
-        # ---- 达到 max_rounds 仍含 tool_calls → 收尾轮强制纯文本 ----
-        if messages and messages[-1].get("role") == "tool":
-            messages.append({
-                "role": "user",
-                "content": (
-                    "已达到允许的工具调用轮次。**请勿再调用任何工具**，"
-                    "仅基于当前对话中的检索片段与工具输出，"
-                    "用自然语言给出最终答复。"
-                ),
-            })
-            final_msg_id = generate_message_id()
-            acc = StreamAccumulator(model=client.model)
-            try:
-                async for chunk in client.astream(
-                    messages=messages,
-                    tools=None,
-                    thinking_budget=thinking_budget,
-                    max_tokens=self._cfg.max_completion_tokens,
-                ):
-                    for sev in acc.feed(chunk):
-                        ev = self._stream_event_to_chat_event(sev)
-                        if ev is not None:
-                            yield ev
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"收尾轮 LLM 调用失败: {e}")
-                yield ChatEvent(
-                    ChatEventType.ERROR,
-                    {"phase": "finalize", "error": str(e)},
-                )
-                return
-
-            fin = acc.finalize()
-            if fin.tool_calls:
-                logger.warning(
-                    "收尾轮模型仍返回 tool_calls（已忽略，按纯文本处理）",
-                )
-            messages.append(_assistant_message(fin))
-            result.rounds += 1
-            citations_final = await self._build_citations_for_round(
-                seed_hits=seed_hits,
-                added_chunks=supplemented,
-                enrich_cache=enrich_cache,
-                alias_map=alias_map,
-                extra_citations=list((turn_citations or {}).values()),
-            )
-            if turn_citations is not None:
-                for c in citations_final:
-                    if c.chunk_id:
-                        turn_citations[c.chunk_id] = c
-            all_citations_for_persist = citations_final
-            citations_for_display = self._filter_cited_only(
-                fin.content or "", citations_final,
-            )
-            await self._persist_assistant(
-                ctx=ctx,
-                message_id=final_msg_id,
-                resp=fin,
-                citations=all_citations_for_persist,
-                alias_map=alias_map,
-                kit=kit,
-            )
-            assistant_msg_ids.append(final_msg_id)
-            yield ChatEvent(
-                ChatEventType.MESSAGE_DONE,
-                {
-                    "message_id": final_msg_id,
-                    "role": "assistant",
-                    "round": "final",
-                    "finish_reason": fin.finish_reason,
-                    "tool_calls_count": 0,
-                    "citations_count": len(citations_for_display),
-                    "citations": [c.model_dump() for c in citations_for_display],
-                    "has_thinking": bool(fin.thinking),
-                    "usage": {
-                        "prompt_tokens": fin.usage.prompt_tokens,
-                        "completion_tokens": fin.usage.completion_tokens,
-                        "total_tokens": fin.usage.total_tokens,
-                    },
-                },
-            )
-            result.final_finish_reason = fin.finish_reason
+            round_idx += 1
 
     # ============================================================
     # 子功能：工具并行执行
@@ -1784,6 +1736,8 @@ class ChatService:
                     if sr:
                         extra_kwargs["retrieval_chunks"] = sr[0]
                         extra_kwargs["retrieval_params"] = sr[1]
+                        if len(sr) > 2 and sr[2] is not None:
+                            extra_kwargs["recall_stats"] = sr[2]
                 if tc_time_ms is not None:
                     extra_kwargs["time_ms"] = tc_time_ms
                 if execution_model:
@@ -1829,33 +1783,6 @@ class ChatService:
             logger.error(
                 f"持久化 assistant 失败: msg={message_id}, err={e}",
             )
-
-    @staticmethod
-    async def _update_user_retrieval_metadata(
-        *,
-        user_msg_id: str,
-        updater: str,
-        hit_count: int,
-        time_ms: float,
-        chunk_previews: List[Dict[str, Any]],
-        params: Dict[str, Any],
-    ) -> None:
-        """把 Chat 模式固定检索结果写入 user 消息的 metadata.retrieval，便于历史回放。"""
-        try:
-            await chat_message_repo.update(
-                user_msg_id,
-                updater=updater,
-                metadata={
-                    "retrieval": {
-                        "hit_count": hit_count,
-                        "time_ms": round(time_ms, 1),
-                        "chunks": chunk_previews,
-                        "params": params,
-                    },
-                },
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"写入 user 检索元数据失败（忽略）: {e}")
 
     @staticmethod
     async def _persist_tool_message(

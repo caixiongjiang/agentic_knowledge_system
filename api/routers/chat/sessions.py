@@ -126,6 +126,7 @@ def _to_message_item(m: ChatMessage) -> ChatMessageItem:
                 items_added=int(tc.items_added or 0),
                 retrieval_chunks=tc.retrieval_chunks,
                 retrieval_params=tc.retrieval_params,
+                recall_stats=tc.recall_stats,
                 time_ms=tc.time_ms,
                 execution_model=tc.execution_model,
             )

@@ -64,7 +64,7 @@ class KnowledgeNavToolKit:
         else:
             self.scope_label = "kb"
 
-        self.search_results: Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any]]] = {}
+        self.search_results: Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any], Optional[Dict[str, Any]]]] = {}
         self._result_counts: Dict[str, int] = {}
         self._execution_models: Dict[str, str] = {}
         self._capabilities: Dict[str, Any] = {}
@@ -268,6 +268,6 @@ class KnowledgeNavToolKit:
         return self._capabilities[key]
 
     @property
-    def _search_results(self) -> Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+    def _search_results(self) -> Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any], Optional[Dict[str, Any]]]]:
         """兼容旧代码对私有字段的访问（chat_service）。"""
         return self.search_results

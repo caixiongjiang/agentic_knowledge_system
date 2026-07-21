@@ -120,6 +120,8 @@ class ToolCallItem(BaseModel):
     # 检索工具专用：持久化检索结果，供历史回放时前端渲染"查看"按钮
     retrieval_chunks: Optional[List[Dict[str, Any]]] = None
     retrieval_params: Optional[Dict[str, Any]] = None
+    # 召回链路统计（独立于查询参数）：每路 recalled/aligned/final + 融合/rerank 计数 + chunk_id 截断列表
+    recall_stats: Optional[Dict[str, Any]] = None
     time_ms: Optional[float] = None
     execution_model: Optional[str] = None
 

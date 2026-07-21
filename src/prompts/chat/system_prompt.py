@@ -6,7 +6,7 @@
 @Author  : caixiongjiang
 @Date    : 2026/05/11
 @Function:
-    Chat 模式的系统提示词模板
+    对话（Agent 工具循环）的系统提示词模板
 
     槽位
     ----
@@ -94,15 +94,13 @@ DEFAULT_CHAT_SYSTEM = """\
 补充：
 
 - 同一轮内若需多条独立信息，可并行发起多个 tool_calls；避免用完全相同的参数重复调用同一工具。
-- 系统会限定工具循环的总轮数，到达上限后会要求你直接输出最终回答。
 
 ## 多轮对话
 
 - 历史对话与当前 user 消息会按时间序排在你面前；当上文已涉及某主题时，请保持术语一致。
 - tool 消息（role=tool）是上一轮你的工具调用返回的真实结果，可信。
 
-{skills_index}
-{custom_addendum}\
+{skills_index}{explicit_skills_override}{custom_addendum}\
 """
 
 
@@ -203,7 +201,6 @@ SINGLE_DOC_CHAT_SYSTEM = """\
 - 同一轮内若需要多条独立信息，可以并行发起多个 tool_calls
   （例如同时 `drill_down` 多个 section、或一次 `read_chunks` 多个 alias）。
 - 避免用完全相同的参数重复调用同一工具。
-- 系统会限定工具循环的总轮数，到达上限后会要求你直接输出最终回答。
 
 ## 多轮对话
 
@@ -215,6 +212,27 @@ SINGLE_DOC_CHAT_SYSTEM = """\
 """
 
 
+EXPLICIT_SKILLS_OVERRIDE_TEMPLATE = """\
+
+## 本轮显式技能模式
+
+用户已通过 "/" 指定技能：{skill_names}（完整指令见当轮 user 消息末尾）。本轮：
+
+- 最终回答必须完整执行上述技能的 Procedure 与 Verification；
+- system 中的「保持简洁」「直接回答」仅适用于中间说明，**不适用于**技能规定的交付物；
+- 「何时停止检索」以技能 Procedure 的取证要求为准，而非 generic 三条件；
+- 勿用普通问答格式替代技能规定的输出形态（如 HTML 调研报告）。
+"""
+
+
+def _build_explicit_skills_override(names: Sequence[str]) -> str:
+    """渲染显式技能 override 块；无显式技能时返回空串。"""
+    if not names:
+        return ""
+    skill_list = "、".join(f"`{n}`" for n in names)
+    return EXPLICIT_SKILLS_OVERRIDE_TEMPLATE.format(skill_names=skill_list)
+
+
 def build_chat_system_prompt(
     *,
     tools_description: Optional[str] = None,
@@ -222,8 +240,9 @@ def build_chat_system_prompt(
     custom_addendum: Optional[str] = None,
     scope: Optional[dict] = None,
     skills_index: Optional[str] = None,
+    explicit_skill_names: Optional[Sequence[str]] = None,
 ) -> str:
-    """构造 Chat 模式的 system prompt。
+    """构造对话（Agent 工具循环）的 system prompt。
 
     Args:
         tools_description: 工具说明文本；若为 ``None`` 且给了 ``enabled_tools``，
@@ -251,6 +270,8 @@ def build_chat_system_prompt(
             prompt，而是由 ChatService 注入到当轮 user 消息尾部（见
             ``ChatService._build_forced_skills_block``），以避免污染稳定前缀、
             提升 KV cache 命中率。
+        explicit_skill_names: Slash 显式召唤且已成功解析的技能名列表。
+            非空时在 system 中注入短 override，并配合 ``build_index(exclude_names=…)``。
     """
     desc = (
         tools_description
@@ -261,11 +282,13 @@ def build_chat_system_prompt(
     custom_block = f"\n## 自定义规范\n\n{addendum}\n" if addendum else ""
     skills_block = (skills_index or "").strip()
     skills_section = f"\n{skills_block}\n" if skills_block else ""
+    explicit_override = _build_explicit_skills_override(list(explicit_skill_names or []))
 
     return DEFAULT_CHAT_SYSTEM.format(
         scope_summary=_format_scope_summary(scope),
         tools_description=desc or "(本会话未启用导航工具)",
         skills_index=skills_section,
+        explicit_skills_override=explicit_override,
         custom_addendum=custom_block,
     )
 
@@ -557,6 +580,8 @@ def build_single_doc_chat_system_prompt(
 __all__ = [
     "DEFAULT_CHAT_SYSTEM",
     "SINGLE_DOC_CHAT_SYSTEM",
+    "EXPLICIT_SKILLS_OVERRIDE_TEMPLATE",
     "build_chat_system_prompt",
     "build_single_doc_chat_system_prompt",
+    "_build_explicit_skills_override",
 ]

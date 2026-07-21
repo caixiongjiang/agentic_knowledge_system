@@ -24,10 +24,10 @@
        - 持久化 2 条 assistant + 1 条 tool；
        - tool_calls_count=1, tool_rounds=1, citations 合并初始 hits + 新增 chunk。
 
-    3. **Agent 触达 max_rounds → 收尾轮**
-       - max_tool_rounds=1，模型第 1 轮就发了 tool_call；
-       - 工具执行后进入收尾轮（messages 已经在前面调用 _run_loop_real 内拼好）；
-       - 收尾轮给纯文本回复；assistant_msg_ids 长度=2（第一轮 + 收尾轮）。
+    3. **Agent 工具循环 → 模型自主停止**
+       - 第 1 轮模型发 tool_call，工具执行后进入下一轮；
+       - 第 2 轮模型自主不再调用工具，给纯文本回复；
+       - assistant_msg_ids 长度=2（工具轮 + 纯文本轮），无强制收尾轮。
 
     4. **session 不存在 → ERROR**
        - get_session 返回 None；只产出 1 个 ChatEvent(ERROR)；不写消息。
@@ -106,6 +106,7 @@ class _FakeSession:
     title: str = "新会话"
     knowledge_base_ids: List[str] = field(default_factory=list)
     model_preset: str = "fast"
+    model: Optional[str] = None
     agent_mode: bool = False
     enable_thinking: bool = False
     max_tool_rounds: int = 3
@@ -596,12 +597,12 @@ async def test_agent_one_tool_round() -> bool:
 
 
 # ============================================================
-# Test 3: max_rounds=1 + tool_call → 强制收尾轮
+# Test 3: Agent 工具循环 → 模型自主停止（不设轮数上限）
 # ============================================================
 
 
-async def test_agent_max_rounds_finalize() -> bool:
-    _hr("Test 3 · Agent: max_rounds=1 + 收尾轮强制纯文本")
+async def test_agent_loop_until_no_tool_calls() -> bool:
+    _hr("Test 3 · Agent: 工具循环直到模型自主不再调用工具")
 
     sess = _FakeSession(
         session_id="sess_3", user_id="u_3", agent_mode=True,
@@ -612,9 +613,9 @@ async def test_agent_max_rounds_finalize() -> bool:
         _Scripted(_tool_call_chunks(
             tool_id="call_a", name="context_window", args_str=args_json,
         )),
-        # 收尾轮 → 纯文本
+        # 第二轮：模型自主决定不再调用工具，直接给纯文本
         _Scripted(_content_chunks(
-            ["已达到上限", "，", "基于已有信息回答"], finish="stop",
+            ["已拿到足够证据", "，", "基于已有信息回答"], finish="stop",
         )),
     ]
     from src.service.chat.tools import KnowledgeNavToolKit
@@ -632,7 +633,7 @@ async def test_agent_max_rounds_finalize() -> bool:
             session=sess, llm_scripts=scripts, hits=[],
         )
         req = ChatRequest(
-            session_id="sess_3", user_id="u_3", query="试试 max_rounds=1",
+            session_id="sess_3", user_id="u_3", query="试试 agent 循环",
         )
         events = await _consume(service.chat_stream(req))
     finally:
@@ -640,23 +641,23 @@ async def test_agent_max_rounds_finalize() -> bool:
 
     msg_dones = [ev for ev in events if ev.type == ChatEventType.MESSAGE_DONE]
     if len(msg_dones) != 2:
-        _fail(f"应有 2 个 MESSAGE_DONE（含 round=0 + round='final'），"
+        _fail(f"应有 2 个 MESSAGE_DONE（round=0 工具轮 + round=1 纯文本），"
               f"实际 {len(msg_dones)}")
         return False
-    if msg_dones[-1].data.get("round") != "final":
-        _fail(f"最后 MESSAGE_DONE.round 应为 'final'：{msg_dones[-1].data}")
+    if msg_dones[-1].data.get("round") != 1:
+        _fail(f"最后 MESSAGE_DONE.round 应为 1（纯文本收尾轮）：{msg_dones[-1].data}")
         return False
-    _ok("收尾轮 MESSAGE_DONE.round='final' ✓")
+    _ok("第二轮 MESSAGE_DONE.round=1（模型自主停止）✓")
 
-    # 收尾轮 LLM 调用：tools=None
-    if llm.calls[-1].get("tools") is not None:
-        _fail(f"收尾轮 tools 应为 None，实际：{llm.calls[-1].get('tools')}")
+    # 第二轮流式调用仍带 tools_schema（不再有"强制 tools=None 的收尾轮"）
+    if llm.calls[-1].get("tools") is None:
+        _fail(f"第二轮 tools 不应为 None（不再强制收尾），实际：{llm.calls[-1].get('tools')}")
         return False
-    _ok("收尾轮 astream(tools=None) ✓")
+    _ok("第二轮 astream(tools=schema) ✓（无强制收尾轮）")
 
     turn = [ev for ev in events if ev.type == ChatEventType.TURN_DONE][0]
     if turn.data["rounds"] != 2:
-        _fail(f"rounds 应为 2（首轮 tool + 收尾轮），实际 {turn.data['rounds']}")
+        _fail(f"rounds 应为 2（首轮 tool + 第二轮纯文本），实际 {turn.data['rounds']}")
         return False
     _ok(f"turn.done.rounds=2")
     return True
@@ -774,7 +775,7 @@ def main() -> int:
     tests = [
         ("rag_single_turn", test_rag_single_turn_happy),
         ("agent_one_tool_round", test_agent_one_tool_round),
-        ("agent_max_rounds_finalize", test_agent_max_rounds_finalize),
+        ("agent_loop_until_no_tool_calls", test_agent_loop_until_no_tool_calls),
         ("session_not_found", test_session_not_found),
         ("retrieval_failure_resilient", test_retrieval_failure_resilient),
         ("first_turn_triggers_title", test_first_turn_triggers_title),

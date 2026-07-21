@@ -128,6 +128,10 @@ class ToolCallRecord(PydanticBaseModel):
     retrieval_params: Optional[Dict[str, Any]] = Field(
         None, description="检索参数（query_text, top_k, route_plan 等）",
     )
+    # 召回结果统计（独立于检索参数）：每路召回/对齐/最终计数 + chunk_id 截断列表，供前端「召回链路」栏目
+    recall_stats: Optional[Dict[str, Any]] = Field(
+        None, description="召回链路统计（每路 recalled/aligned/final 计数 + 融合/rerank 计数 + chunk_id 截断列表）",
+    )
     time_ms: Optional[float] = Field(
         None, description="工具执行耗时（毫秒）",
     )

@@ -41,7 +41,8 @@ from src.service.chat.image_processing import (
     bytes_to_data_url,
     resize_image_bytes,
 )
-from src.utils.component_config_manager import get_component_config_manager
+from src.client.llm import create_llm_client_from_preset
+from src.utils.config_manager import get_config_manager
 
 
 @dataclass
@@ -80,11 +81,9 @@ class ImageChunkReaderService:
 
     def _get_llm_client(self):
         if self._llm_client is None:
-            self._llm_client = (
-                get_component_config_manager().get_llm_client_for_component(
-                    "image_understand",
-                )
-            )
+            chat_cfg = get_config_manager().get_section("chat") or {}
+            preset = str(chat_cfg.get("multimodal_model_preset", "multimodal"))
+            self._llm_client = create_llm_client_from_preset(preset)
         return self._llm_client
 
     async def _load_chunks(
