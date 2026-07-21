@@ -9,7 +9,7 @@
 
 > **2026-05 废弃说明**: 实现层 **Phase 6 LLM₂ 结果验证 Agent**（`ResultValidator`）已下线。
 > 现行 Pipeline 仅保留 Phase 1-5（LLM₁ 路由规划 → 多路召回 → 跨粒度对齐 → 融合 → Rerank）。
-> Chat 模式下"不充分则继续召回"的决策权交给上层 Chat Agent 自身，通过 `search_knowledge_base` 工具自主二次检索。
+> "不充分则继续召回"的决策权交给上层 Agent 自身，通过 `search_knowledge_base` 工具自主二次检索（不再有独立 Chat 模式）。
 > 本文档保留 Phase 6 / LLM₂ 相关章节作为**历史背景**，请以 `src/service/knowledge/retrieve_service.py` 实际实现为准。
 
 ## 1. 架构理念演进
