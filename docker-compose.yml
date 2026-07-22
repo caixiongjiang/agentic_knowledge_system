@@ -12,6 +12,16 @@ services:
       - ./config:/app/config:ro
     networks:
       - aks-network
+      - mysql_default
+      - mongodb_default
+      - redis_default
+      - kafka_kafka-network
+      - milvus-gpu_default
+      - neo4j_default
+      - logto_litellm_pgsql_app-network
+      - bge-m3-network
+      - vllm-reranker-network
+      - vllm-embedding-network
 
   # ==================== AKS Workers (Kafka 消费端) ====================
   aks-workers:
@@ -25,7 +35,37 @@ services:
     command: ["uv", "run", "python", "scripts/start_all_workers.py"]
     networks:
       - aks-network
+      - mysql_default
+      - mongodb_default
+      - redis_default
+      - kafka_kafka-network
+      - milvus-gpu_default
+      - neo4j_default
+      - logto_litellm_pgsql_app-network
+      - bge-m3-network
+      - vllm-reranker-network
+      - vllm-embedding-network
 
 networks:
   aks-network:
     driver: bridge
+  mysql_default:
+    external: true
+  mongodb_default:
+    external: true
+  redis_default:
+    external: true
+  kafka_kafka-network:
+    external: true
+  milvus-gpu_default:
+    external: true
+  neo4j_default:
+    external: true
+  logto_litellm_pgsql_app-network:
+    external: true
+  bge-m3-network:
+    external: true
+  vllm-reranker-network:
+    external: true
+  vllm-embedding-network:
+    external: true

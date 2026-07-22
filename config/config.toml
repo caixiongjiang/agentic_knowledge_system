@@ -14,7 +14,7 @@
 mode = "server"
 
 # ========== Server版配置（生产环境） ==========
-host = "192.168.201.14"
+host = "milvus-standalone"
 port = 19530
 # 数据库名称（Milvus 2.x支持多数据库）
 database = "default"
@@ -45,7 +45,7 @@ search_params = { ef = 128 }
 
 # MongoDB 文档数据库配置
 [mongodb]
-host = "192.168.201.14"
+host = "mongodb"
 port = 27017
 # 数据库名称
 database = "default"
@@ -63,7 +63,7 @@ min_pool_size = 10
 mode = "mysql"
 
 # ========== MySQL Server配置 ==========
-host = "192.168.201.14"
+host = "services_mysql"
 port = 3306
 database = "default"
 # 字符集
@@ -84,7 +84,7 @@ sqlite_echo = false
 
 # Neo4j 图数据库配置
 [neo4j]
-uri = "bolt://localhost:7687"
+uri = "bolt://neo4j:7687"
 # 连接池配置
 max_connection_lifetime = 3600
 max_connection_pool_size = 50
@@ -97,7 +97,7 @@ database = "neo4j"
 # 模式选择：standalone（单机）或 cluster（集群）
 mode = "standalone"
 
-host = "192.168.201.14"
+host = "services_redis"
 port = 6379
 # 数据库编号（0-15）
 db = 2
@@ -119,7 +119,7 @@ type = "minio"
 
 # MinIO 对象存储配置
 [minio]
-endpoint = "192.168.201.14:9000"
+endpoint = "milvus-minio:9000"
 # 是否使用安全连接
 secure = false
 # 默认存储桶
@@ -133,7 +133,7 @@ part_size = 10485760  # 10MB
 [kafka]
 # ========== Broker配置 ==========
 # Kafka集群地址（多个地址用逗号分隔）
-bootstrap_servers = ["192.168.201.14:9092"]
+bootstrap_servers = ["kafka:9092"]
 # 安全协议: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL
 security_protocol = "PLAINTEXT"
 # SASL机制: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
@@ -420,7 +420,7 @@ model = "openai/qwen3-embedding-0.6b"
 
 [sparse_embedding]
 # BGE-M3 稀疏向量服务 API 地址
-api_base = "http://192.168.201.14:18085/v1"
+api_base = "http://bge-m3-server:18085/v1"
 # 模型名称
 model_name = "bge-m3"
 # 批处理大小
