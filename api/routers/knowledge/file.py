@@ -20,12 +20,13 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from urllib.parse import quote
 
-from api.dependencies.auth import get_current_user_id
+from api.dependencies.auth import get_current_user_id, get_current_user_id_from_token
 from api.dependencies.database import get_db_session, get_storage_manager
 from api.schemas.common import ApiResponse
 from api.schemas.knowledge.file import (
@@ -227,6 +228,58 @@ async def get_file_preview(
             expires_in=expires,
         ),
         message="预览URL生成成功",
+    )
+
+
+# ==================== 文件原始内容（流式返回，供前端 PDF 预览） ====================
+
+
+@router.get(
+    "/{file_id}/raw",
+    summary="获取文件原始内容（内联返回，供前端 PDF 预览）",
+    description=(
+        "服务端从对象存储读取文件字节并以 Content-Disposition: inline 返回，"
+        "避免把 MinIO 内部预签名 URL（http + 内网域名）直接暴露给浏览器。"
+        "鉴权通过 query 参数 token（与 WebSocket 鉴权通道一致），"
+        "因为 react-pdf / <img> 等浏览器原生资源加载无法自定义请求头。"
+    ),
+)
+async def get_file_raw(
+    file_id: str,
+    user_id: str = Depends(get_current_user_id_from_token),
+    session: Session = Depends(get_db_session),
+    storage: StorageManager = Depends(get_storage_manager),
+) -> Response:
+    file_record = workspace_file_system_repo.get_by_user_and_file(
+        session, user_id, file_id
+    )
+    if not file_record:
+        raise HTTPException(status_code=404, detail="文件不存在或无权限")
+
+    if not file_record.file_path:
+        raise HTTPException(
+            status_code=400, detail="文件存储路径缺失，无法读取原始内容"
+        )
+
+    try:
+        data = await storage.download_file(file_record.storage_path)
+    except Exception as e:
+        logger.error(
+            f"下载文件原始内容失败: file_id={file_id}, "
+            f"storage_path={file_record.storage_path}, error={e}"
+        )
+        raise HTTPException(status_code=500, detail="读取文件原始内容失败")
+
+    media_type = file_record.mime_type or "application/octet-stream"
+    filename = file_record.file_name or file_id
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{quote(filename)}"',
+            "Content-Length": str(len(data)),
+            "Cache-Control": "private, max-age=60",
+        },
     )
 
 

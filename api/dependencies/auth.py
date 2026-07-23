@@ -15,7 +15,7 @@
 
 from typing import Optional
 
-from fastapi import Header, HTTPException, WebSocket, status
+from fastapi import Header, HTTPException, Query, WebSocket, status
 
 
 async def get_current_user_id(
@@ -38,6 +38,35 @@ async def get_current_user_id(
     if not x_user_id or not x_user_id.strip():
         raise HTTPException(status_code=401, detail="缺少有效的用户标识")
     return x_user_id.strip()
+
+
+async def get_current_user_id_from_token(
+    token: str = Query(..., description="用户ID（query token 通道，与 X-User-Id 等价）")
+) -> str:
+    """
+    从 query 参数 ``token`` 提取当前用户 ID。
+
+    适用场景：浏览器原生无法自定义请求头的资源加载（如 react-pdf 的
+    ``<Document file={url}>``、``<img src>`` 等），它们只能走普通 GET，
+    无法携带 ``X-User-Id`` header。此时改用 ``?token=<user_id>`` 鉴权，
+    与 WebSocket 的 query token 通道保持一致。
+
+    生产环境应替换为 JWT Token 验证逻辑。
+
+    Args:
+        token: query 参数中的用户ID
+
+    Returns:
+        用户ID字符串
+
+    Raises:
+        HTTPException: 如果 token 为空
+    """
+    user_id = (token or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="缺少有效的用户标识")
+    return user_id
+
 
 
 async def get_current_user_id_ws(websocket: WebSocket) -> Optional[str]:

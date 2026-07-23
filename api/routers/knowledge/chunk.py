@@ -12,11 +12,12 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from loguru import logger
 from sqlalchemy.orm import Session
+from urllib.parse import quote
 
-from api.dependencies.auth import get_current_user_id
+from api.dependencies.auth import get_current_user_id, get_current_user_id_from_token
 from api.dependencies.database import get_db_session, get_storage_manager
 from api.schemas.common import ApiResponse
 from api.schemas.knowledge.file import ChunkImagePreviewResponse, ChunkPositionResponse, ElementPosition
@@ -88,6 +89,87 @@ async def get_chunk_image_preview(
             file_name=getattr(meta, "image_file_name", None),
         ),
         message="图片预览URL生成成功",
+    )
+
+
+# ==================== Chunk 图片原始内容（流式返回，供前端预览） ====================
+
+# image_file_type（png/jpg/jpeg/svg/...）-> MIME 映射
+_IMAGE_MIME_MAP = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "svg": "image/svg+xml",
+    "tiff": "image/tiff",
+    "tif": "image/tiff",
+}
+
+
+def _resolve_image_mime(meta) -> str:
+    """从 ChunkMetaInfo 推断图片 MIME，缺失时回退到 image/png。"""
+    for attr in ("image_file_type", "image_file_suffix"):
+        val = getattr(meta, attr, None)
+        if val:
+            key = val.lower().lstrip(".")
+            if key in _IMAGE_MIME_MAP:
+                return _IMAGE_MIME_MAP[key]
+    return "image/png"
+
+
+@router.get(
+    "/{chunk_id}/raw-image",
+    summary="获取图片 chunk 的原始内容（内联返回，供前端预览）",
+    description=(
+        "服务端从对象存储读取图片字节并以 Content-Disposition: inline 返回，"
+        "避免把 MinIO 内部预签名 URL（http + 内网域名）直接暴露给浏览器。"
+        "鉴权通过 query 参数 token（与 WebSocket 鉴权通道一致），"
+        "因为 <img> 等浏览器原生资源加载无法自定义请求头。"
+    ),
+)
+async def get_chunk_raw_image(
+    chunk_id: str,
+    user_id: str = Depends(get_current_user_id_from_token),
+    session: Session = Depends(get_db_session),
+    storage: StorageManager = Depends(get_storage_manager),
+) -> Response:
+    # 1. 查询 ChunkMetaInfo
+    meta = chunk_meta_info_repo.get_by_id(session, chunk_id)
+    if not meta or getattr(meta, "deleted", 0) != 0:
+        raise HTTPException(status_code=404, detail="Chunk 不存在或已删除")
+
+    if meta.chunk_type != "image":
+        raise HTTPException(
+            status_code=400, detail="非图片类型 chunk，无法返回图片内容"
+        )
+
+    if not meta.bucket_name or not meta.image_file_path:
+        raise HTTPException(
+            status_code=404, detail="图片存储路径缺失，无法读取原始内容"
+        )
+
+    storage_path = f"{meta.bucket_name}/{meta.image_file_path}"
+    try:
+        data = await storage.download_file(storage_path)
+    except Exception as e:
+        logger.error(
+            f"下载 chunk 图片原始内容失败: chunk_id={chunk_id}, "
+            f"storage_path={storage_path}, error={e}"
+        )
+        raise HTTPException(status_code=500, detail="读取图片原始内容失败")
+
+    media_type = _resolve_image_mime(meta)
+    filename = getattr(meta, "image_file_name", None) or chunk_id
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{quote(filename)}"',
+            "Content-Length": str(len(data)),
+            "Cache-Control": "private, max-age=60",
+        },
     )
 
 
