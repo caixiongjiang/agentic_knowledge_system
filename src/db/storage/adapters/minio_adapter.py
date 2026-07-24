@@ -150,22 +150,22 @@ class MinIOAdapter(BaseStorageAdapter):
     async def download_file(self, storage_path: str) -> bytes:
         """
         从 MinIO 下载文件
-        
+
         Args:
             storage_path: 存储路径，格式为 "bucket/object_path"
-            
+
         Returns:
             bytes: 文件字节内容
-            
+
         Raises:
             FileNotFoundError: 文件不存在
             DownloadError: 下载失败
         """
         self._check_closed()
-        
+
         try:
             bucket, object_path = self._parse_path(storage_path)
-            
+
             # 获取对象
             response = self._client.get_object(bucket, object_path)
             try:
@@ -175,7 +175,7 @@ class MinIOAdapter(BaseStorageAdapter):
             finally:
                 response.close()
                 response.release_conn()
-                
+
         except S3Error as e:
             if e.code == 'NoSuchKey':
                 raise StorageFileNotFoundError(f"文件不存在: {storage_path}")
@@ -185,6 +185,106 @@ class MinIOAdapter(BaseStorageAdapter):
         except Exception as e:
             logger.error(f"下载文件失败: {storage_path}, 错误: {e}")
             raise DownloadError(f"下载文件失败: {e}")
+
+    def stat_file(self, storage_path: str) -> tuple[int, str]:
+        """
+        获取对象元信息（大小 + ETag），用于流式响应的 Content-Length 与条件请求。
+
+        Args:
+            storage_path: 存储路径，格式为 "bucket/object_path"
+
+        Returns:
+            tuple[int, str]: (字节数, ETag)。ETag 缺失时回退为空串。
+
+        Raises:
+            FileNotFoundError: 文件不存在
+            DownloadError: 其它失败
+        """
+        self._check_closed()
+        try:
+            bucket, object_path = self._parse_path(storage_path)
+            obj = self._client.stat_object(bucket, object_path)
+            size = int(getattr(obj, "size", 0) or 0)
+            etag = str(getattr(obj, "etag", "") or "")
+            return size, etag
+        except S3Error as e:
+            if e.code == 'NoSuchKey':
+                raise StorageFileNotFoundError(f"文件不存在: {storage_path}")
+            logger.error(f"stat_object 失败: {storage_path}, 错误: {e}")
+            raise DownloadError(f"获取文件元信息失败: {e}")
+        except Exception as e:
+            logger.error(f"stat_object 失败: {storage_path}, 错误: {e}")
+            raise DownloadError(f"获取文件元信息失败: {e}")
+
+    def download_file_stream(self, storage_path: str, chunk_size: int = 64 * 1024):
+        """
+        流式下载文件字节块（同步生成器）。
+
+        供 FastAPI ``StreamingResponse`` 使用：Starlette 会把同步迭代器放到
+        线程池中执行，避免阻塞事件循环。相比 ``download_file`` 一次性
+        ``response.read()`` 把整个文件读进内存，这里边读边发，降低后端
+        内存占用并缩短首字节时间（TTFB）。
+
+        调用方负责保证适配器在生成器耗尽前存活；生成器结束时（正常结束
+        或异常）会释放底层 urllib3 响应与连接。
+
+        Args:
+            storage_path: 存储路径，格式为 "bucket/object_path"
+            chunk_size: 每次吐出的字节块大小，默认 64KB
+
+        Yields:
+            bytes: 文件字节块
+        """
+        self._check_closed()
+        bucket, object_path = self._parse_path(storage_path)
+        response = self._client.get_object(bucket, object_path)
+        try:
+            for chunk in response.stream(amt=chunk_size):
+                yield chunk
+        finally:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"释放 MinIO 流式响应时忽略异常: {e}")
+
+    def download_file_range_stream(
+        self,
+        storage_path: str,
+        offset: int,
+        length: int,
+        chunk_size: int = 64 * 1024,
+    ):
+        """
+        流式下载文件的**指定字节区间**（同步生成器），用于 HTTP Range 请求。
+
+        底层调用 MinIO/S3 的区间读取（``get_object(offset, length)``），
+        只传输请求区间内的字节，配合前端 PDF.js 的渐进式加载：首屏只取
+        当前页字节，滚动时按页再取，避免整文件预下载。
+
+        Args:
+            storage_path: 存储路径，格式为 "bucket/object_path"
+            offset: 起始字节偏移（含），从 0 开始
+            length: 读取字节数
+            chunk_size: 每次吐出的字节块大小，默认 64KB
+
+        Yields:
+            bytes: 区间内的文件字节块
+        """
+        self._check_closed()
+        bucket, object_path = self._parse_path(storage_path)
+        response = self._client.get_object(
+            bucket, object_path, offset=offset, length=length
+        )
+        try:
+            for chunk in response.stream(amt=chunk_size):
+                yield chunk
+        finally:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"释放 MinIO 区间流式响应时忽略异常: {e}")
     
     async def upload_file(
         self,

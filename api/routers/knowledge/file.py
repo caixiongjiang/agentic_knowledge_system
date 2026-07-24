@@ -20,7 +20,8 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -44,7 +45,9 @@ from api.schemas.knowledge.folder import FileInfo, FileListResponse
 from src.db.mysql.repositories.business.workspace_file_system_repo import (
     workspace_file_system_repo,
 )
+from src.db.storage.factory import StorageFactory
 from src.db.storage.manager import StorageManager
+from src.db.storage.range_utils import is_range_satisfiable, parse_range_header
 from src.service.knowledge.delete_service import knowledge_delete_service
 from src.service.knowledge.move_service import knowledge_move_service
 
@@ -246,9 +249,9 @@ async def get_file_preview(
 )
 async def get_file_raw(
     file_id: str,
+    request: Request,
     user_id: str = Depends(get_current_user_id_from_token),
     session: Session = Depends(get_db_session),
-    storage: StorageManager = Depends(get_storage_manager),
 ) -> Response:
     file_record = workspace_file_system_repo.get_by_user_and_file(
         session, user_id, file_id
@@ -261,25 +264,75 @@ async def get_file_raw(
             status_code=400, detail="文件存储路径缺失，无法读取原始内容"
         )
 
+    storage_path = file_record.storage_path
+    media_type = file_record.mime_type or "application/octet-stream"
+    filename = file_record.file_name or file_id
+
+    # 流式端点不复用 get_storage_manager 依赖：该依赖会在响应体流式发送前被
+    # FastAPI 清理（关闭 urllib3 连接池），导致流式中断。这里独立创建适配器，
+    # 由生成器在结束时自行释放底层响应与连接。
     try:
-        data = await storage.download_file(file_record.storage_path)
+        adapter = StorageFactory.create_adapter()
+        size, etag = adapter.stat_file(storage_path)
     except Exception as e:
         logger.error(
-            f"下载文件原始内容失败: file_id={file_id}, "
-            f"storage_path={file_record.storage_path}, error={e}"
+            f"stat 文件原始内容失败: file_id={file_id}, "
+            f"storage_path={storage_path}, error={e}"
         )
         raise HTTPException(status_code=500, detail="读取文件原始内容失败")
 
-    media_type = file_record.mime_type or "application/octet-stream"
-    filename = file_record.file_name or file_id
-    return Response(
-        content=data,
+    total = size or 0
+    range_header = request.headers.get("range")
+
+    # 公共响应头：内容按 file_id 不可变，长期缓存 + immutable 让浏览器命中
+    # 本地缓存，重复打开同一文件即时显示，不再每次都走 frp 隧道重传。
+    # X-Accel-Buffering: no 让 Nginx 关闭对该响应的代理缓冲，直接透传字节流，
+    # 否则 Nginx 会先把整个上游响应缓冲到磁盘/内存再发给客户端，抵消流式收益。
+    base_headers = {
+        "Content-Disposition": f'inline; filename="{quote(filename)}"',
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=86400, immutable",
+        "X-Accel-Buffering": "no",
+    }
+    if etag:
+        base_headers["ETag"] = etag
+
+    # ---- Range 请求：PDF.js 渐进式加载会发 bytes=0-N 等区间 ----
+    if range_header:
+        parsed = parse_range_header(range_header, total)
+        if parsed is None:
+            # 区间不可满足 → 416
+            if not is_range_satisfiable(range_header, total):
+                return Response(
+                    status_code=416,
+                    headers={
+                        **base_headers,
+                        "Content-Range": f"bytes */{total}" if total else "bytes */*",
+                    },
+                )
+            # 多区间等不支持的形式：退回整文件 200
+        else:
+            offset, end, length = parsed
+            range_headers = {
+                **base_headers,
+                "Content-Range": f"bytes {offset}-{end}/{total}",
+                "Content-Length": str(length),
+            }
+            return StreamingResponse(
+                adapter.download_file_range_stream(storage_path, offset, length),
+                status_code=206,
+                media_type=media_type,
+                headers=range_headers,
+            )
+
+    # ---- 整文件 200 ----
+    full_headers = {**base_headers}
+    if total:
+        full_headers["Content-Length"] = str(total)
+    return StreamingResponse(
+        adapter.download_file_stream(storage_path),
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{quote(filename)}"',
-            "Content-Length": str(len(data)),
-            "Cache-Control": "private, max-age=60",
-        },
+        headers=full_headers,
     )
 
 

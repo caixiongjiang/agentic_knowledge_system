@@ -12,7 +12,8 @@
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy.orm import Session
 from urllib.parse import quote
@@ -23,7 +24,9 @@ from api.schemas.common import ApiResponse
 from api.schemas.knowledge.file import ChunkImagePreviewResponse, ChunkPositionResponse, ElementPosition
 from src.db.mysql.repositories.base.chunk_meta_info_repo import chunk_meta_info_repo
 from src.db.mysql.repositories.base.element_meta_info_repo import element_meta_info_repo
+from src.db.storage.factory import StorageFactory
 from src.db.storage.manager import StorageManager
+from src.db.storage.range_utils import is_range_satisfiable, parse_range_header
 
 router = APIRouter(tags=["Chunk"])
 
@@ -131,9 +134,9 @@ def _resolve_image_mime(meta) -> str:
 )
 async def get_chunk_raw_image(
     chunk_id: str,
+    request: Request,
     user_id: str = Depends(get_current_user_id_from_token),
     session: Session = Depends(get_db_session),
-    storage: StorageManager = Depends(get_storage_manager),
 ) -> Response:
     # 1. 查询 ChunkMetaInfo
     meta = chunk_meta_info_repo.get_by_id(session, chunk_id)
@@ -151,25 +154,72 @@ async def get_chunk_raw_image(
         )
 
     storage_path = f"{meta.bucket_name}/{meta.image_file_path}"
+    media_type = _resolve_image_mime(meta)
+    filename = getattr(meta, "image_file_name", None) or chunk_id
+
+    # 流式端点不复用 get_storage_manager 依赖：该依赖会在响应体流式发送前被
+    # FastAPI 清理（关闭 urllib3 连接池），导致流式中断。这里独立创建适配器，
+    # 由生成器在结束时自行释放底层响应与连接。
     try:
-        data = await storage.download_file(storage_path)
+        adapter = StorageFactory.create_adapter()
+        size, etag = adapter.stat_file(storage_path)
     except Exception as e:
         logger.error(
-            f"下载 chunk 图片原始内容失败: chunk_id={chunk_id}, "
+            f"stat chunk 图片原始内容失败: chunk_id={chunk_id}, "
             f"storage_path={storage_path}, error={e}"
         )
         raise HTTPException(status_code=500, detail="读取图片原始内容失败")
 
-    media_type = _resolve_image_mime(meta)
-    filename = getattr(meta, "image_file_name", None) or chunk_id
-    return Response(
-        content=data,
+    total = size or 0
+    range_header = request.headers.get("range")
+
+    # 公共响应头：图片内容按 chunk_id 不可变，长期缓存 + immutable 让浏览器
+    # 命中本地缓存，重复预览同一图片即时显示，不再每次都走 frp 隧道重传。
+    # X-Accel-Buffering: no 让 Nginx 关闭对该响应的代理缓冲，直接透传字节流。
+    base_headers = {
+        "Content-Disposition": f'inline; filename="{quote(filename)}"',
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=86400, immutable",
+        "X-Accel-Buffering": "no",
+    }
+    if etag:
+        base_headers["ETag"] = etag
+
+    # ---- Range 请求 ----
+    if range_header:
+        parsed = parse_range_header(range_header, total)
+        if parsed is None:
+            if not is_range_satisfiable(range_header, total):
+                return Response(
+                    status_code=416,
+                    headers={
+                        **base_headers,
+                        "Content-Range": f"bytes */{total}" if total else "bytes */*",
+                    },
+                )
+            # 多区间等不支持的形式：退回整文件 200
+        else:
+            offset, end, length = parsed
+            range_headers = {
+                **base_headers,
+                "Content-Range": f"bytes {offset}-{end}/{total}",
+                "Content-Length": str(length),
+            }
+            return StreamingResponse(
+                adapter.download_file_range_stream(storage_path, offset, length),
+                status_code=206,
+                media_type=media_type,
+                headers=range_headers,
+            )
+
+    # ---- 整文件 200 ----
+    full_headers = {**base_headers}
+    if total:
+        full_headers["Content-Length"] = str(total)
+    return StreamingResponse(
+        adapter.download_file_stream(storage_path),
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{quote(filename)}"',
-            "Content-Length": str(len(data)),
-            "Cache-Control": "private, max-age=60",
-        },
+        headers=full_headers,
     )
 
 

@@ -99,16 +99,79 @@ class StorageManager:
     async def download_file(self, storage_path: str) -> bytes:
         """
         下载文件
-        
+
         Args:
             storage_path: 存储路径
-            
+
         Returns:
             bytes: 文件字节内容
         """
         self._check_closed()
         logger.debug(f"下载文件: {storage_path}")
         return await self._adapter.download_file(storage_path)
+
+    def stat_file(self, storage_path: str) -> tuple[int, str]:
+        """
+        获取对象元信息（大小 + ETag），用于流式响应的 Content-Length 与条件请求。
+
+        Args:
+            storage_path: 存储路径
+
+        Returns:
+            tuple[int, str]: (字节数, ETag)
+        """
+        self._check_closed()
+        return self._adapter.stat_file(storage_path)
+
+    def download_file_stream(self, storage_path: str, chunk_size: int = 64 * 1024):
+        """
+        流式下载文件字节块（同步生成器），供 FastAPI ``StreamingResponse`` 使用。
+
+        注意：返回的生成器会持有底层适配器资源，调用方需保证适配器在生成器
+        耗尽前不被关闭。因此流式端点不应使用 ``async with StorageManager()``
+        依赖（依赖会在响应体流式发送前被清理），而应自行创建适配器并在
+        生成器结束时释放资源。
+
+        Args:
+            storage_path: 存储路径
+            chunk_size: 每次吐出的字节块大小，默认 64KB
+
+        Returns:
+            Iterator[bytes]: 文件字节块迭代器
+        """
+        self._check_closed()
+        logger.debug(f"流式下载文件: {storage_path}")
+        return self._adapter.download_file_stream(storage_path, chunk_size)
+
+    def download_file_range_stream(
+        self,
+        storage_path: str,
+        offset: int,
+        length: int,
+        chunk_size: int = 64 * 1024,
+    ):
+        """
+        流式下载文件**指定字节区间**（同步生成器），用于 HTTP Range 请求。
+
+        底层透传给 MinIO/S3 的区间读取，只传请求区间内的字节，配合 PDF.js
+        渐进式加载（首屏只取当前页、滚动按页取）。
+
+        Args:
+            storage_path: 存储路径
+            offset: 起始字节偏移（含），从 0 开始
+            length: 读取字节数
+            chunk_size: 每次吐出的字节块大小，默认 64KB
+
+        Returns:
+            Iterator[bytes]: 区间内文件字节块迭代器
+        """
+        self._check_closed()
+        logger.debug(
+            f"流式下载文件区间: {storage_path}, offset={offset}, length={length}"
+        )
+        return self._adapter.download_file_range_stream(
+            storage_path, offset, length, chunk_size
+        )
     
     async def upload_file(
         self,

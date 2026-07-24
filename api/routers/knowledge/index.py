@@ -27,6 +27,7 @@
 
 import hashlib
 import uuid
+import asyncio
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
@@ -69,6 +70,7 @@ from src.db.mysql.repositories.business.workspace_folder_repo import (
 from src.db.storage.manager import StorageManager
 from src.types.messages.index import IndexStartMessage
 from src.utils.config_manager import get_config_manager
+from src.utils.pdf_linearize import maybe_linearize
 
 router = APIRouter(tags=["Knowledge Index"])
 
@@ -268,6 +270,13 @@ async def upload_file(
 
     _validate_file_magic(file_bytes, ext)
 
+    # PDF 线性化（fast web view）：让存入 MinIO 的就是线性化版本，
+    # 配合 /raw 端点的 Range 支持，PDF.js 首屏只取首页字节、滚动按页取。
+    # 失败回退原字节，不阻断上传。在 SHA256 之前做，保证哈希与存储内容一致。
+    if ext.lower() == "pdf":
+        file_bytes = await asyncio.to_thread(maybe_linearize, file_bytes, ext)
+        file_size = len(file_bytes)
+
     file_sha256 = _compute_sha256(file_bytes)
 
     # 基于 SHA256 去重：相同内容的文件共享同一 document_id
@@ -388,6 +397,11 @@ async def upload_files_batch(
                 )
 
             _validate_file_magic(file_bytes, ext)
+
+            # PDF 线性化（fast web view）：在 SHA256 之前做，保证哈希与存储内容一致。
+            if ext.lower() == "pdf":
+                file_bytes = await asyncio.to_thread(maybe_linearize, file_bytes, ext)
+                file_size = len(file_bytes)
 
             file_sha256 = _compute_sha256(file_bytes)
 
