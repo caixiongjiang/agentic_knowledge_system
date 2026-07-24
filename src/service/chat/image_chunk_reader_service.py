@@ -3,10 +3,9 @@
 """
 Chat Agent ``read_image_chunks`` 核心逻辑。
 
-策略（B 兜底 + A 按需精读，同一接口）：
-- ``return_image_url=False`` + **无 question**：一图一描述（background 阶段同口径）。
-- ``return_image_url=False`` + **有 question**：多图共答，**一次 VLM 调用**综合回答。
-- ``return_image_url=True``：逐张返回压缩图 data URL，供主对话 MLLM 自行看图。
+策略（工具内 VLM 旁路理解，主对话模型只看文字）：
+- **无 question**：一图一描述（background 阶段同口径）。
+- **有 question**：多图共答，**一次 VLM 调用**综合回答。
 
 持久化说明（当前 **不做**）：
 - 本模块仅在 tool 消息中返回结果，**不写** MongoDB ``vlm_description`` / ``text``，**不** upsert Milvus。
@@ -15,10 +14,8 @@ Chat Agent ``read_image_chunks`` 核心逻辑。
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
-from urllib.parse import quote
 
 from loguru import logger
 
@@ -87,32 +84,6 @@ class ImageChunkReaderService:
             preset = str(chat_cfg.get("multimodal_model_preset", "multimodal"))
             self._llm_client = create_llm_client_from_preset(preset)
         return self._llm_client
-
-    def _build_public_image_url(self, chunk_id: str) -> Optional[str]:
-        """
-        构造公网可访问的图片直读 URL（走后端 /raw-image 流式端点）。
-
-        ``return_image_url=true`` 的目的是让主对话 MLLM（外部服务，如 DashScope）
-        自行通过 URL 读取原图。MinIO 预签名 URL 内嵌内网域名（milvus-minio:9000）
-        且为 http，外部 MLLM 与浏览器都读不到。这里改用公网 API 基址 + chunk_id
-        + query token（user_id）构造直读 URL，外部模型与浏览器均可访问。
-
-        需要 ``PUBLIC_API_BASE_URL`` 环境变量与 ``kit.user_id``；任一缺失则返回
-        ``None``，由调用方回落到 MinIO 预签名 URL（仅内网可用）。
-
-        URL 追加 ``max_long_edge=<self._max_long_edge>``，让 /raw-image 走压缩
-        路径返回长边 ≤ 该像素的 JPEG，给 MLLM 节省 token；压缩对同一原图确定性，
-        字节稳定 → 同一 URL 跨轮逐字节一致，命中厂商 prompt 缓存。
-        """
-        base = (os.getenv("PUBLIC_API_BASE_URL") or "").strip().rstrip("/")
-        user_id = self._kit.user_id if self._kit is not None else ""
-        if not base or not user_id:
-            return None
-        return (
-            f"{base}/api/knowledge/chunk/{quote(chunk_id)}"
-            f"/raw-image?token={quote(user_id)}"
-            f"&max_long_edge={self._max_long_edge}"
-        )
 
     async def _load_chunks(
         self,
@@ -298,7 +269,6 @@ class ImageChunkReaderService:
         chunk_ids: List[str],
         *,
         question: Optional[str] = None,
-        return_image_url: bool = False,
     ) -> str:
         if self._kit is not None:
             await self._kit.emit_progress("loading_images", channel="tool")
@@ -307,8 +277,7 @@ class ImageChunkReaderService:
 
         lines: List[str] = [
             "read_image_chunks: "
-            f"成功处理 {len(loaded)}/{len(chunk_ids)} 条图片 chunk"
-            f"（return_image_url={return_image_url}）。",
+            f"成功处理 {len(loaded)}/{len(chunk_ids)} 条图片 chunk。",
             f"图片已按长边 ≤ {self._max_long_edge}px 规则压缩（原图更小则不变）。",
             "注意：本次工具结果仅写入对话历史，不会持久化到知识库。",
         ]
@@ -316,11 +285,7 @@ class ImageChunkReaderService:
         question_norm = (question or "").strip()
         ordered_loaded = [loaded[cid] for cid in chunk_ids if cid in loaded]
 
-        if (
-            question_norm
-            and not return_image_url
-            and ordered_loaded
-        ):
+        if question_norm and ordered_loaded:
             chunk_id_list = ", ".join(chunk.chunk_id for chunk in ordered_loaded)
             try:
                 analysis = await self._qa_multi_images(ordered_loaded, question_norm)
@@ -354,35 +319,6 @@ class ImageChunkReaderService:
             if chunk.page_index is not None:
                 header_parts.append(f"page={chunk.page_index + 1}")
             header = ", ".join(header_parts) + " ---"
-
-            if return_image_url:
-                # 优先返回公网直读 URL（外部 MLLM 与浏览器均可访问）；
-                # PUBLIC_API_BASE_URL 未配置时回落到 MinIO 预签名 URL（仅内网可用）。
-                image_url = self._build_public_image_url(cid)
-                if image_url is None:
-                    async with StorageManager() as storage:
-                        image_url = await storage.get_preview_url(
-                            chunk.storage_path, expires=3600,
-                        )
-                caption = chunk.image_caption or "无"
-                footnote = chunk.image_footnote or "无"
-                lines.append(header)
-                lines.append("mode: direct_image")
-                lines.append(f"image_url: {image_url}")
-                lines.append(f"caption: {caption}")
-                lines.append(f"footnote: {footnote}")
-                if chunk.vlm_description and not question_norm:
-                    lines.append(
-                        "background_description: "
-                        f"{chunk.vlm_description}",
-                    )
-                lines.append(
-                    "note: image_url 为公网直读 URL（/raw-image，query token 鉴权，"
-                    "已压缩至长边 ≤ "
-                    f"{self._max_long_edge}px）。图片已作为 image_url 内容块"
-                    "附在下一条 user 消息中，无需自行抓取。"
-                )
-                continue
 
             try:
                 if chunk.vlm_description:

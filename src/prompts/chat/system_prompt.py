@@ -423,12 +423,10 @@ _TOOL_BRIEF: dict = {
         "本工具不换粒度、不取邻居，只把指定 chunk 的全文拿出来。"
     ),
     "read_image_chunks": (
-        "- **read_image_chunks(chunk_ids, question=None, return_image_url=False)**："
-        "批量理解**图片 chunk**。"
-        "默认 `return_image_url=false`：工具内 VLM 返回文本。"
+        "- **read_image_chunks(chunk_ids, question=None)**："
+        "批量理解**图片 chunk**，由工具内 VLM 返回文本描述。"
         "**无 question**：一图一描述（优先 Pipeline background 已有描述）。"
         "**有 question**：传入的多张图片**综合一次**回答（非逐张单独答）。"
-        "`return_image_url=true`：逐张返回长边 ≤512px 压缩后的 `image_url`（data URL）。"
         "结果仅写入对话历史，不会持久化到知识库。"
     ),
     "grep_chunks": (

@@ -91,10 +91,6 @@ from src.prompts.chat import (
     drop_assistant_tool_dangling,
     estimate_history_tokens,
 )
-from src.prompts.chat.image_injection import (
-    build_image_followup_message,
-    extract_image_urls,
-)
 from src.retrieve.types.result import ChunkItem
 from src.service.chat.session_service import (
     ChatSessionService,
@@ -1576,14 +1572,6 @@ class ChatService:
                     "tool_call_id": tc.id,
                     "content": content,
                 })
-                # read_image_chunks（return_image_url=true）结果里带 image_url 行：
-                # OpenAI 多模态协议要求图片以结构化 image_url 块传入，MLLM 不会
-                # 自动抓取纯文本 URL。这里在 tool 消息后追加一条 user 消息把图片
-                # 显式喂给模型。与历史重放（context_builder.rebuild）共用同一构造
-                # 函数，输出逐字节一致 → 跨轮前缀稳定 → 命中厂商 prompt 缓存。
-                followup = build_image_followup_message(extract_image_urls(content))
-                if followup is not None:
-                    messages.append(followup)
                 await self._persist_tool_message(
                     ctx=ctx,
                     message_id=tool_msg_id,
@@ -2082,20 +2070,8 @@ class ChatService:
             for m in early_history:
                 role = getattr(m, "role", None)
                 content = getattr(m, "content", "") or ""
-                if not (role and content):
-                    continue
-                # tool 消息里的 ``image_url: <url>`` 行在摘要阶段无意义（图片已随
-                # 早期轮次折叠丢失，URL 字符串只会污染摘要），flatten 时剔除。
-                if role == "tool":
-                    content = re.sub(
-                        r"^image_url:\s*\S+\s*$",
-                        "",
-                        content,
-                        flags=re.MULTILINE,
-                    ).strip()
-                    if not content:
-                        continue
-                text_parts.append(f"[{role}] {content}")
+                if role and content:
+                    text_parts.append(f"[{role}] {content}")
             transcript = "\n".join(text_parts)[:6000]
             messages = [
                 {

@@ -26,8 +26,7 @@ SCHEMA: ToolSchema = {
         "name": NAME,
         "description": (
             "批量读取/理解图片 chunk。"
-            "默认由工具内 VLM 返回文本描述（B 策略）；"
-            "若 return_image_url=true 则返回压缩后的 image_url 供你自行看图（A 策略）。"
+            "由工具内 VLM 返回文本描述。"
             "有 question 时，多张图片会**综合一次**回答；无 question 时一图一描述。"
             "图片会先按长边 512px 规则压缩。"
             "结果仅存在于本次对话，不会写入知识库。"
@@ -52,14 +51,6 @@ SCHEMA: ToolSchema = {
                         "传入时多张图片综合一次回答；不传则每张图单独返回 background 描述。"
                     ),
                 },
-                "return_image_url": {
-                    "type": "boolean",
-                    "description": (
-                        "是否返回压缩后的 image_url（data URL）供主模型直接看图。"
-                        "默认 false（工具内 VLM 返回文本）。"
-                    ),
-                    "default": False,
-                },
                 "use_alias": {
                     "type": "boolean",
                     "description": (
@@ -79,7 +70,6 @@ async def handle(
     kit: KnowledgeNavToolKit,
     chunk_ids: List[str],
     question: Optional[str] = None,
-    return_image_url: bool = False,
     use_alias: bool = True,
 ) -> str:
     if not chunk_ids:
@@ -101,7 +91,6 @@ async def handle(
         result = await service.read_image_chunks(
             real_ids,
             question=question,
-            return_image_url=return_image_url,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"read_image_chunks 执行异常: {e}")

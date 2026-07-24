@@ -16,10 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy.orm import Session
-from typing import Optional
 from urllib.parse import quote
-
-import asyncio
 
 from api.dependencies.auth import get_current_user_id, get_current_user_id_from_token
 from api.dependencies.database import get_db_session, get_storage_manager
@@ -30,7 +27,6 @@ from src.db.mysql.repositories.base.element_meta_info_repo import element_meta_i
 from src.db.storage.factory import StorageFactory
 from src.db.storage.manager import StorageManager
 from src.db.storage.range_utils import is_range_satisfiable, parse_range_header
-from src.service.chat.image_processing import resize_image_bytes
 
 router = APIRouter(tags=["Chunk"])
 
@@ -141,16 +137,6 @@ async def get_chunk_raw_image(
     request: Request,
     user_id: str = Depends(get_current_user_id_from_token),
     session: Session = Depends(get_db_session),
-    max_long_edge: Optional[int] = Query(
-        None,
-        ge=1,
-        le=4096,
-        description=(
-            "若提供，则按长边 ≤ 该像素数压缩后返回（JPEG, quality=85），"
-            "用于给 MLLM 节省 token；该路径不支持 Range，整图 200 返回。"
-            "省略时返回原图并支持 Range（供浏览器预览渐进加载）。"
-        ),
-    ),
 ) -> Response:
     # 1. 查询 ChunkMetaInfo
     meta = chunk_meta_info_repo.get_by_id(session, chunk_id)
@@ -186,38 +172,6 @@ async def get_chunk_raw_image(
 
     total = size or 0
     range_header = request.headers.get("range")
-
-    # ---- 压缩路径（供 MLLM 节省 token）----
-    # max_long_edge 命中时：整图下载 → resize → JPEG 200 返回，不走 Range。
-    # 压缩对同一原图确定性（同 PIL 版本 + 同 quality），字节稳定 → 同一 URL
-    # 跨轮逐字节一致，命中厂商 prompt 缓存。在后台线程执行避免阻塞事件循环。
-    if max_long_edge and max_long_edge > 0:
-        try:
-            import io
-
-            buf = io.BytesIO()
-            for chunk_bytes in adapter.download_file_stream(storage_path):
-                buf.write(chunk_bytes)
-            raw_bytes = buf.getvalue()
-            compressed, _mime = await asyncio.to_thread(
-                resize_image_bytes, raw_bytes, max_long_edge,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                f"压缩 chunk 图片失败: chunk_id={chunk_id}, "
-                f"max_long_edge={max_long_edge}, error={e}"
-            )
-            raise HTTPException(status_code=500, detail="图片压缩失败")
-        return Response(
-            content=compressed,
-            media_type="image/jpeg",
-            headers={
-                "Content-Disposition": f'inline; filename="{quote(filename)}"',
-                "Cache-Control": "private, max-age=86400, immutable",
-                "X-Accel-Buffering": "no",
-                "Content-Length": str(len(compressed)),
-            },
-        )
 
     # 公共响应头：图片内容按 chunk_id 不可变，长期缓存 + immutable 让浏览器
     # 命中本地缓存，重复预览同一图片即时显示，不再每次都走 frp 隧道重传。
