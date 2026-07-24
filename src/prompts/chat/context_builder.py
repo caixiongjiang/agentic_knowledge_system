@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     # 仅类型注解使用；运行期不导入，避免 src.prompts.chat ↔ src.service.chat 循环
     from src.service.chat.chunk_alias_map import ChunkAliasMap
 
+from src.prompts.chat.image_injection import build_image_followup_message, extract_image_urls
 from src.prompts.chat.retrieval_hints import SEMANTIC_RECALL_LITERAL_HINT
 
 
@@ -151,6 +152,15 @@ def rebuild_messages_from_history(history: Iterable[Any]) -> List[Dict[str, Any]
                 "tool_call_id": getattr(msg, "tool_call_id", None),
                 "content": content,
             })
+            # read_image_chunks（return_image_url=true）的 tool 结果里带
+            # ``image_url: <url>`` 行。OpenAI 多模态协议要求图片以结构化
+            # image_url 块传入，MLLM 不会自动抓取纯文本 URL。这里在 tool
+            # 消息之后追加一条 user 消息把图片显式喂给模型——与同轮注入
+            # （chat_service._run_loop_real）共用 build_image_followup_message，
+            # 输出逐字节一致，保证跨轮前缀稳定 → 命中厂商 prompt 缓存。
+            followup = build_image_followup_message(extract_image_urls(content))
+            if followup is not None:
+                rebuilt.append(followup)
         elif role is None:
             continue
         else:
