@@ -179,6 +179,7 @@ class ConfigManager:
     def _redis_section(self, env: EnvManager) -> Dict[str, Any]:
         config = self.get_section("redis")
         config["host"] = env.get_redis_host()
+        config["db"] = env.get_redis_db()
         return config
 
     def get_redis_config(self) -> Dict[str, Any]:

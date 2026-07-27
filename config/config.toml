@@ -97,17 +97,12 @@ mode = "standalone"
 
 # host 由环境变量 REDIS_HOST 提供（dev: localhost / prod: services_redis）
 port = 6379
-# 数据库编号（0-15）
-db = 2
+# db 编号由环境变量 REDIS_DB 提供（dev: 3 / prod: 2；dev/prod 在同一 Redis 实例上按 db 隔离）
 max_connections = 50        # 连接池最大连接数
 socket_timeout = 5.0        # Socket 超时时间（秒）
 socket_connect_timeout = 5.0  # Socket 连接超时时间（秒）
 decode_responses = true     # 是否自动解码为字符串
 encoding = "utf-8"          # 字符编码
-
-# 业务配置（可选）
-key_prefix = "aks:"        # 全局键前缀
-default_expire = 3600      # 默认过期时间（秒）
 
 # ==================== 对象存储配置 ====================
 

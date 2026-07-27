@@ -292,6 +292,10 @@ class EnvManager:
         """获取 Redis 主机（dev: localhost / prod: services_redis）"""
         return self.get_required("REDIS_HOST")
 
+    def get_redis_db(self) -> int:
+        """获取 Redis db 编号（dev: 3 / prod: 2）。用于 dev/prod 在同一 Redis 实例上的 db 级隔离。"""
+        return int(self.get("REDIS_DB", "2"))
+
     def get_minio_endpoint(self) -> str:
         """获取 MinIO 端点（host:port，如 localhost:9000 / milvus-minio:9000）"""
         return self.get_required("MINIO_ENDPOINT")
