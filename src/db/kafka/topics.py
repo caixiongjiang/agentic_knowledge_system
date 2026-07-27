@@ -10,6 +10,19 @@ from typing import Dict, Any
 from dataclasses import dataclass
 
 from src.utils.config_manager import get_config_manager
+from src.utils.env_manager import get_env_manager
+
+
+def _topic_prefix() -> str:
+    """读取 env 中的 Kafka topic 前缀（dev: dev_ / prod: 空）。加载失败时回退空串。"""
+    try:
+        return get_env_manager().get_kafka_topic_prefix()
+    except Exception:
+        return ""
+
+
+# Topic 名称前缀：dev/prod 在同一 Kafka 集群上通过前缀隔离 topic
+_TP = _topic_prefix()
 
 
 @dataclass
@@ -45,27 +58,27 @@ class KafkaTopics:
     """
     
     # ==================== 第一层：任务流转 Topics ====================
-    
+
     # 前台阶段 Topics（用户等待，高优先级）
-    INDEX_START = "knowledge_base.index.start"      # 索引构建开始（文件已在S3）
-    PARSE_END = "knowledge_base.parse.end"          # 文件解析完成
-    SPLIT_END = "knowledge_base.split.end"          # 文本分割完成（前台进度100%）
-    
+    INDEX_START = f"{_TP}knowledge_base.index.start"      # 索引构建开始（文件已在S3）
+    PARSE_END = f"{_TP}knowledge_base.parse.end"          # 文件解析完成
+    SPLIT_END = f"{_TP}knowledge_base.split.end"          # 文本分割完成（前台进度100%）
+
     # 后台串行阶段 Topics
-    FILE_SUMMARY_END = "knowledge_base.file_summary.end"  # 文件摘要完成（由 section_summary 汇总生成）
-    SECTION_SUMMARY_END = "knowledge_base.section_summary.end"  # Section 摘要完成（file_summary 前置）
-    
+    FILE_SUMMARY_END = f"{_TP}knowledge_base.file_summary.end"  # 文件摘要完成（由 section_summary 汇总生成）
+    SECTION_SUMMARY_END = f"{_TP}knowledge_base.section_summary.end"  # Section 摘要完成（file_summary 前置）
+
     # 后台并行阶段 Topics
-    GRAPH_END = "knowledge_base.graph.end"          # 知识图谱抽取完成
-    ANALYZE_END = "knowledge_base.analyze.end"      # 文本分析（atomic_qa 抽取）完成，供 status manager 标记后台阶段完成
+    GRAPH_END = f"{_TP}knowledge_base.graph.end"          # 知识图谱抽取完成
+    ANALYZE_END = f"{_TP}knowledge_base.analyze.end"      # 文本分析（atomic_qa 抽取）完成，供 status manager 标记后台阶段完成
     # 注: 图片理解已从后台 pipeline 移除，改为 agent 需要时临时调用
-    
+
     # ==================== 第二层：数据库写入 Topics ====================
-    
-    DB_WRITE_EMBEDDING = "db_write.embedding.start"  # 向量数据写入（原始文本）
-    DB_WRITE_GRAPH = "db_write.graph.start"          # 图谱数据写入
-    DB_WRITE_META = "db_write.meta.start"            # MySQL 元数据写入
-    DB_WRITE_MONGO = "db_write.mongo.start"          # MongoDB 文档数据写入
+
+    DB_WRITE_EMBEDDING = f"{_TP}db_write.embedding.start"  # 向量数据写入（原始文本）
+    DB_WRITE_GRAPH = f"{_TP}db_write.graph.start"          # 图谱数据写入
+    DB_WRITE_META = f"{_TP}db_write.meta.start"            # MySQL 元数据写入
+    DB_WRITE_MONGO = f"{_TP}db_write.mongo.start"          # MongoDB 文档数据写入
     
     # ==================== DLQ 和重试 Topics ====================
     

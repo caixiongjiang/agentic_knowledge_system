@@ -252,7 +252,7 @@ class EnvManager:
     def get_kafka_auth(self) -> Dict[str, Optional[str]]:
         """
         获取Kafka认证信息
-        
+
         Returns:
             包含SASL和SSL认证信息的字典
         """
@@ -266,7 +266,80 @@ class EnvManager:
             "ssl_keyfile": self.get("KAFKA_SSL_KEYFILE"),
             "ssl_password": self.get("KAFKA_SSL_PASSWORD"),
         }
-    
+
+    # ==================== 主机/端点配置（从环境变量加载，区分开发/生产） ====================
+    #
+    # 所有基础设施服务的主机/端点一律由环境变量提供（.env / .env.production），
+    # config.toml 不再承载任何 IP/主机相关字段。缺失时 fail-fast。
+
+    def get_milvus_host(self) -> str:
+        """获取 Milvus 主机（dev: localhost / prod: milvus-standalone）"""
+        return self.get_required("MILVUS_HOST")
+
+    def get_mongodb_host(self) -> str:
+        """获取 MongoDB 主机（dev: localhost / prod: mongodb）"""
+        return self.get_required("MONGODB_HOST")
+
+    def get_mysql_host(self) -> str:
+        """获取 MySQL 主机（dev: localhost / prod: services_mysql）"""
+        return self.get_required("MYSQL_HOST")
+
+    def get_neo4j_uri(self) -> str:
+        """获取 Neo4j 完整 URI（如 bolt://localhost:7687 / bolt://neo4j:7687）"""
+        return self.get_required("NEO4J_URI")
+
+    def get_redis_host(self) -> str:
+        """获取 Redis 主机（dev: localhost / prod: services_redis）"""
+        return self.get_required("REDIS_HOST")
+
+    def get_minio_endpoint(self) -> str:
+        """获取 MinIO 端点（host:port，如 localhost:9000 / milvus-minio:9000）"""
+        return self.get_required("MINIO_ENDPOINT")
+
+    def get_kafka_bootstrap_servers(self) -> List[str]:
+        """获取 Kafka bootstrap servers 列表（逗号分隔，如 kafka:9092）"""
+        servers = self.get_list("KAFKA_BOOTSTRAP_SERVERS")
+        if not servers:
+            raise ValueError("必需的环境变量未设置: KAFKA_BOOTSTRAP_SERVERS")
+        return servers
+
+    def get_sparse_embedding_api_base(self) -> str:
+        """获取 BGE-M3 稀疏向量服务 API base（如 http://localhost:18085/v1）"""
+        return self.get_required("SPARSE_EMBEDDING_API_BASE")
+
+    def get_mineru_api_url(self) -> str:
+        """获取 MinerU 服务 URL（如 http://192.168.19.232:18000）"""
+        return self.get_required("MINERU_API_URL")
+
+    # ---- 数据 namespace（dev/prod 隔离；dev 用 dev_*，prod 用 default） ----
+    def get_mysql_database(self) -> str:
+        """获取 MySQL 数据库名（dev: dev_default / prod: default）"""
+        return self.get_required("MYSQL_DATABASE")
+
+    def get_mongodb_database(self) -> str:
+        """获取 MongoDB 数据库名（dev: dev_default / prod: default）"""
+        return self.get_required("MONGODB_DATABASE")
+
+    def get_milvus_database(self) -> str:
+        """获取 Milvus 数据库名（dev: dev_default / prod: default）"""
+        return self.get_required("MILVUS_DATABASE")
+
+    def get_minio_bucket(self) -> str:
+        """获取 MinIO 默认桶名（dev: dev-default / prod: default；桶名不允许下划线）"""
+        return self.get_required("MINIO_BUCKET")
+
+    def get_kafka_group_id_prefix(self) -> str:
+        """获取 Kafka 消费组前缀（dev: aks_dev / prod: aks）"""
+        return self.get_required("KAFKA_GROUP_ID_PREFIX")
+
+    def get_kafka_topic_prefix(self) -> str:
+        """获取 Kafka Topic 名称前缀（dev: dev_ / prod: 空）。
+
+        用于 dev/prod 在同一 Kafka 集群上的 topic 级隔离。prod 留空以保留
+        已有 topic 数据；dev 加前缀后自动创建独立 topic（如 dev_knowledge_base.index.start）。
+        """
+        return self.get("KAFKA_TOPIC_PREFIX", "")
+
     # ==================== 模型网关（LiteLLM Proxy 统一接入 LLM/Embedding/Reranker） ====================
     #
     # 所有 LLM / Embedding / Reranker 的真实密钥与 Endpoint 都收敛到

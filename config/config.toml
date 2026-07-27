@@ -14,10 +14,9 @@
 mode = "server"
 
 # ========== Server版配置（生产环境） ==========
-host = "milvus-standalone"
+# host 由环境变量 MILVUS_HOST 提供（dev: localhost / prod: milvus-standalone）
 port = 19530
-# 数据库名称（Milvus 2.x支持多数据库）
-database = "default"
+# 数据库名称由环境变量 MILVUS_DATABASE 提供（dev: dev_default / prod: default）
 # 连接超时时间（秒）
 timeout = 30
 # 连接别名前缀
@@ -45,10 +44,9 @@ search_params = { ef = 128 }
 
 # MongoDB 文档数据库配置
 [mongodb]
-host = "mongodb"
+# host 由环境变量 MONGODB_HOST 提供（dev: localhost / prod: mongodb）
 port = 27017
-# 数据库名称
-database = "default"
+# 数据库名称由环境变量 MONGODB_DATABASE 提供（dev: dev_default / prod: default）
 # 连接超时时间（毫秒）
 connect_timeout_ms = 5000
 server_selection_timeout_ms = 5000
@@ -63,9 +61,9 @@ min_pool_size = 10
 mode = "mysql"
 
 # ========== MySQL Server配置 ==========
-host = "services_mysql"
+# host 由环境变量 MYSQL_HOST 提供（dev: localhost / prod: services_mysql）
 port = 3306
-database = "default"
+# 数据库名称由环境变量 MYSQL_DATABASE 提供（dev: dev_default / prod: default）
 # 字符集
 charset = "utf8mb4"
 # 连接池配置
@@ -84,7 +82,7 @@ sqlite_echo = false
 
 # Neo4j 图数据库配置
 [neo4j]
-uri = "bolt://neo4j:7687"
+# uri 由环境变量 NEO4J_URI 提供（dev: bolt://localhost:7687 / prod: bolt://neo4j:7687）
 # 连接池配置
 max_connection_lifetime = 3600
 max_connection_pool_size = 50
@@ -97,7 +95,7 @@ database = "neo4j"
 # 模式选择：standalone（单机）或 cluster（集群）
 mode = "standalone"
 
-host = "services_redis"
+# host 由环境变量 REDIS_HOST 提供（dev: localhost / prod: services_redis）
 port = 6379
 # 数据库编号（0-15）
 db = 2
@@ -119,11 +117,10 @@ type = "minio"
 
 # MinIO 对象存储配置
 [minio]
-endpoint = "milvus-minio:9000"
+# endpoint 由环境变量 MINIO_ENDPOINT 提供（dev: localhost:9000 / prod: milvus-minio:9000）
+# 默认桶名由环境变量 MINIO_BUCKET 提供（dev: dev-default / prod: default；桶名不允许下划线）
 # 是否使用安全连接
 secure = false
-# 默认存储桶
-default_bucket = "default"
 # 区域
 region = "us-east-1"
 # 上传分片大小（字节）
@@ -132,8 +129,7 @@ part_size = 10485760  # 10MB
 # Kafka 消息队列配置
 [kafka]
 # ========== Broker配置 ==========
-# Kafka集群地址（多个地址用逗号分隔）
-bootstrap_servers = ["kafka:9092"]
+# bootstrap_servers 由环境变量 KAFKA_BOOTSTRAP_SERVERS 提供（逗号分隔，dev: localhost:9092 / prod: kafka:9092）
 # 安全协议: PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL
 security_protocol = "PLAINTEXT"
 # SASL机制: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
@@ -157,8 +153,8 @@ max_request_size = 1048576  # 1MB
 
 # ========== Consumer配置 ==========
 [kafka.consumer]
-# Consumer Group ID前缀（实际使用时会加上组件名称）
-group_id_prefix = "aks"
+# Consumer Group ID 前缀由环境变量 KAFKA_GROUP_ID_PREFIX 提供（dev: aks_dev / prod: aks）
+# 实际使用时会加上组件名称
 # 自动提交offset
 enable_auto_commit = false
 # 自动提交间隔（毫秒）
@@ -419,8 +415,7 @@ model = "openai/qwen3-embedding-0.6b"
 # 注：LiteLLM 暂不支持 BGE-M3 sparse 输出，保留独立 httpx 实现。
 
 [sparse_embedding]
-# BGE-M3 稀疏向量服务 API 地址
-api_base = "http://bge-m3-server:18085/v1"
+# BGE-M3 稀疏向量服务 API 地址（api_base 由环境变量 SPARSE_EMBEDDING_API_BASE 提供，如 http://localhost:18085/v1）
 # 模型名称
 model_name = "bge-m3"
 # 批处理大小
@@ -461,8 +456,7 @@ model = "cohere/qwen3-reranker-0.6b"
 
 # MinerU 服务配置（PDF解析）
 [mineru]
-# API服务地址
-api_url = "http://192.168.19.232:18000"
+# API 服务地址（api_url 由环境变量 MINERU_API_URL 提供，如 http://192.168.19.232:18000）
 # 超时时间（秒）
 timeout = 300
 

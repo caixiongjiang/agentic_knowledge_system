@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional, List
 from copy import deepcopy
 from loguru import logger
 
-from src.utils.env_manager import EnvManager
+from src.utils.env_manager import EnvManager, get_env_manager
 
 
 class ConfigManager:
@@ -36,6 +36,8 @@ class ConfigManager:
         """
         self._config_file = config_file
         self._config: Dict[str, Any] = {}
+        # 主机/端点统一来自环境变量（.env / .env.production），config.toml 不再承载 IP
+        self._env_manager = get_env_manager()
         self._load_config()
     
     def _load_config(self) -> None:
@@ -133,38 +135,79 @@ class ConfigManager:
         return deepcopy(self._config)
     
     # ==================== 数据库配置获取 ====================
+    # 主机/端点统一从环境变量注入；config.toml 仅提供业务参数（端口/连接池/维度等）。
     
+    def _milvus_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("milvus")
+        config["host"] = env.get_milvus_host()
+        config["database"] = env.get_milvus_database()
+        return config
+
     def get_milvus_config(self) -> Dict[str, Any]:
         """获取Milvus配置"""
-        return self.get_section("milvus")
+        return self._milvus_section(self._env_manager)
     
+    def _mongodb_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("mongodb")
+        config["host"] = env.get_mongodb_host()
+        config["database"] = env.get_mongodb_database()
+        return config
+
     def get_mongodb_config(self) -> Dict[str, Any]:
         """获取MongoDB配置"""
-        return self.get_section("mongodb")
+        return self._mongodb_section(self._env_manager)
     
+    def _mysql_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("mysql")
+        config["host"] = env.get_mysql_host()
+        config["database"] = env.get_mysql_database()
+        return config
+
     def get_mysql_config(self) -> Dict[str, Any]:
         """获取MySQL配置"""
-        return self.get_section("mysql")
+        return self._mysql_section(self._env_manager)
     
+    def _neo4j_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("neo4j")
+        config["uri"] = env.get_neo4j_uri()
+        return config
+
     def get_neo4j_config(self) -> Dict[str, Any]:
         """获取Neo4j配置"""
-        return self.get_section("neo4j")
+        return self._neo4j_section(self._env_manager)
     
+    def _redis_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("redis")
+        config["host"] = env.get_redis_host()
+        return config
+
     def get_redis_config(self) -> Dict[str, Any]:
         """获取Redis配置"""
-        return self.get_section("redis")
+        return self._redis_section(self._env_manager)
     
     def get_storage_config(self) -> Dict[str, Any]:
         """获取Storage配置"""
         return self.get_section("storage")
     
+    def _minio_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("minio")
+        config["endpoint"] = env.get_minio_endpoint()
+        config["default_bucket"] = env.get_minio_bucket()
+        return config
+
     def _get_minio_config(self) -> Dict[str, Any]:
         """获取MinIO配置（内部方法）"""
-        return self.get_section("minio")
+        return self._minio_section(self._env_manager)
     
+    def _kafka_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("kafka")
+        config["bootstrap_servers"] = env.get_kafka_bootstrap_servers()
+        config.setdefault("consumer", {})["group_id_prefix"] = env.get_kafka_group_id_prefix()
+        return config
+
     def get_kafka_config(self) -> Dict[str, Any]:
         """获取Kafka配置"""
-        return self.get_section("kafka")
+        return self._kafka_section(self._env_manager)
     
     # ==================== 模型网关（LiteLLM Proxy） ====================
     # 同时被 LLM / Embedding / Reranker 复用
@@ -240,9 +283,14 @@ class ConfigManager:
         preset = presets.get(name)
         return deepcopy(preset) if preset else None
 
+    def _sparse_embedding_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("sparse_embedding")
+        config["api_base"] = env.get_sparse_embedding_api_base()
+        return config
+
     def get_sparse_embedding_config(self) -> Dict[str, Any]:
         """获取稀疏向量 Embedding 配置（BGE-M3，独立实现）"""
-        return self.get_section("sparse_embedding")
+        return self._sparse_embedding_section(self._env_manager)
 
     def get_reranker_config(self) -> Dict[str, Any]:
         """获取 [reranker] 配置节（业务约束 + default_preset）"""
@@ -260,9 +308,14 @@ class ConfigManager:
     
     # ==================== 第三方服务配置获取 ====================
     
+    def _mineru_section(self, env: EnvManager) -> Dict[str, Any]:
+        config = self.get_section("mineru")
+        config["api_url"] = env.get_mineru_api_url()
+        return config
+
     def get_mineru_config(self) -> Dict[str, Any]:
         """获取MinerU服务配置"""
-        return self.get_section("mineru")
+        return self._mineru_section(self._env_manager)
     
     # ==================== 系统配置获取 ====================
     
@@ -285,22 +338,22 @@ class ConfigManager:
         """
         validation_results = {}
         
-        # 定义必需的配置节和字段
+        # 定义必需的配置节和字段（仅业务参数；主机/端点由环境变量提供，不在此校验）
         required_configs = {
-            "milvus": ["host", "port", "vector_dim"],
-            "mongodb": ["host", "port", "database"],
-            "mysql": ["host", "port", "database"],
-            "neo4j": ["uri", "database"],
-            "redis": ["host", "port"],
+            "milvus": ["port", "vector_dim"],
+            "mongodb": ["port"],
+            "mysql": ["port"],
+            "neo4j": ["database"],
+            "redis": ["port"],
             "storage": ["type"],
-            "minio": ["endpoint", "default_bucket"],
-            "kafka": ["bootstrap_servers"],
+            "minio": [],
+            "kafka": [],  # 业务参数均在子节，bootstrap_servers / group_id_prefix 由 env 提供
             "proxy": ["default_timeout"],
             "llm": ["presets"],
             "embedding": ["default_preset", "dimension", "presets"],
-            "sparse_embedding": ["api_base", "model_name"],
+            "sparse_embedding": ["model_name"],  # api_base 由 env 提供
             "reranker": ["default_preset", "presets"],
-            "mineru": ["api_url"],
+            "mineru": [],  # api_url 由 env 提供
             "logging": ["level", "log_dir", "log_file"],
             "file_upload": ["supported_formats", "max_file_size", "temp_dir"],
         }
@@ -347,7 +400,7 @@ class ConfigManager:
         Returns:
             完整配置
         """
-        config = self.get_milvus_config()
+        config = self._milvus_section(env_manager)
         auth = env_manager.get_milvus_auth()
         
         # 如果有token，优先使用token
@@ -361,7 +414,7 @@ class ConfigManager:
     
     def get_mongodb_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的MongoDB配置"""
-        config = self.get_mongodb_config()
+        config = self._mongodb_section(env_manager)
         auth = env_manager.get_mongodb_auth()
         
         # 如果提供了URI，直接使用
@@ -378,21 +431,21 @@ class ConfigManager:
     
     def get_mysql_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的MySQL配置"""
-        config = self.get_mysql_config()
+        config = self._mysql_section(env_manager)
         auth = env_manager.get_mysql_auth()
         config.update(auth)
         return config
     
     def get_neo4j_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的Neo4j配置"""
-        config = self.get_neo4j_config()
+        config = self._neo4j_section(env_manager)
         auth = env_manager.get_neo4j_auth()
         config.update(auth)
         return config
     
     def get_redis_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的Redis配置"""
-        config = self.get_redis_config()
+        config = self._redis_section(env_manager)
         auth = env_manager.get_redis_auth()
         config.update(auth)
         return config
@@ -412,7 +465,7 @@ class ConfigManager:
         
         # 根据存储类型获取对应的完整配置
         if storage_type == "minio":
-            minio_config = self._get_minio_config()
+            minio_config = self._minio_section(env_manager)
             auth = env_manager.get_minio_auth()
             storage_specific_config = {**minio_config, **auth}
         elif storage_type == "oss":
@@ -478,7 +531,7 @@ class ConfigManager:
 
     def get_sparse_embedding_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的稀疏向量 Embedding 配置（BGE-M3，独立实现，未走 LiteLLM）"""
-        config = self.get_sparse_embedding_config()
+        config = self._sparse_embedding_section(env_manager)
 
         api_key = env_manager.get_sparse_embedding_api_key()
         if api_key:
@@ -522,7 +575,7 @@ class ConfigManager:
     
     def get_mineru_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
         """获取完整的MinerU配置"""
-        config = self.get_mineru_config()
+        config = self._mineru_section(env_manager)
         api_key = env_manager.get_mineru_api_key()
         
         if api_key:
@@ -540,7 +593,7 @@ class ConfigManager:
         Returns:
             完整配置，包含认证信息
         """
-        config = self.get_kafka_config()
+        config = self._kafka_section(env_manager)
         auth = env_manager.get_kafka_auth()
         
         # 将认证信息添加到配置中

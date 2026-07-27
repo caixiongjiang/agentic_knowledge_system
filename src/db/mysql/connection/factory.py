@@ -49,12 +49,12 @@ class MySQLManagerFactory:
         配置文件示例 (config.toml):
             [mysql]
             mode = "mysql"  # 或 "sqlite"
-            
+
             # MySQL Server配置
-            host = "192.168.201.14"
+            # host 由环境变量 MYSQL_HOST 提供（dev: 192.168.201.14 / prod: services_mysql）
             port = 3306
-            database = "default"
-            
+            # database 由环境变量 MYSQL_DATABASE 提供（dev: dev_default / prod: default）
+
             # SQLite配置
             sqlite_db_path = "data/sqlite.db"
             sqlite_echo = false
@@ -96,8 +96,8 @@ class MySQLManagerFactory:
                 echo=echo
             )
         elif db_type == "mysql":
-            # 从配置文件读取 MySQL Server 配置
-            mysql_config = config_manager.get("mysql", {})
+            # 从配置读取 MySQL Server 配置（host/database 由 env 注入）
+            mysql_config = config_manager.get_mysql_config()
             manager = MySQLServerManager(
                 host=kwargs.get("host") if "host" in kwargs else mysql_config.get("host"),
                 port=kwargs.get("port") if "port" in kwargs else mysql_config.get("port"),

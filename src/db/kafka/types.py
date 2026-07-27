@@ -96,7 +96,8 @@ class ConsumerGroup:
         """
         from src.utils.config_manager import get_config_manager
         config = get_config_manager()
-        prefix = config.get("kafka.consumer.group_id_prefix", "aks")
+        kafka_config = config.get_kafka_config()
+        prefix = kafka_config.get("consumer", {}).get("group_id_prefix", "aks")
         return f"{prefix}-{group_name}"
 
 

@@ -80,15 +80,15 @@ class RedisManagerFactory:
         配置文件示例 (config.toml):
             [redis]
             mode = "standalone"  # 或 "cluster"
-            
+
             # Standalone 配置
-            host = "localhost"
+            # host 由环境变量 REDIS_HOST 提供（dev: 192.168.201.14 / prod: services_redis）
             port = 6379
             db = 0
             max_connections = 50
             socket_timeout = 5.0
             socket_connect_timeout = 5.0
-            
+
             # Cluster 配置（可选）
             # startup_nodes = [
             #     {host = "127.0.0.1", port = 7000},

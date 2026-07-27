@@ -349,9 +349,9 @@ class WorkerManager:
             module = __import__(config.module_path, fromlist=[config.class_name])
             worker_class = getattr(module, config.class_name)
             
-            # 创建 Consumer
+            # 创建 Consumer（group_id 套上 env 配置的前缀，隔离 dev/prod）
             aiokafka_consumer = await self.kafka_manager.get_consumer(
-                group_id=config.group_id,
+                group_id=ConsumerGroup.with_prefix(config.group_id),
                 topics=[config.input_topic]
             )
             

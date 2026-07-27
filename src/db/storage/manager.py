@@ -373,9 +373,11 @@ class StorageManager:
     def _get_bucket_name(self) -> str:
         """
         获取默认桶名称
-        
+
         Returns:
             str: 桶名称
         """
+        from src.utils.env_manager import get_env_manager
         config = get_config_manager()
-        return config.get("minio.default_bucket", "knowledge-files")
+        storage_config = config.get_storage_full_config(get_env_manager())
+        return storage_config.get("default_bucket", "knowledge-files")

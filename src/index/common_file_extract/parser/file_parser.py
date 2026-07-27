@@ -195,19 +195,20 @@ class FileParser:
         from src.client.mineru import Mineru2Client
         from src.utils.config_manager import get_config_manager
         
-        # 懒加载：创建 Mineru 客户端
+        # 懒加载：创建 Mineru 客户端（api_url 由 env 注入）
         config = get_config_manager()
+        mineru_cfg = config.get_mineru_config()
         mineru_config = {
-            "api_url": config.get("mineru.api_url", "http://localhost:18000"),
-            "timeout": config.get("mineru.timeout", 300)
+            "api_url": mineru_cfg.get("api_url"),
+            "timeout": mineru_cfg.get("timeout", 300)
         }
         mineru_client = Mineru2Client(mineru_config=mineru_config)
-        
+
         # 懒加载：创建 PDF Parser
         pdf_parser = PDFParser(
             mineru_client=mineru_client,
-            max_pages_per_request=config.get("mineru.max_pages_per_request", 2),
-            max_concurrent_requests=config.get("mineru.max_concurrent_requests", 5)
+            max_pages_per_request=mineru_cfg.get("max_pages_per_request", 2),
+            max_concurrent_requests=mineru_cfg.get("max_concurrent_requests", 5)
         )
         
         # 调用解析

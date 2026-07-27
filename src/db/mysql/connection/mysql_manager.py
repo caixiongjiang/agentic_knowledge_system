@@ -72,8 +72,8 @@ class MySQLServerManager(BaseMySQLManager):
         
         super().__init__()
         
-        # 从配置文件读取 MySQL 配置
-        mysql_config = config_manager.get("mysql", {})
+        # 从配置读取 MySQL 配置（host/database 由 env 注入）
+        mysql_config = config_manager.get_mysql_config()
         mysql_auth = env_manager.get_mysql_auth()
         
         # 优先使用参数，其次使用配置文件，最后使用默认值
