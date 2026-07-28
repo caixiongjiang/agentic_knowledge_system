@@ -150,7 +150,7 @@ class FileSummaryWorker(BaseWorker):
 
         # 1. 组件开关守卫：禁用时空跑（消费但不落库，避免 lag 堆积）
         if not self._config_manager.is_component_enabled(self.COMPONENT_NAME):
-            logger.info(
+            logger.debug(
                 f"FileSummary 组件已禁用，跳过处理: file_id={message.file_id}"
             )
             return True
@@ -352,7 +352,7 @@ class FileSummaryWorker(BaseWorker):
             topic=KafkaTopics.FILE_SUMMARY_END,
             message=summary_end_msg,
         )
-        logger.info(
+        logger.debug(
             f"发送 SummaryEndMessage: file_id={message.file_id}, "
             f"success={result.is_success()}"
         )

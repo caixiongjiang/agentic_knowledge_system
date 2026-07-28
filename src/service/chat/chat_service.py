@@ -663,7 +663,7 @@ class ChatService:
             doc_id = getattr(file, "document_id", None)
             label = file.file_name
             if not doc_id:
-                logger.info(
+                logger.debug(
                     f"_resolve_file_document_ids: file_id={file_id} "
                     f"尚未完成索引（document_id 为空）；本轮无检索范围"
                 )
@@ -1887,7 +1887,7 @@ class ChatService:
             ))
         total = len(unique_chunks)
         if total:
-            logger.info(
+            logger.debug(
                 f"[citations] 本轮 enrich 命中：file_id {hit_file}/{total}，"
                 f"section_title {hit_section}/{total}（缓存 size={enrich_cache.size}）"
             )
@@ -1934,7 +1934,7 @@ class ChatService:
             c for c in citations
             if c.alias and c.alias.lower() in cited_aliases
         ]
-        logger.info(
+        logger.debug(
             f"[citations] 过滤：LLM 引用了 {len(cited_aliases)} 个 alias，"
             f"原始 {len(citations)} 条 → 保留 {len(filtered)} 条"
         )

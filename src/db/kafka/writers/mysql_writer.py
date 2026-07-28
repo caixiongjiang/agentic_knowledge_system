@@ -138,7 +138,7 @@ class MySQLWriter(BaseWriter):
         Returns:
             List[bool]: 每条消息的处理结果（与输入等长、同序）
         """
-        logger.info(f"开始批量写入元数据: {len(messages)} 条消息")
+        logger.debug(f"开始批量写入元数据: {len(messages)} 条消息")
 
         results_map: Dict[str, bool] = {}
 
@@ -181,7 +181,7 @@ class MySQLWriter(BaseWriter):
             ]
 
             success_count = sum(results)
-            logger.info(
+            logger.debug(
                 f"批量写入元数据完成: success={success_count}/{len(messages)}"
             )
             return results

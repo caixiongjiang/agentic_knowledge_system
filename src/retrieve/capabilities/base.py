@@ -77,7 +77,7 @@ class BaseCapability(ABC):
             elapsed_ms = (time.perf_counter() - start) * 1000
             result.source_capability = capability_name
             result.execution_time_ms = elapsed_ms
-            self.logger.info(
+            self.logger.debug(
                 f"能力 {capability_name} 执行完成: "
                 f"{result.total_count} 条结果, 耗时 {elapsed_ms:.1f}ms"
             )

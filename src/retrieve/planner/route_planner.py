@@ -131,7 +131,7 @@ class RoutePlanner:
             self.last_llm_raw_text = raw_text  # 测试 / 调试用
             plan = self._parse_plan(raw_text)
             plan = self._validate_plan(plan, top_k)
-            logger.info(
+            logger.debug(
                 f"LLM₁ 路由规划完成: "
                 f"意图={plan.query_analysis.intent}, "
                 f"路由={[r.route for r in plan.route_plan]}"

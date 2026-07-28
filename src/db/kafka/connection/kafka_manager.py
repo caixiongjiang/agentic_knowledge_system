@@ -236,7 +236,7 @@ class KafkaManager(BaseKafkaManager):
         
         # 如果已存在相同的 Consumer，直接返回
         if consumer_id in self._consumers:
-            logger.info(f"复用现有 Consumer: {consumer_id}")
+            logger.debug(f"复用现有 Consumer: {consumer_id}")
             return self._consumers[consumer_id]
         
         try:

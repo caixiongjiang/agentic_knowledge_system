@@ -116,7 +116,7 @@ class TextSplitterWorker(BaseWorker):
         if self._mysql_manager is None:
             from src.db.mysql.connection.factory import MySQLManagerFactory
             self._mysql_manager = MySQLManagerFactory.get_manager()
-            logger.info("MySQL 连接管理器已获取")
+            logger.debug("MySQL 连接管理器已获取")
         return self._mysql_manager
     
     async def process_message_impl(self, message: ParseEndMessage) -> bool:
@@ -263,7 +263,7 @@ class TextSplitterWorker(BaseWorker):
             
             # 5f. 发送 SplitEndMessage (前台完成通知 + 触发后台抽取链路)
             await self._send_split_end_message(message, split_result)
-            logger.info(
+            logger.debug(
                 f"SplitEndMessage 已发送 (触发后台抽取): file_id={message.file_id}, "
                 f"chunks={split_result.total_chunks}"
             )
@@ -666,7 +666,7 @@ class TextSplitterWorker(BaseWorker):
             message=split_end_msg
         )
         
-        logger.info(
+        logger.debug(
             f"发送 SplitEndMessage (前台完成): file_id={message.file_id}, "
             f"chunks={split_result.total_chunks}"
         )

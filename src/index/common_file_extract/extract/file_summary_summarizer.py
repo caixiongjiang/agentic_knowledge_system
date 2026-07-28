@@ -74,7 +74,7 @@ class FileSummarizer:
             FileSummaryItem 或 None（失败 / 空输入时）
         """
         if not section_summaries:
-            logger.info(
+            logger.debug(
                 f"FileSummary: 无 section 摘要可用，跳过 file 摘要生成: "
                 f"document_id={document_id}"
             )

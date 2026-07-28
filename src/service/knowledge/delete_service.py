@@ -192,7 +192,7 @@ class KnowledgeDeleteService:
                 result.milvus_deleted += cascade_result.milvus_deleted
                 result.errors.extend(cascade_result.errors)
             else:
-                logger.info(
+                logger.debug(
                     f"document_id={document_id} 仍被 {len(other_refs)} 个文件引用，跳过级联删除"
                 )
 
@@ -201,7 +201,7 @@ class KnowledgeDeleteService:
                 deleted = await storage_manager.delete_file(storage_path)
                 if deleted:
                     result.storage_deleted += 1
-                    logger.info(f"已删除存储文件: {storage_path}")
+                    logger.debug(f"已删除存储文件: {storage_path}")
             except Exception as e:
                 error_msg = f"删除存储文件失败: {storage_path}, {e}"
                 result.errors.append(error_msg)
@@ -294,7 +294,7 @@ class KnowledgeDeleteService:
         elements = element_meta_info_repo.get_by_document_id(session, document_id)
         element_ids = [e.element_id for e in elements]
 
-        logger.info(
+        logger.debug(
             f"级联删除 document_id={document_id}: "
             f"sections={len(section_ids)}, chunks={len(chunk_ids)}, elements={len(element_ids)}"
         )

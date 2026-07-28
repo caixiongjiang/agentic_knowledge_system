@@ -164,21 +164,21 @@ class FileParserService:
         
         try:
             # 1. 下载文件
-            logger.info(f"下载文件: {storage_path}")
+            logger.debug(f"下载文件: {storage_path}")
             file_bytes = await self._download_file(storage_path)
-            logger.info(f"文件下载成功: {len(file_bytes)} bytes")
-            
+            logger.debug(f"文件下载成功: {len(file_bytes)} bytes")
+
             # 2. 保存到临时文件
             temp_file_path = self._save_to_temp_file(file_bytes, filename)
-            logger.info(f"临时文件创建: {temp_file_path}")
-            
+            logger.debug(f"临时文件创建: {temp_file_path}")
+
             # 3. 调用 FileParser 进行解析（纯解析，不存储）
-            logger.info("开始解析文件...")
+            logger.debug("开始解析文件...")
             parse_result = await FileParser.parse(
                 file_path=temp_file_path,
                 file_name=filename
             )
-            logger.info("文件解析完成")
+            logger.debug("文件解析完成")
             
             # 4. 构建知识库信息
             knowledge_base_info = {
@@ -190,7 +190,7 @@ class FileParserService:
             }
             
             # 5. 处理解析结果：上传图片 + 构建数据库消息 + 构建 element payload
-            logger.info("处理解析结果...")
+            logger.debug("处理解析结果...")
             mysql_messages, mongodb_messages, elements_payload = await self._process_parse_result(
                 parse_result=parse_result,
                 user_id=user_id,
@@ -201,7 +201,7 @@ class FileParserService:
                 creator=creator,
                 store_images=store_images
             )
-            logger.info(
+            logger.debug(
                 f"消息构建完成: MySQL={len(mysql_messages)}, MongoDB={len(mongodb_messages)}, "
                 f"elements_payload={len(elements_payload)}"
             )
@@ -629,7 +629,7 @@ class FileParserService:
         if document_language == "unknown":
             logger.warning("文档语言检测未识别到可识别脚本，回退 unknown")
         else:
-            logger.info(f"文档语言检测: {document_language} (sample_chars={min(len(md_content), 20000)})")
+            logger.debug(f"文档语言检测: {document_language} (sample_chars={min(len(md_content), 20000)})")
 
         # 构建 ParseResult
         result = ParseResult(

@@ -133,7 +133,7 @@ class TextAnalyzerWorker(BaseWorker):
 
         # 1. 组件开关守卫：禁用时空跑
         if not self._config_manager.is_component_enabled(self.COMPONENT_NAME):
-            logger.info(
+            logger.debug(
                 f"TextAnalyzer 组件已禁用，跳过处理: file_id={message.file_id}"
             )
             return True
@@ -326,7 +326,7 @@ class TextAnalyzerWorker(BaseWorker):
             topic=KafkaTopics.ANALYZE_END,
             message=analyze_end_msg,
         )
-        logger.info(
+        logger.debug(
             f"发送 AnalyzeEndMessage: file_id={message.file_id}, "
             f"total_qa={stats['total_qa']}, "
             f"llm_calls={stats['llm_call_count']}"

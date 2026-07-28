@@ -146,7 +146,7 @@ class FileParserWorker(BaseWorker):
             parser_service = await self._get_parser_service()
             
             # 2. 调用 Service 解析文件
-            logger.info("调用 FileParserService.parse_file()...")
+            logger.debug("调用 FileParserService.parse_file()...")
             parse_result, mysql_messages, mongodb_messages, elements_payload = await parser_service.parse_file(
                 user_id=message.user_id,
                 file_id=message.file_id,
@@ -274,7 +274,7 @@ class FileParserWorker(BaseWorker):
             logger.warning("Producer 未配置，无法发送 MySQL 消息")
             return
         
-        logger.info(f"发送 {len(records)} 条 MySQL 消息到 Kafka")
+        logger.debug(f"发送 {len(records)} 条 MySQL 消息到 Kafka")
         
         # P2 #7：先组装全部消息，再批量发送（aiokafka 合并为更少的 broker 请求）
         meta_msgs = [
@@ -314,7 +314,7 @@ class FileParserWorker(BaseWorker):
             logger.warning("Producer 未配置，无法发送 MongoDB 消息")
             return
         
-        logger.info(f"发送 {len(documents)} 条 MongoDB 消息到 Kafka")
+        logger.debug(f"发送 {len(documents)} 条 MongoDB 消息到 Kafka")
         
         # P2 #7：批量发送
         mongo_msgs = [

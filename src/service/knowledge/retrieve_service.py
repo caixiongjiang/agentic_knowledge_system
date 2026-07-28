@@ -264,7 +264,7 @@ class RetrieveService:
         if self._direct_answer_enabled:
             direct_answer = self._maybe_direct_answer(recall_results)
             if direct_answer is not None:
-                logger.info(
+                logger.debug(
                     f"直答短路命中: qa_id={direct_answer.qa_id}, "
                     f"score={direct_answer.score:.4f} ≥ "
                     f"θ={self._direct_answer_threshold:.2f}"
@@ -329,7 +329,7 @@ class RetrieveService:
             filtered_count = before_count - len(items)
             recall_stats.dropped_by_threshold = filtered_count
             if filtered_count:
-                logger.info(
+                logger.debug(
                     f"精排后阈值过滤: {filtered_count}/{before_count} 条结果 "
                     f"score < {rerank_score_threshold} 被过滤"
                 )
@@ -487,7 +487,7 @@ class RetrieveService:
             return plan
 
         if not keep:
-            logger.info(
+            logger.debug(
                 f"SearchMode={mode} 过滤后无可用路由，回退默认: "
                 f"{[r.route for r in fallback]}"
             )

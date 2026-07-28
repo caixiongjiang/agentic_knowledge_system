@@ -177,41 +177,51 @@ def get_logger():
     return logger
 
 
-# 预定义的日志配置
-def setup_dev_logging():
-    """开发环境日志配置 - 控制台输出 + 详细错误信息"""
-    setup_logging(
-        log_level="DEBUG",
-        enable_console=True,
-        enable_file=True,
-        log_file="dev.log",
-        diagnose=True,
-        backtrace=True
-    )
+def setup_logging_from_env() -> None:
+    """
+    根据环境变量自动配置日志系统（唯一的加载入口）。
 
+    依据 APP_ENV 选择策略，日志级别可被 LOG_LEVEL 覆盖：
+      - development: DEBUG，控制台 + 文件（dev.log），diagnose=True，backtrace=True
+      - production:  INFO，控制台 + 文件（prod.log，按天轮转、保留 30 天），diagnose=False，backtrace=False
+      - testing:    DEBUG，仅控制台，diagnose=True，backtrace=True
 
-def setup_prod_logging():
-    """生产环境日志配置 - 文件输出 + 精简错误信息"""
-    setup_logging(
-        log_level="INFO",
-        enable_console=False,
-        enable_file=True,
-        log_file="prod.log",
-        rotation="1 day",  # 每天轮转
-        retention="30 days",  # 保留30天
-        diagnose=False,
-        backtrace=False
-    )
+    生产环境保留控制台输出，便于 `docker logs` 查看。
+    """
+    from src.utils.env_manager import get_env_manager
 
+    env = get_env_manager()
+    app_env = env.get_app_env()
+    log_level = env.get_log_level()
 
-def setup_test_logging():
-    """测试环境日志配置 - 仅控制台输出"""
-    setup_logging(
-        log_level="DEBUG",
-        enable_console=True,
-        enable_file=False,
-        diagnose=True
-    )
+    if app_env == "production":
+        setup_logging(
+            log_level=log_level,
+            enable_console=True,
+            enable_file=True,
+            log_file="prod.log",
+            rotation="1 day",
+            retention="30 days",
+            diagnose=False,
+            backtrace=False,
+        )
+    elif app_env == "testing":
+        setup_logging(
+            log_level=log_level,
+            enable_console=True,
+            enable_file=False,
+            diagnose=True,
+            backtrace=True,
+        )
+    else:  # development（默认）
+        setup_logging(
+            log_level=log_level,
+            enable_console=True,
+            enable_file=True,
+            log_file="dev.log",
+            diagnose=True,
+            backtrace=True,
+        )
 
 
 if __name__ == "__main__":
@@ -220,7 +230,7 @@ if __name__ == "__main__":
     print("开始测试日志配置...")
     print("=" * 60)
     
-    setup_dev_logging()
+    setup_logging_from_env()
     
     # 测试 1: loguru 直接使用
     logger.info("✅ 测试 1: loguru 基础日志")

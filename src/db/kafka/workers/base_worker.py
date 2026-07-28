@@ -179,7 +179,7 @@ class BaseWorker(BaseKafkaConsumer, ABC):
             if success:
                 self._retry_count += 1
                 retried = True
-                logger.info(
+                logger.debug(
                     f"消息已调度重试: event_id={message.metadata.event_id}, "
                     f"retry_count={message.metadata.retry_count}"
                 )

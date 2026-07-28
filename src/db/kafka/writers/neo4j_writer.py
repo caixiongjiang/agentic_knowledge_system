@@ -94,7 +94,7 @@ class Neo4jWriter(BaseWriter):
         Returns:
             List[bool]: 每条消息的处理结果
         """
-        logger.info(f"开始批量写入图谱: {len(messages)} 条消息")
+        logger.debug(f"开始批量写入图谱: {len(messages)} 条消息")
 
         if not self._neo4j_client:
             logger.error("Neo4j 客户端未配置")
@@ -132,7 +132,7 @@ class Neo4jWriter(BaseWriter):
                     logger.error("批量 MERGE 关系失败")
                     return [False] * len(messages)
 
-            logger.info(f"批量写入图谱完成: {len(messages)} 条消息")
+            logger.debug(f"批量写入图谱完成: {len(messages)} 条消息")
             return [True] * len(messages)
 
         except Exception as e:

@@ -79,6 +79,9 @@ from src.types.messages.db_write import (
     MongoCollection, MySQLTable, MilvusCollection,
 )
 from src.utils.config_manager import get_config
+from src.utils.log_config import setup_logging_from_env
+
+setup_logging_from_env()
 
 
 # Writer 名称 → (batch_size 配置路径, flush_interval_ms 配置路径, 代码默认值)

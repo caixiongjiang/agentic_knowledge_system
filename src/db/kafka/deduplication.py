@@ -426,14 +426,14 @@ async def get_deduplication_manager(
                 # 初始化连接池（如果尚未初始化）
                 if not redis_manager._initialized:
                     await redis_manager.initialize()
-                    logger.info("Redis 连接池已初始化")
+                    logger.debug("Redis 连接池已初始化")
                 
                 # 保存全局 Manager 引用（用于后续关闭）
                 _redis_manager = redis_manager
                 
                 # 使用 kafka:dedup 命名空间
                 redis_namespace = RedisNamespace(redis_manager, "kafka:dedup")
-                logger.info("已自动创建 Redis 命名空间用于去重: kafka:dedup")
+                logger.debug("已自动创建 Redis 命名空间用于去重: kafka:dedup")
             except Exception as e:
                 logger.warning(f"无法创建 Redis 连接，将仅使用内存缓存: {e}")
                 redis_namespace = None

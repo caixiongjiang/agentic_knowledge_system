@@ -156,7 +156,7 @@ class MySQLServerManager(BaseMySQLManager):
                 conn.execute(create_db_sql)
                 conn.commit()
             
-            logger.info(f"数据库创建或已存在: {self.database}")
+            logger.debug(f"数据库创建或已存在: {self.database}")
             temp_engine.dispose()
         except Exception as e:
             logger.error(f"创建数据库失败: {e}")

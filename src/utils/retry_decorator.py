@@ -90,7 +90,7 @@ def retry_async(
                         result = await func(*args, **kwargs)
 
                     if attempt > 0:
-                        _logger.info(f"{func.__name__} succeeded on attempt {attempt + 1}")
+                        _logger.debug(f"{func.__name__} succeeded on attempt {attempt + 1}")
                     return result
 
                 except (asyncio.TimeoutError, TimeoutError) as e:
@@ -220,7 +220,7 @@ def retry_sync(
                         result = func(*args, **kwargs)
 
                     if attempt > 0:
-                        _logger.info(f"{func.__name__} succeeded on attempt {attempt + 1}")
+                        _logger.debug(f"{func.__name__} succeeded on attempt {attempt + 1}")
                     return result
 
                 except TimeoutError as e:

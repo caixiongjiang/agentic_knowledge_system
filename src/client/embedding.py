@@ -147,7 +147,7 @@ class EmbeddingClient:
                 **self.extra_params,
             )
             all_emb.extend(self._parse(resp))
-        logger.info(f"成功获取 {len(all_emb)} 个文本的稠密向量")
+        logger.debug(f"成功获取 {len(all_emb)} 个文本的稠密向量")
         return all_emb
 
     # ---------- 异步 ----------
@@ -179,7 +179,7 @@ class EmbeddingClient:
                 **self.extra_params,
             )
             all_emb.extend(self._parse(resp))
-        logger.info(f"成功获取 {len(all_emb)} 个文本的稠密向量")
+        logger.debug(f"成功获取 {len(all_emb)} 个文本的稠密向量")
         return all_emb
 
     async def aembed_concurrent(
@@ -196,7 +196,7 @@ class EmbeddingClient:
             cleaned[i : i + self.batch_size]
             for i in range(0, len(cleaned), self.batch_size)
         ]
-        logger.info(f"Embedding[concurrent] {len(batches)} 批 / 最大并发 {limit}")
+        logger.debug(f"Embedding[concurrent] {len(batches)} 批 / 最大并发 {limit}")
         sem = asyncio.Semaphore(limit)
 
         async def _run(batch: List[str]) -> List[List[float]]:
@@ -213,7 +213,7 @@ class EmbeddingClient:
 
         results = await asyncio.gather(*[_run(b) for b in batches])
         flat = [v for batch in results for v in batch]
-        logger.info(f"Embedding[concurrent] 完成，共 {len(flat)} 个向量")
+        logger.debug(f"Embedding[concurrent] 完成，共 {len(flat)} 个向量")
         return flat
 
     # ---------- 工具方法 ----------
@@ -255,7 +255,7 @@ class EmbeddingClient:
             v = self.embed("健康检查")
             ok = bool(v) and (self.dimension is None or len(v) == self.dimension)
             if ok:
-                logger.info(f"Embedding 健康检查通过 (model={self.model_name})")
+                logger.debug(f"Embedding 健康检查通过 (model={self.model_name})")
             return ok
         except Exception as e:
             logger.error(f"Embedding 健康检查失败: {e}")
@@ -266,7 +266,7 @@ class EmbeddingClient:
             v = await self.aembed("健康检查")
             ok = bool(v) and (self.dimension is None or len(v) == self.dimension)
             if ok:
-                logger.info(f"Embedding 健康检查通过 (model={self.model_name})")
+                logger.debug(f"Embedding 健康检查通过 (model={self.model_name})")
             return ok
         except Exception as e:
             logger.error(f"Embedding 健康检查失败: {e}")

@@ -20,9 +20,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from src.utils.log_config import setup_dev_logging
+from src.utils.log_config import setup_logging_from_env
 
-setup_dev_logging()
+setup_logging_from_env()
 
 import os
 

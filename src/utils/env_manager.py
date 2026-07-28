@@ -386,6 +386,11 @@ class EnvManager:
     def is_debug(self) -> bool:
         """是否为调试模式"""
         return self.get_bool("DEBUG", True)
+
+    def get_log_level(self) -> str:
+        """获取日志级别（dev 默认 DEBUG / prod 默认 INFO；可被 LOG_LEVEL 覆盖）。"""
+        default = "INFO" if self.get_app_env() == "production" else "DEBUG"
+        return self.get("LOG_LEVEL", default).upper()
     
     def get_app_secret_key(self) -> str:
         """获取应用密钥"""

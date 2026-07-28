@@ -138,7 +138,7 @@ class SectionSummaryWorker(BaseWorker):
 
         # 1. 组件开关守卫：禁用时空跑（消费但不落库，避免 lag 堆积）
         if not self._config_manager.is_component_enabled(self.COMPONENT_NAME):
-            logger.info(
+            logger.debug(
                 f"SectionSummary 组件已禁用，跳过处理: file_id={message.file_id}"
             )
             return True
@@ -354,7 +354,7 @@ class SectionSummaryWorker(BaseWorker):
             topic=KafkaTopics.SECTION_SUMMARY_END,
             message=end_msg,
         )
-        logger.info(
+        logger.debug(
             f"发送 SectionSummaryEndMessage: file_id={message.file_id}, "
             f"sections={result.total_sections}, "
             f"payload_items={len(end_msg.section_summaries_payload)}"

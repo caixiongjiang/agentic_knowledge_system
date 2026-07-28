@@ -139,7 +139,7 @@ class FileParser:
         try:
             # 1. 检测文件类型
             file_type = FileParser.detect_file_type(file_path)
-            logger.info(f"📂 文件类型: {file_type}")
+            logger.debug(f"📂 文件类型: {file_type}")
             
             # 2. 根据文件类型路由到对应解析器
             if file_type == "pdf":

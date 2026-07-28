@@ -82,7 +82,7 @@ def build_section_tree(
             node.inferred_level = 1
             roots.append(node)
 
-    logger.info(
+    logger.debug(
         f"SectionSummary: section 树构建完成 total={len(sections)}, "
         f"roots={len(roots)}, numbered={len(key_to_node)}, "
         f"unnumbered={len(sections) - len(key_to_node)}"

@@ -80,7 +80,7 @@ def build_qa_sections_from_db_data(
             chunks=section_chunks,
         ))
 
-    logger.info(
+    logger.debug(
         f"TextAnalyzer: 从 DB 数据构造 QA 上下文 sections={len(result)}, "
         f"chunks={len(chunk_map)}"
     )

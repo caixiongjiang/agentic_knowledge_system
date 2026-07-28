@@ -157,7 +157,7 @@ class BaseWriter(BatchKafkaConsumer, ABC):
             self._total_written += success_count
             self._batch_count += 1
             
-            logger.info(
+            logger.debug(
                 f"批量写入完成: success={success_count}/{len(unique_messages)}, "
                 f"batch_count={self._batch_count}, total_written={self._total_written}"
             )

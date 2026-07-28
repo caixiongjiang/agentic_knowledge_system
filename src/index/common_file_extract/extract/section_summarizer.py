@@ -87,7 +87,7 @@ class SectionSummarizer:
 
         # 空内容 section 直接跳过（无 chunk 或全部缺失文本）
         if not combined_text.strip():
-            logger.info(
+            logger.debug(
                 f"SectionSummary: section 无有效内容跳过: "
                 f"section_id={section.section_id}, chunk_count={chunk_count}"
             )
@@ -121,7 +121,7 @@ class SectionSummarizer:
                         knowledge_base_id=knowledge_base_id,
                         knowledge_base_name=knowledge_base_name,
                     )
-                    logger.info(
+                    logger.debug(
                         f"SectionSummary: section 摘要生成成功: "
                         f"section_id={section.section_id}, "
                         f"chunk_count={chunk_count}, language={section_language}, "
@@ -186,7 +186,7 @@ class SectionSummarizer:
             )
 
         if not child_summaries:
-            logger.info(
+            logger.debug(
                 f"SectionSummary: 父 section 无有效子摘要跳过 rollup: "
                 f"section_id={node.section_id}, title={node.title!r}"
             )
@@ -247,7 +247,7 @@ class SectionSummarizer:
             knowledge_base_id=knowledge_base_id,
             knowledge_base_name=knowledge_base_name,
         )
-        logger.info(
+        logger.debug(
             f"SectionSummary: 父 section rollup 完成: "
             f"section_id={node.section_id}, title={node.title!r}, "
             f"child_summaries={len(child_summaries)}, chunk_count={chunk_count}, "

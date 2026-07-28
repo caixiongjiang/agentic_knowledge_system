@@ -117,7 +117,7 @@ async def handle(
             if response.planner_model:
                 kit.note_execution_model(response.planner_model)
             source_chunks = ", ".join(direct.source_chunk_ids) or "（无）"
-            logger.info(
+            logger.debug(
                 f"search_knowledge_base({query_text!r}) → 直答短路 "
                 f"qa_id={direct.qa_id} score={direct.score:.4f}"
             )

@@ -97,9 +97,9 @@ class Mineru2Client:
         # 构建日志信息
         if start_page_id is not None or end_page_id is not None:
             page_range = f"{start_page_id or 0}-{end_page_id or 'end'}"
-            self.logger.info(f"📤 提交文档解析任务: {file_name}，页码范围: {page_range}")
+            self.logger.debug(f"📤 提交文档解析任务: {file_name}，页码范围: {page_range}")
         else:
-            self.logger.info(f"📤 提交文档解析任务: {file_name}（完整文件）")
+            self.logger.debug(f"📤 提交文档解析任务: {file_name}（完整文件）")
 
         try:
             # 步骤1: 提交任务
@@ -128,7 +128,7 @@ class Mineru2Client:
             # 步骤5: 使用现有的转换逻辑
             result = self._transform_mineru_data(mineru_format_data)
 
-            self.logger.info(f"✅ 文档解析完成: {file_name}")
+            self.logger.debug(f"✅ 文档解析完成: {file_name}")
 
             return result
 
@@ -163,22 +163,22 @@ class Mineru2Client:
 
         :raises Exception: 如果任何文件解析失败
         """
-        self.logger.info(f"📦 开始批量解析 {len(file_list)} 个文件")
-        self.logger.info(f"⚙️  最大并发提交数: {max_concurrent}")
+        self.logger.debug(f"📦 开始批量解析 {len(file_list)} 个文件")
+        self.logger.debug(f"⚙️  最大并发提交数: {max_concurrent}")
 
         results = []
         task_ids = []
 
         # 第一阶段：批量提交任务（控制并发数）
-        self.logger.info(f"\n{'=' * 60}")
-        self.logger.info(f"第1阶段: 批量提交任务")
-        self.logger.info(f"{'=' * 60}")
+        self.logger.debug(f"\n{'=' * 60}")
+        self.logger.debug(f"第1阶段: 批量提交任务")
+        self.logger.debug(f"{'=' * 60}")
 
         for idx in range(0, len(file_list), max_concurrent):
             batch = file_list[idx:idx + max_concurrent]
             batch_size = len(batch)
 
-            self.logger.info(f"\n📤 提交批次 {idx // max_concurrent + 1}: {batch_size} 个文件")
+            self.logger.debug(f"\n📤 提交批次 {idx // max_concurrent + 1}: {batch_size} 个文件")
 
             for file_bytes, file_name in batch:
                 try:
@@ -209,12 +209,12 @@ class Mineru2Client:
             if idx + max_concurrent < len(file_list):
                 time.sleep(0.5)
 
-        self.logger.info(f"\n✅ 已提交 {len([t for t in task_ids if t.get('task_id')])} 个任务")
+        self.logger.debug(f"\n✅ 已提交 {len([t for t in task_ids if t.get('task_id')])} 个任务")
 
         # 第二阶段：等待所有任务完成
-        self.logger.info(f"\n{'=' * 60}")
-        self.logger.info(f"第2阶段: 等待任务完成")
-        self.logger.info(f"{'=' * 60}\n")
+        self.logger.debug(f"\n{'=' * 60}")
+        self.logger.debug(f"第2阶段: 等待任务完成")
+        self.logger.debug(f"{'=' * 60}\n")
 
         success_count = 0
         failed_count = 0
@@ -223,7 +223,7 @@ class Mineru2Client:
             file_name = task_info["file_name"]
             task_id = task_info.get("task_id")
 
-            self.logger.info(f"[{idx}/{len(task_ids)}] 处理: {file_name}")
+            self.logger.debug(f"[{idx}/{len(task_ids)}] 处理: {file_name}")
 
             if task_id is None:
                 # 提交阶段就失败了
@@ -262,12 +262,12 @@ class Mineru2Client:
                 failed_count += 1
 
         # 总结
-        self.logger.info(f"\n{'=' * 60}")
-        self.logger.info(f"📊 批量解析完成")
-        self.logger.info(f"{'=' * 60}")
-        self.logger.info(f"✅ 成功: {success_count}")
-        self.logger.info(f"❌ 失败: {failed_count}")
-        self.logger.info(f"📝 总计: {len(file_list)}")
+        self.logger.debug(f"\n{'=' * 60}")
+        self.logger.debug(f"📊 批量解析完成")
+        self.logger.debug(f"{'=' * 60}")
+        self.logger.debug(f"✅ 成功: {success_count}")
+        self.logger.debug(f"❌ 失败: {failed_count}")
+        self.logger.debug(f"📝 总计: {len(file_list)}")
 
         return results
 
@@ -334,7 +334,7 @@ class Mineru2Client:
                 page_info = ""
                 if start_page_id is not None or end_page_id is not None:
                     page_info = f"（页码: {start_page_id or 0}-{end_page_id or 'end'}）"
-                self.logger.info(f"✅ 任务已提交: {task_id} {page_info}")
+                self.logger.debug(f"✅ 任务已提交: {task_id} {page_info}")
                 return task_id
             else:
                 raise Exception(f"提交任务失败: {response.text}")
@@ -352,7 +352,7 @@ class Mineru2Client:
         """
         start_time = time.time()
 
-        self.logger.info(f"⏳ 等待任务完成: {task_id}")
+        self.logger.debug(f"⏳ 等待任务完成: {task_id}")
 
         while True:
             # 查询任务状态
@@ -369,7 +369,7 @@ class Mineru2Client:
                 status = result.get('status')
 
                 if status == 'completed':
-                    self.logger.info(f"✅ 任务完成: {task_id}")
+                    self.logger.debug(f"✅ 任务完成: {task_id}")
                     return
                 elif status == 'failed':
                     error_msg = result.get('error_message', 'Unknown error')

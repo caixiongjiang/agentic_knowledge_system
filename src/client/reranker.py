@@ -238,7 +238,7 @@ class RerankerClient:
             r = self.rerank("健康检查", ["测试文档"], top_k=1)
             ok = bool(r)
             if ok:
-                logger.info(f"Reranker 健康检查通过 (model={self.model_name})")
+                logger.debug(f"Reranker 健康检查通过 (model={self.model_name})")
             return ok
         except Exception as e:
             logger.error(f"Reranker 健康检查失败: {e}")
@@ -249,7 +249,7 @@ class RerankerClient:
             r = await self.arerank("健康检查", ["测试文档"], top_k=1)
             ok = bool(r)
             if ok:
-                logger.info(f"Reranker 健康检查通过 (model={self.model_name})")
+                logger.debug(f"Reranker 健康检查通过 (model={self.model_name})")
             return ok
         except Exception as e:
             logger.error(f"Reranker 健康检查失败: {e}")

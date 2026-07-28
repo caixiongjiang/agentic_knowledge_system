@@ -276,7 +276,7 @@ class RetryManager:
             # 按时间排序（最早的在前面）
             self.retry_queue.sort()
         
-        logger.info(
+        logger.debug(
             f"消息已调度重试 - "
             f"event_id: {message.metadata.event_id}, "
             f"重试次数: {current_retry + 1}/{self.max_retries}, "
@@ -316,7 +316,7 @@ class RetryManager:
                             message=retry_msg.original_message
                         )
                         
-                        logger.info(
+                        logger.debug(
                             f"消息已发送到重试Topic - "
                             f"event_id: {retry_msg.event_id}, "
                             f"重试次数: {retry_msg.retry_count}, "

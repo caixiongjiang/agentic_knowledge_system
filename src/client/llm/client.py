@@ -397,7 +397,7 @@ class LLMClient:
 
     def _log_metrics(self, mode: str, resp: LLMResponse, elapsed_ms: float) -> None:
         usage = resp.usage
-        logger.info(
+        logger.debug(
             "[LLM] {mode} {model} {elapsed:.0f}ms tokens={total} "
             "(prompt={p}, completion={c}, reasoning={r}) finish={fr} tools={n}",
             mode=mode,

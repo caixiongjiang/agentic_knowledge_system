@@ -143,16 +143,16 @@ class PDFParser:
             
             # 2. 获取总页数
             total_pages = self.get_pdf_pages(file_path)
-            self.logger.info(f"📖 PDF 总页数: {total_pages}")
+            self.logger.debug(f"📖 PDF 总页数: {total_pages}")
             
             # 3. 判断是否需要分页
             if total_pages <= self.max_pages_per_request:
                 # 小文件：一次性解析
-                self.logger.info(f"📝 使用单次请求（<={self.max_pages_per_request}页）")
+                self.logger.debug(f"📝 使用单次请求（<={self.max_pages_per_request}页）")
                 result = await self._parse_full_file(file_bytes, file_name)
             else:
                 # 大文件：分页并发解析
-                self.logger.info(
+                self.logger.debug(
                     f"📝 使用分页并发请求（每批{self.max_pages_per_request}页，"
                     f"最大并发{self.max_concurrent_requests}个）"
                 )
@@ -219,7 +219,7 @@ class PDFParser:
             end_page = min(start_page + self.max_pages_per_request - 1, total_pages - 1)
             page_ranges.append((start_page, end_page))
         
-        self.logger.info(f"📋 分页方案: {len(page_ranges)} 个批次")
+        self.logger.debug(f"📋 分页方案: {len(page_ranges)} 个批次")
         for idx, (start, end) in enumerate(page_ranges, 1):
             self.logger.debug(f"   批次{idx}: 页码 {start}-{end}")
         
@@ -252,14 +252,14 @@ class PDFParser:
             for idx, (start, end) in enumerate(page_ranges, 1)
         ]
         
-        self.logger.info(f"🚀 开始并发处理（最大并发数: {self.max_concurrent_requests}）")
+        self.logger.debug(f"🚀 开始并发处理（最大并发数: {self.max_concurrent_requests}）")
         results_with_index = await asyncio.gather(*tasks)
         
         # 4. 按批次索引排序
         sorted_results = [result for _, result in sorted(results_with_index, key=lambda x: x[0])]
         
         # 5. 合并结果
-        self.logger.info(f"🔗 合并 {len(sorted_results)} 个批次的结果")
+        self.logger.debug(f"🔗 合并 {len(sorted_results)} 个批次的结果")
         merged_result = self._merge_results(sorted_results, page_ranges)
         
         return merged_result

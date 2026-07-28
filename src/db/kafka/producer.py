@@ -173,7 +173,7 @@ class KafkaProducer:
             # 2. 并发等待全部 ack
             results = await asyncio.gather(*futures)
             
-            logger.info(f"批量发送完成: topic={topic}, count={len(messages)}")
+            logger.debug(f"批量发送完成: topic={topic}, count={len(messages)}")
             return results
             
         except Exception as e:

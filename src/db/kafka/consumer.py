@@ -367,7 +367,7 @@ class BatchKafkaConsumer(BaseKafkaConsumer):
                 else:
                     self._failed_count += 1
             
-            logger.info(
+            logger.debug(
                 f"批量处理完成: total={len(records)}, "
                 f"success={sum(results)}, failed={len(results) - sum(results)}"
             )

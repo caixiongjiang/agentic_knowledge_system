@@ -135,7 +135,7 @@ class QASummarizer:
                 )
                 items.extend(batch_items)
 
-        logger.info(
+        logger.debug(
             f"TextAnalyzer: section QA 抽取完成: "
             f"section_id={section.section_id}, "
             f"chunks={section.chunk_count}, batches={len(batches)}, "

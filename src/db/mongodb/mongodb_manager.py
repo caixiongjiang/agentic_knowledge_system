@@ -180,7 +180,7 @@ class MongoDBManager:
             # 获取数据库对象
             self.database: AsyncIOMotorDatabase = self.client[self.database_name]
             
-            self.logger.info(f"MongoDB异步客户端创建成功: {self.host}:{self.port}")
+            self.logger.debug(f"MongoDB异步客户端创建成功: {self.host}:{self.port}")
         
         except Exception as e:
             self.logger.error(f"创建MongoDB客户端失败: {e}", exc_info=True)

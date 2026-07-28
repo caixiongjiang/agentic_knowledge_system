@@ -62,7 +62,7 @@ def build_section_summaries_from_payload(
         SectionSummaryInput 列表（过滤掉空 summary_text 的项）
     """
     if not section_summaries_payload:
-        logger.info("FileSummary: payload 无 section 摘要，返回空列表")
+        logger.debug("FileSummary: payload 无 section 摘要，返回空列表")
         return []
 
     result: List[SectionSummaryInput] = []
@@ -85,7 +85,7 @@ def build_section_summaries_from_payload(
     # 叶子在前、父在后（自底向上，更贴近自然阅读顺序）
     result.sort(key=lambda x: (0 if x.is_leaf else 1,))
 
-    logger.info(
+    logger.debug(
         f"FileSummary: 从 payload 构造上下文 section_summaries={len(result)}, "
         f"leaf={sum(1 for r in result if r.is_leaf)}, "
         f"parent={sum(1 for r in result if not r.is_leaf)}"

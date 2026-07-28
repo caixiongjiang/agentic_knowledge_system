@@ -77,7 +77,7 @@ def build_sections_from_payload(
             chunk_id_list=[cid for cid in chunk_id_list if cid],
         ))
 
-    logger.info(
+    logger.debug(
         f"SectionSummary: 从消息 payload 构造上下文 sections={len(result)}, "
         f"chunks={len(chunk_map)}"
     )

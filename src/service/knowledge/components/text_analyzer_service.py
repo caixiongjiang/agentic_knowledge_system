@@ -93,7 +93,7 @@ class TextAnalyzerService:
         with manager.get_session() as session:
             rows = section_document_repo.get_by_document_id(session, document_id)
         section_ids = [r.section_id for r in rows if r.section_id]
-        logger.info(
+        logger.debug(
             f"TextAnalyzer: DB 取 section_ids: document_id={document_id}, "
             f"count={len(section_ids)}"
         )
@@ -111,7 +111,7 @@ class TextAnalyzerService:
             rows = section_document_repo.get_leaf_section_ids_by_document_id(
                 session, document_id,
             )
-        logger.info(
+        logger.debug(
             f"TextAnalyzer: DB 取叶子 section_ids: document_id={document_id}, "
             f"count={len(rows)}"
         )
@@ -216,7 +216,7 @@ class TextAnalyzerService:
         leaf_section_ids = self._load_leaf_section_ids(document_id)
         skipped_non_leaf = len(all_section_ids) - len(leaf_section_ids)
         if skipped_non_leaf:
-            logger.info(
+            logger.debug(
                 f"TextAnalyzer: 跳过 {skipped_non_leaf} 个非叶子 section（rollup，避免重复抽取）: "
                 f"document_id={document_id}"
             )
