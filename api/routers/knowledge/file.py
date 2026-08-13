@@ -26,6 +26,9 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from urllib.parse import quote
+import json
+from pathlib import Path
+from typing import Optional
 
 from api.dependencies.auth import get_current_user_id, get_current_user_id_from_token
 from api.dependencies.database import get_db_session, get_storage_manager
@@ -179,6 +182,61 @@ async def batch_move_files(
 # ==================== 文件预览 ====================
 
 
+
+_OFFICE_SUFFIXES_FOR_PDF_PREVIEW = {".doc", ".docx", ".ppt", ".pptx"}
+
+
+def _parse_ext_attributes(raw: Optional[str]) -> dict:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _get_converted_pdf_storage_path(file_record) -> Optional[str]:
+    attrs = _parse_ext_attributes(getattr(file_record, "ext_attributes", None))
+    path = attrs.get("converted_pdf_storage_path")
+    return path if isinstance(path, str) and path.strip() else None
+
+
+def _is_office_pdf_previewable(file_record) -> bool:
+    suffix = (getattr(file_record, "file_suffix", None) or "").lower()
+    if suffix in _OFFICE_SUFFIXES_FOR_PDF_PREVIEW:
+        return True
+    name = (getattr(file_record, "file_name", None) or "").lower()
+    return any(name.endswith(ext) for ext in _OFFICE_SUFFIXES_FOR_PDF_PREVIEW)
+
+
+def _resolve_preview_storage(
+    file_record,
+    *,
+    prefer_converted: bool = True,
+) -> tuple[str, str, bool]:
+    """
+    返回 (storage_path, media_type, has_converted_pdf)
+
+    Word/PPT：默认优先返回转换 PDF（bbox 与之对齐）；
+    prefer_converted=False 时强制原始文件。
+    """
+    converted = _get_converted_pdf_storage_path(file_record)
+    has_converted = bool(converted)
+    original_path = file_record.storage_path
+    original_mime = file_record.mime_type or "application/octet-stream"
+
+    if prefer_converted and has_converted and _is_office_pdf_previewable(file_record):
+        return converted, "application/pdf", True
+
+    # 原生 PDF
+    suffix = (getattr(file_record, "file_suffix", None) or "").lower()
+    name = (getattr(file_record, "file_name", None) or "").lower()
+    if suffix == ".pdf" or name.endswith(".pdf") or "pdf" in (original_mime or ""):
+        return original_path, "application/pdf", has_converted
+
+    return original_path, original_mime, has_converted
+
 @router.get(
     "/{file_id}/preview",
     response_model=ApiResponse[FilePreviewResponse],
@@ -210,16 +268,22 @@ async def get_file_preview(
             status_code=400, detail="文件存储路径缺失，无法生成预览链接"
         )
 
+    preview_storage_path, preview_mime, has_converted = _resolve_preview_storage(
+        file_record, prefer_converted=True
+    )
+
     try:
         preview_url = await storage.get_preview_url(
-            file_record.storage_path, expires
+            preview_storage_path, expires
         )
     except Exception as e:
         logger.error(
             f"生成预览URL失败: file_id={file_id}, "
-            f"storage_path={file_record.storage_path}, error={e}"
+            f"storage_path={preview_storage_path}, error={e}"
         )
         raise HTTPException(status_code=500, detail="生成预览URL失败")
+
+    render_as = "pdf" if preview_mime == "application/pdf" else "original"
 
     return ApiResponse.success(
         data=FilePreviewResponse(
@@ -229,6 +293,9 @@ async def get_file_preview(
             file_size=file_record.file_size,
             preview_url=preview_url,
             expires_in=expires,
+            render_as=render_as,
+            preview_mime_type=preview_mime,
+            has_converted_pdf=has_converted,
         ),
         message="预览URL生成成功",
     )
@@ -250,6 +317,13 @@ async def get_file_preview(
 async def get_file_raw(
     file_id: str,
     request: Request,
+    source: str = Query(
+        default="auto",
+        description=(
+            "读取源：auto=Office 优先转换 PDF；converted=强制转换 PDF；"
+            "original=强制原始文件"
+        ),
+    ),
     user_id: str = Depends(get_current_user_id_from_token),
     session: Session = Depends(get_db_session),
 ) -> Response:
@@ -264,9 +338,22 @@ async def get_file_raw(
             status_code=400, detail="文件存储路径缺失，无法读取原始内容"
         )
 
-    storage_path = file_record.storage_path
-    media_type = file_record.mime_type or "application/octet-stream"
+    prefer_converted = source != "original"
+    if source == "converted":
+        converted = _get_converted_pdf_storage_path(file_record)
+        if not converted:
+            raise HTTPException(status_code=404, detail="转换 PDF 不存在")
+        storage_path, media_type = converted, "application/pdf"
+        has_converted = True
+    else:
+        storage_path, media_type, has_converted = _resolve_preview_storage(
+            file_record, prefer_converted=prefer_converted
+        )
+
     filename = file_record.file_name or file_id
+    # 转换 PDF 预览时，让浏览器/PDF.js 按 .pdf 处理
+    if media_type == "application/pdf" and not filename.lower().endswith(".pdf"):
+        filename = f"{Path(filename).stem}.pdf"
 
     # 流式端点不复用 get_storage_manager 依赖：该依赖会在响应体流式发送前被
     # FastAPI 清理（关闭 urllib3 连接池），导致流式中断。这里独立创建适配器，

@@ -317,6 +317,24 @@ class ConfigManager:
     def get_mineru_config(self) -> Dict[str, Any]:
         """获取MinerU服务配置"""
         return self._mineru_section(self._env_manager)
+
+    def get_libreoffice_config(self) -> Dict[str, Any]:
+        """
+        获取 LibreOffice 配置（用于 PPT/Word/图片 转 PDF）
+
+        soffice_path 优先级：环境变量 LIBREOFFICE_SOFFICE_PATH > config.toml
+        （macOS 开发与 Ubuntu 生产路径不同，便于按环境覆盖）
+
+        Returns:
+            {soffice_path, convert_timeout}
+        """
+        config = self.get_section("libreoffice")
+        env_path = self._env_manager.get("LIBREOFFICE_SOFFICE_PATH")
+        if env_path:
+            config["soffice_path"] = env_path
+        config.setdefault("soffice_path", "soffice")
+        config.setdefault("convert_timeout", 120)
+        return config
     
     # ==================== 系统配置获取 ====================
     
@@ -355,6 +373,7 @@ class ConfigManager:
             "sparse_embedding": ["model_name"],  # api_base 由 env 提供
             "reranker": ["default_preset", "presets"],
             "mineru": [],  # api_url 由 env 提供
+            "libreoffice": [],  # soffice_path / convert_timeout 均有默认值
             "logging": ["level", "log_dir", "log_file"],
             "file_upload": ["supported_formats", "max_file_size", "temp_dir"],
         }

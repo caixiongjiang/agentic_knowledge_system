@@ -218,19 +218,43 @@ class FileParser:
     async def _parse_word(file_path: Path, file_name: str) -> Dict:
         """
         解析 Word 文件
-        
+
+        策略：Word → LibreOffice 转 PDF → MinerU 解析（与 PDF/PPT 链路一致，获得真实像素 bbox）
+
         Args:
             file_path: 文件路径
             file_name: 文件名
-            
+
         Returns:
             Dict: 解析结果
         """
         from src.index.common_file_extract.parser.word_parser import WordParser
-        
+        from src.client.mineru import Mineru2Client
+        from src.utils.config_manager import get_config_manager
+
+        # 懒加载：创建 Mineru 客户端（与 PDF/PPT 解析共用）
+        config = get_config_manager()
+        mineru_cfg = config.get_mineru_config()
+        mineru_config = {
+            "api_url": mineru_cfg.get("api_url"),
+            "timeout": mineru_cfg.get("timeout", 300)
+        }
+        mineru_client = Mineru2Client(mineru_config=mineru_config)
+
+        # 读取 LibreOffice 配置（soffice 路径跨平台：macOS / Linux 不同）
+        libreoffice_cfg = config.get_libreoffice_config()
+        soffice_path = libreoffice_cfg.get("soffice_path", "soffice")
+        convert_timeout = libreoffice_cfg.get("convert_timeout", 120)
+
         # 懒加载：创建 Word Parser
-        word_parser = WordParser()
-        
+        word_parser = WordParser(
+            mineru_client=mineru_client,
+            max_pages_per_request=mineru_cfg.get("max_pages_per_request", 2),
+            max_concurrent_requests=mineru_cfg.get("max_concurrent_requests", 5),
+            soffice_path=soffice_path,
+            convert_timeout=convert_timeout,
+        )
+
         # 调用解析
         return await word_parser.parse(file_path, file_name)
     
@@ -258,19 +282,43 @@ class FileParser:
     async def _parse_ppt(file_path: Path, file_name: str) -> Dict:
         """
         解析 PowerPoint 文件
-        
+
+        策略：PPT → LibreOffice 转 PDF → MinerU 解析（与 PDF 链路一致，获得真实像素 bbox）
+
         Args:
             file_path: 文件路径
             file_name: 文件名
-            
+
         Returns:
             Dict: 解析结果
         """
         from src.index.common_file_extract.parser.ppt_parser import PPTParser
-        
+        from src.client.mineru import Mineru2Client
+        from src.utils.config_manager import get_config_manager
+
+        # 懒加载：创建 Mineru 客户端（与 PDF 解析共用）
+        config = get_config_manager()
+        mineru_cfg = config.get_mineru_config()
+        mineru_config = {
+            "api_url": mineru_cfg.get("api_url"),
+            "timeout": mineru_cfg.get("timeout", 300)
+        }
+        mineru_client = Mineru2Client(mineru_config=mineru_config)
+
+        # 读取 LibreOffice 配置（soffice 路径跨平台：macOS / Linux 不同）
+        libreoffice_cfg = config.get_libreoffice_config()
+        soffice_path = libreoffice_cfg.get("soffice_path", "soffice")
+        convert_timeout = libreoffice_cfg.get("convert_timeout", 120)
+
         # 懒加载：创建 PPT Parser
-        ppt_parser = PPTParser()
-        
+        ppt_parser = PPTParser(
+            mineru_client=mineru_client,
+            max_pages_per_request=mineru_cfg.get("max_pages_per_request", 2),
+            max_concurrent_requests=mineru_cfg.get("max_concurrent_requests", 5),
+            soffice_path=soffice_path,
+            convert_timeout=convert_timeout,
+        )
+
         # 调用解析
         return await ppt_parser.parse(file_path, file_name)
     

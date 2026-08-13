@@ -309,6 +309,30 @@ class StorageManager:
         
         logger.debug(f"上传图片: {bucket}/{object_path}")
         return await self.upload_file(image_bytes, bucket, object_path)
+
+    async def upload_converted_pdf(
+        self,
+        pdf_bytes: bytes,
+        user_id: str,
+        session_id: str,
+        file_id: str,
+        folder_path: str = "/",
+    ) -> str:
+        """
+        上传 Office 文档转换后的 PDF（用于 Word/PPT 溯源预览）
+
+        与原生 PDF 上传共用路径规则（build_raw_file_path）：
+        {user_id}/{session_id}/{folder_path}/{file_id}.pdf
+
+        Returns:
+            str: 完整存储路径（bucket/object_path）
+        """
+        object_path = self._adapter.build_raw_file_path(
+            user_id, session_id, file_id, ".pdf", folder_path
+        )
+        bucket = self._get_bucket_name()
+        logger.info(f"上传转换 PDF: {bucket}/{object_path}")
+        return await self.upload_file(pdf_bytes, bucket, object_path)
     
     async def get_raw_file_preview_url(
         self,

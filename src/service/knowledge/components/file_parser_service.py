@@ -179,6 +179,15 @@ class FileParserService:
                 file_name=filename
             )
             logger.debug("文件解析完成")
+
+            # 3.1 Word/PPT 等 Office 转换 PDF：上传 MinIO，供前端溯源预览
+            await self._persist_converted_pdf_if_needed(
+                parse_result=parse_result,
+                user_id=user_id,
+                file_id=file_id,
+                session_id=session_id,
+                source_storage_path=storage_path,
+            )
             
             # 4. 构建知识库信息
             knowledge_base_info = {
@@ -236,6 +245,121 @@ class FileParserService:
             if temp_file_path:
                 self._cleanup_temp_file(temp_file_path)
     
+
+    async def _persist_converted_pdf_if_needed(
+        self,
+        parse_result: Dict,
+        user_id: str,
+        file_id: str,
+        session_id: Optional[str],
+        source_storage_path: str,
+    ) -> None:
+        """
+        若解析结果携带 Office 转换 PDF 临时路径，则上传到 MinIO 并写回 parse_result。
+
+        路径与原生 PDF 上传对齐：{user}/{session}/{folder}/{file_id}.pdf
+        folder / session 优先从原始 storage_path 解析，保证与原件同目录。
+
+        成功后设置：
+        - converted_pdf_storage_path: MinIO 完整路径
+        同时清理本地临时 PDF。
+        """
+        temp_path = parse_result.pop("converted_pdf_temp_path", None)
+        if not temp_path:
+            return
+
+        pdf_path = Path(temp_path)
+        try:
+            if not pdf_path.exists():
+                logger.warning(f"转换 PDF 临时文件不存在，跳过持久化: {temp_path}")
+                return
+
+            pdf_bytes = pdf_path.read_bytes()
+            if not pdf_bytes:
+                logger.warning(f"转换 PDF 为空，跳过持久化: {temp_path}")
+                return
+
+            # 线性化后更利于 /raw 渐进加载
+            try:
+                from src.utils.pdf_linearize import maybe_linearize
+                import asyncio
+                pdf_bytes = await asyncio.to_thread(maybe_linearize, pdf_bytes, "pdf")
+            except Exception as e:
+                logger.warning(f"转换 PDF 线性化失败，使用原字节: {e}")
+
+            effective_session_id, folder_path = self._resolve_converted_pdf_location(
+                source_storage_path=source_storage_path,
+                user_id=user_id,
+                session_id=session_id,
+                file_id=file_id,
+            )
+            storage_path = await self.storage_manager.upload_converted_pdf(
+                pdf_bytes=pdf_bytes,
+                user_id=user_id,
+                session_id=effective_session_id,
+                file_id=file_id,
+                folder_path=folder_path,
+            )
+            parse_result["converted_pdf_storage_path"] = storage_path
+            logger.info(
+                f"转换 PDF 已持久化: file_id={file_id}, path={storage_path}"
+            )
+        except Exception as e:
+            # 持久化失败不阻断解析主流程；前端将无法对 Office 做 PDF 预览高亮
+            logger.error(
+                f"转换 PDF 持久化失败（不阻断解析）: file_id={file_id}, error={e}",
+                exc_info=True,
+            )
+        finally:
+            self._cleanup_converted_pdf_temp(pdf_path)
+
+    @staticmethod
+    def _resolve_converted_pdf_location(
+        source_storage_path: str,
+        user_id: str,
+        session_id: Optional[str],
+        file_id: str,
+    ) -> tuple[str, str]:
+        """
+        从原始文件 storage_path 解析 session_id 与 folder_path。
+
+        原始路径格式：bucket/{user_id}/{session_id}/[folder/]{file_id}{suffix}
+        解析失败时回退 session_id or "default"，folder_path="/"。
+        """
+        fallback_session = session_id or "default"
+        try:
+            parts = source_storage_path.split("/", 1)
+            object_path = parts[1] if len(parts) > 1 else parts[0]
+            prefix = f"{user_id}/"
+            if not object_path.startswith(prefix):
+                return fallback_session, "/"
+
+            rest = object_path[len(prefix):]  # {session}/[folder/]{file_id}.ext
+            segments = rest.split("/")
+            if len(segments) < 2:
+                return fallback_session, "/"
+
+            resolved_session = segments[0] or fallback_session
+            middle = segments[1:-1]
+            if middle:
+                return resolved_session, "/" + "/".join(middle) + "/"
+            return resolved_session, "/"
+        except Exception:
+            return fallback_session, "/"
+
+    def _cleanup_converted_pdf_temp(self, pdf_path: Path) -> None:
+        """清理 Office→PDF 转换产生的临时文件及其空目录。"""
+        try:
+            out_dir = pdf_path.parent
+            if pdf_path.exists():
+                pdf_path.unlink()
+            if out_dir.exists() and out_dir.name.startswith(
+                ("ppt_convert_", "word_convert_", "office_convert_")
+            ) and not any(out_dir.iterdir()):
+                out_dir.rmdir()
+        except Exception as e:
+            logger.debug(f"清理转换 PDF 临时文件失败（可忽略）: {e}")
+
     # ========== 私有方法: 文件下载 ==========
     
     async def _download_file(self, storage_path: str) -> bytes:
@@ -632,6 +756,13 @@ class FileParserService:
             logger.debug(f"文档语言检测: {document_language} (sample_chars={min(len(md_content), 20000)})")
 
         # 构建 ParseResult
+        document_metadata = {}
+        converted_pdf_storage_path = parse_result.get("converted_pdf_storage_path")
+        if converted_pdf_storage_path:
+            document_metadata["converted_pdf_storage_path"] = converted_pdf_storage_path
+        if parse_result.get("file_type"):
+            document_metadata["file_type"] = parse_result.get("file_type")
+
         result = ParseResult(
             user_id=user_id,
             file_id=file_id,
@@ -639,6 +770,7 @@ class FileParserService:
             filename=filename,
             status=status,
             elements=[],  # 数据将通过 Kafka 异步写入数据库
+            document_metadata=document_metadata,
             parse_tool="mineru",
             total_pages=total_pages,
             total_chars=len(md_content),

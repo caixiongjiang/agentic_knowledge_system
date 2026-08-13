@@ -157,6 +157,12 @@ def setup_logging(
         "httpcore",
         "httpx",
         "multipart",
+        # Kafka 客户端：aiokafka 在 DEBUG 下会逐条打印协议请求/响应
+        # （ApiVersion / Metadata / JoinGroup / FetchRequest…），量极大，
+        # dev 模式必须压到 WARNING，否则 start_all_workers 会持续刷屏。
+        "aiokafka",
+        "kafka",
+        "kafka-python",
     ]:
         logging.getLogger(name).setLevel(logging.WARNING)
     

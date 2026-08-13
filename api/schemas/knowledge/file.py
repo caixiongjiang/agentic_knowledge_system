@@ -70,10 +70,23 @@ class FilePreviewResponse(BaseModel):
     """文件预览响应"""
     file_id: str = Field(..., description="文件ID")
     file_name: str = Field(..., description="文件名")
-    mime_type: Optional[str] = Field(default=None, description="MIME 类型")
+    mime_type: Optional[str] = Field(default=None, description="原始文件 MIME 类型")
     file_size: Optional[int] = Field(default=None, description="文件大小（字节）")
     preview_url: str = Field(..., description="预览URL（MinIO 预签名URL）")
     expires_in: int = Field(..., description="URL 过期时间（秒）")
+    # Word/PPT 等经「转 PDF + MinerU」后，前端应渲染转换 PDF 做 bbox 高亮
+    render_as: Optional[str] = Field(
+        default=None,
+        description="预览渲染方式：pdf（含原生 PDF / Office 转换 PDF）或 original",
+    )
+    preview_mime_type: Optional[str] = Field(
+        default=None,
+        description="实际用于预览渲染的 MIME（Office 转 PDF 时为 application/pdf）",
+    )
+    has_converted_pdf: bool = Field(
+        default=False,
+        description="是否已持久化转换后的 PDF（Word/PPT 溯源预览）",
+    )
 
 
 # ==================== Chunk 图片预览 ====================

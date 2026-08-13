@@ -197,6 +197,17 @@ class FileParserWorker(BaseWorker):
             
             # 5. 发送解析完成消息（自包含 elements payload，供 split 阶段直接消费）
             await self._send_parse_end_message(message, parse_result, elements_payload)
+
+            # 5.1 回写转换 PDF 路径到 workspace_file_system.ext_attributes（Word/PPT 溯源预览）
+            converted_pdf_storage_path = (
+                (parse_result.document_metadata or {}).get("converted_pdf_storage_path")
+            )
+            if converted_pdf_storage_path:
+                await self._update_mysql_converted_pdf_path(
+                    message.user_id,
+                    message.file_id,
+                    converted_pdf_storage_path,
+                )
             
             # 6. 更新 Redis 进度到 parse_end (40%)
             await self._update_file_progress(
@@ -232,6 +243,51 @@ class FileParserWorker(BaseWorker):
             from src.db.mysql.connection.factory import MySQLManagerFactory
             self._mysql_manager = MySQLManagerFactory.get_manager()
         return self._mysql_manager
+
+
+    async def _update_mysql_converted_pdf_path(
+        self, user_id: str, file_id: str, converted_pdf_storage_path: str
+    ) -> None:
+        """将转换 PDF 存储路径写入 workspace_file_system.ext_attributes。"""
+        try:
+            import json
+            from src.db.mysql.models.business.workspace_file_system import (
+                WorkspaceFileSystem,
+            )
+            mysql_mgr = self._get_mysql_manager()
+            with mysql_mgr.get_session() as session:
+                record = session.query(WorkspaceFileSystem).filter(
+                    WorkspaceFileSystem.user_id == user_id,
+                    WorkspaceFileSystem.file_id == file_id,
+                    WorkspaceFileSystem.deleted == 0,
+                ).first()
+                if not record:
+                    logger.warning(
+                        f"回写转换 PDF 路径失败：文件不存在 file_id={file_id}"
+                    )
+                    return
+
+                attrs = {}
+                if record.ext_attributes:
+                    try:
+                        attrs = json.loads(record.ext_attributes)
+                        if not isinstance(attrs, dict):
+                            attrs = {}
+                    except Exception:
+                        attrs = {}
+
+                attrs["converted_pdf_storage_path"] = converted_pdf_storage_path
+                attrs["render_as"] = "pdf"
+                record.ext_attributes = json.dumps(attrs, ensure_ascii=False)
+                session.commit()
+                logger.info(
+                    f"已回写转换 PDF 路径: file_id={file_id}, "
+                    f"path={converted_pdf_storage_path}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"回写转换 PDF 路径失败（不阻塞）: file_id={file_id}, error={e}"
+            )
 
     async def _update_mysql_file_status(
         self, user_id: str, file_id: str, status: int, msg: str

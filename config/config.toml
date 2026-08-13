@@ -455,6 +455,16 @@ model = "cohere/qwen3-reranker-0.6b"
 # 超时时间（秒）
 timeout = 300
 
+# LibreOffice 配置（用于 PPT/Word/图片 转 PDF，统一走 MinerU 解析链路）
+[libreoffice]
+# soffice 可执行文件路径（跨平台）：
+#   - macOS 开发环境: /Applications/LibreOffice.app/Contents/MacOS/soffice
+#   - Ubuntu 生产环境: soffice（PATH 中可用时）或 /usr/bin/soffice
+# 可通过环境变量 LIBREOFFICE_SOFFICE_PATH 覆盖（推荐本地用 .env 覆盖，避免提交 macOS 路径）
+soffice_path = "soffice"
+# 转换超时时间（秒）；毕业论文等大文档建议 300~600
+convert_timeout = 600
+
 # ==================== 系统配置 ====================
 
 # 日志配置

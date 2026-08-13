@@ -20,9 +20,10 @@ from loguru import logger
 from pypdf import PdfReader
 
 from src.client.mineru import Mineru2Client
+from src.index.common_file_extract.parser.base_parser import BaseParser
 
 
-class PDFParser:
+class PDFParser(BaseParser):
     """
     PDF 解析器
     
