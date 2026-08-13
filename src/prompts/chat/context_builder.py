@@ -115,6 +115,7 @@ def rebuild_messages_from_history(history: Iterable[Any]) -> List[Dict[str, Any]
           {"id", "type": "function", "function": {"name", "arguments": <json str>}}
 
     - ``role=tool`` 必须带 ``tool_call_id`` 与 ``content``；
+    - ``role=summary``（持久化上下文摘要）映射为 ``role=system``，作为早期对话回顾；
     - 业务侧附属字段（thinking / citations / usage / metadata）**不进** messages，
       它们只用于持久化与可观测性，不影响 LLM 推理。
 
@@ -151,6 +152,10 @@ def rebuild_messages_from_history(history: Iterable[Any]) -> List[Dict[str, Any]
                 "tool_call_id": getattr(msg, "tool_call_id", None),
                 "content": content,
             })
+        elif role == "summary":
+            # 持久化的上下文摘要（Cursor 式压缩产物）：保留独立 role，
+            # 由 compose_chat_messages 转为 system 注入（不会被 system 去重跳过）。
+            rebuilt.append({"role": "summary", "content": content})
         elif role is None:
             continue
         else:
@@ -196,11 +201,17 @@ def compose_chat_messages(
     msgs: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     history_msgs = rebuild_messages_from_history(history)
-    # 去重：若 history 中已含 system，跳过那条避免重复
+    # 去重 + 摘要注入：
+    # - role=system（历史 system 快照）跳过，避免与 messages[0] 的 system_prompt 重复；
+    # - role=summary（持久化上下文摘要）转为 system 注入，作为"早期对话回顾"，
+    #   不受 system 去重影响，必须送给 LLM。
     for m in history_msgs:
-        if m["role"] == "system":
+        if m["role"] == "summary":
+            msgs.append({"role": "system", "content": m["content"]})
+        elif m["role"] == "system":
             continue
-        msgs.append(m)
+        else:
+            msgs.append(m)
 
     if inject_chunks_before_user and retrieved_chunks:
         msgs.append({

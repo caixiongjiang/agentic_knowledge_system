@@ -67,6 +67,7 @@ async def list_chat_models(
                 provider=m.provider,
                 supports_thinking=m.supports_thinking,
                 supports_multimodal=m.supports_multimodal,
+                max_context=m.max_context,
             )
             for m in items
         ],
@@ -102,6 +103,7 @@ async def refresh_chat_models(
                 provider=m.provider,
                 supports_thinking=m.supports_thinking,
                 supports_multimodal=m.supports_multimodal,
+                max_context=m.max_context,
             )
             for m in items
         ],

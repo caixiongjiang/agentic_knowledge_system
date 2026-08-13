@@ -14,6 +14,9 @@
 
 from api.schemas.chat.models import ChatModelItem, ChatModelListResponse
 from api.schemas.chat.session import (
+    ContextCompactionInfo,
+    ContextStatusBreakdown,
+    ContextStatusResponse,
     ChatMessageItem,
     ChatMessageListResponse,
     ChatSessionCreateRequest,
@@ -36,6 +39,9 @@ __all__ = [
     "ChatSessionListResponse",
     "ChatMessageItem",
     "ChatMessageListResponse",
+    "ContextStatusResponse",
+    "ContextStatusBreakdown",
+    "ContextCompactionInfo",
     "CitationItem",
     "ToolCallItem",
     "TokenUsageItem",

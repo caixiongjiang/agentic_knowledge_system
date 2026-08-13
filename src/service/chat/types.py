@@ -297,6 +297,13 @@ class ChatTurnContext(BaseModel):
         ),
     )
 
+    skills_index: str = Field(
+        "",
+        description=(
+            "技能索引文本块（Level 0，SkillRegistry.build_index() 生成），已嵌入 "
+            "system_prompt；单独保留一份供上下文用量按 Skills 分项统计。"
+        ),
+    )
     forced_skills_block: str = Field(
         "",
         description=(
@@ -339,6 +346,7 @@ class ChatTurnResult:
     tool_calls_count: int = 0                # 工具被调用的总次数
     tool_rounds: int = 0                     # 含工具调用的"批次"数
     citations_count: int = 0                 # 最终引用的 chunk 数
+    context_shrinks: int = 0                 # 工具循环内触发预算收缩的次数
     final_finish_reason: str = "stop"
     error: Optional[str] = None
 

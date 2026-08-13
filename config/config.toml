@@ -368,16 +368,40 @@ max_completion_tokens = 0
 top_k = 8
 
 [chat.history]
-# 加载历史消息上限（条数维度）
-max_messages = 40
-# 轮数滑窗上限（与 token 滑窗叠加；同时按"对话轮"为最小粒度，保 tool_calls 完整）
-max_turns = 12
-# token 滑窗预算
-max_tokens = 8000
-# 启用摘要压缩的轮数阈值；0 表示关闭摘要压缩
-summary_compress_threshold_turns = 15
-# 摘要压缩后保留的最近轮数
-summary_keep_recent_turns = 4
+# 全量加载历史消息的防御性上限（条数）；正常会话远不会触及
+max_messages = 100000
+# 上下文窗口 token 预算兜底（仅在模型解析不出 max_context 时用于尾部滑窗）；
+# 参与预算的统一上限见 [chat.context] max_context_cap
+max_tokens = 200000
+# 用量占软上限（有效窗口 - 输出预留）超过该比例时触发持久化摘要压缩（Cursor 式）
+summary_compress_threshold_ratio = 0.9
+# 摘要压缩后保留的最近轮数（1 轮 = 一次用户交互，含其完整工具链）
+summary_keep_recent_turns = 1
+
+[chat.context]
+# 统一上下文上限（Cursor 式）：有效窗口 = min(模型声明窗口, 本值)
+#   - 声明值更大的模型（如 1M 的 deepseek-v4 / qwen3.7）按本值封顶
+#   - 声明值更小的模型（如 128K）按其自身窗口计量，不会被抬高到本值
+# 设为 0 则完全按模型各自声明值，不封顶
+max_context_cap = 200000
+# 输出预留兜底（preset / catalog 都未声明 max_tokens/max_output 时使用）
+reserved_output_fallback = 8192
+# 单条工具结果硬顶（tokens）；超出则截断头尾保留
+tool_output_hard_cap_tokens = 32000
+# 工具循环内每次 LLM 调用前重做预算检查（超出则由旧到新收缩工具结果）
+tool_loop_budget_check = true
+# 收缩时单条工具结果保留的下限（tokens）；仍超则整条省略
+tool_output_floor_tokens = 512
+# 分层摘要 map 块预算（tokens）
+summary_chunk_tokens = 24000
+# reduce 后摘要目标长度（tokens）
+summary_target_tokens = 1500
+# map 阶段并发度
+summary_map_concurrency = 4
+# context-status API 进程内缓存秒数
+context_status_cache_seconds = 15
+# heuristic token 估算安全系数（tokenizer 不可用时乘以该系数，宁早勿晚）
+heuristic_safety_factor = 1.2
 
 # ==================== Embedding 配置（LiteLLM 统一接入） ====================
 # - 业务约束（dimension/batch_size/max_concurrent）在 [embedding] 节

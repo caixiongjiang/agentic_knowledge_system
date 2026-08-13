@@ -83,13 +83,18 @@ from src.service.chat.chunk_alias_map import (
 from src.service.chat.chunk_enricher import ChunkMeta, TurnEnrichCache
 from src.prompts.chat import (
     DEFAULT_CHAT_SYSTEM,
-    apply_history_window,
     apply_token_window,
     build_chat_system_prompt,
     compose_chat_messages,
-    compress_history_to_summary,
     drop_assistant_tool_dangling,
     estimate_history_tokens,
+)
+from src.service.chat.context import (
+    ContextBudgetInput,
+    ContextBudgeter,
+    HierarchicalSummarizer,
+    get_model_context_catalog,
+    truncate_tool_output,
 )
 from src.retrieve.types.result import ChunkItem
 from src.service.chat.session_service import (
@@ -98,6 +103,7 @@ from src.service.chat.session_service import (
 )
 from src.service.chat.title_service import TitleService
 from src.service.chat.tools import KnowledgeNavToolKit
+from src.service.chat.tools.registry import AGENT_ENABLED_TOOLS, agent_tools_schema
 from src.service.chat.types import (
     ChatEvent,
     ChatEventType,
@@ -129,21 +135,29 @@ class ChatServiceConfig:
     retrieve_top_k: int = 8
     """初始服务端检索 top_k"""
 
-    # ---------- 上下文 ----------
-    max_history_messages: int = 40
-    """加载历史消息上限（条数维度）；取**最近** N 条，再按轮/token 滑窗收紧"""
+    # ---------- 上下文（Cursor 式：全量加载 + token 窗口 + 持久化摘要）----------
+    history_load_limit: int = 100000
+    """全量加载历史消息的防御性上限（条数）；正常会话远不会触及"""
 
-    max_context_tokens: int = 8000
-    """``apply_token_window`` 的预算上限"""
+    context_window_tokens: int = 200000
+    """上下文窗口 token 预算（system + history + tools schema + 本轮 user + 输出预留）"""
 
-    max_history_turns: int = 12
-    """``apply_history_window`` 的轮数上限（防御性，与 token 滑窗叠加）"""
+    summary_compress_threshold_ratio: float = 0.9
+    """完整请求 token 占软上限（统一上限 - 输出预留）超过该比例时触发持久化摘要压缩"""
 
-    summary_compress_threshold_turns: int = 15
-    """超过该轮数时启用摘要压缩（``0`` 时关闭摘要）"""
+    summary_keep_recent_turns: int = 1
+    """摘要压缩后保留的最近轮数（1 轮 = 一次用户交互，含其完整工具链）"""
 
-    summary_keep_recent_turns: int = 4
-    """摘要压缩后保留的最近轮数"""
+    # ---------- 上下文预算（[chat.context]）----------
+    reserved_output_fallback: int = 8192
+    tool_output_hard_cap_tokens: int = 32000
+    tool_loop_budget_check: bool = True
+    tool_output_floor_tokens: int = 512
+    summary_chunk_tokens: int = 24000
+    summary_target_tokens: int = 1500
+    summary_map_concurrency: int = 4
+    context_status_cache_seconds: int = 15
+    heuristic_safety_factor: float = 1.2
 
     # ---------- 输出 ----------
     max_completion_tokens: Optional[int] = None
@@ -208,6 +222,7 @@ class ChatServiceConfig:
 
         retrieval = chat_cfg.get("retrieval", {}) or {}
         history = chat_cfg.get("history", {}) or {}
+        context = chat_cfg.get("context", {}) or {}
 
         inst = cls()
 
@@ -255,16 +270,17 @@ class ChatServiceConfig:
         # [chat.retrieval]
         inst.retrieve_top_k = int(retrieval.get("top_k", inst.retrieve_top_k))
 
-        # [chat.history]
-        inst.max_history_messages = int(
-            history.get("max_messages", inst.max_history_messages),
+        # [chat.history]（Cursor 式：全量加载 + token 窗口 + 持久化摘要）
+        inst.history_load_limit = int(
+            history.get("max_messages", inst.history_load_limit),
         )
-        inst.max_history_turns = int(history.get("max_turns", inst.max_history_turns))
-        inst.max_context_tokens = int(history.get("max_tokens", inst.max_context_tokens))
-        inst.summary_compress_threshold_turns = int(
+        inst.context_window_tokens = int(
+            history.get("max_tokens", inst.context_window_tokens),
+        )
+        inst.summary_compress_threshold_ratio = float(
             history.get(
-                "summary_compress_threshold_turns",
-                inst.summary_compress_threshold_turns,
+                "summary_compress_threshold_ratio",
+                inst.summary_compress_threshold_ratio,
             ),
         )
         inst.summary_keep_recent_turns = int(
@@ -273,13 +289,44 @@ class ChatServiceConfig:
             ),
         )
 
+        # [chat.context]
+        inst.reserved_output_fallback = int(
+            context.get("reserved_output_fallback", inst.reserved_output_fallback),
+        )
+        inst.tool_output_hard_cap_tokens = int(
+            context.get("tool_output_hard_cap_tokens", inst.tool_output_hard_cap_tokens),
+        )
+        inst.tool_loop_budget_check = bool(
+            context.get("tool_loop_budget_check", inst.tool_loop_budget_check),
+        )
+        inst.tool_output_floor_tokens = int(
+            context.get("tool_output_floor_tokens", inst.tool_output_floor_tokens),
+        )
+        inst.summary_chunk_tokens = int(
+            context.get("summary_chunk_tokens", inst.summary_chunk_tokens),
+        )
+        inst.summary_target_tokens = int(
+            context.get("summary_target_tokens", inst.summary_target_tokens),
+        )
+        inst.summary_map_concurrency = int(
+            context.get("summary_map_concurrency", inst.summary_map_concurrency),
+        )
+        inst.context_status_cache_seconds = int(
+            context.get(
+                "context_status_cache_seconds", inst.context_status_cache_seconds,
+            ),
+        )
+        inst.heuristic_safety_factor = float(
+            context.get("heuristic_safety_factor", inst.heuristic_safety_factor),
+        )
+
         logger.info(
             f"ChatServiceConfig 已从 [chat] 加载: "
             f"agent_preset={inst.agent_model_preset}, "
             f"title_preset={inst.title_model_preset}, "
             f"top_k={inst.retrieve_top_k}, "
-            f"max_tokens={inst.max_context_tokens}, "
-            f"summary_threshold={inst.summary_compress_threshold_turns}, "
+            f"context_window_tokens={inst.context_window_tokens}, "
+            f"summary_threshold_ratio={inst.summary_compress_threshold_ratio}, "
             f"thinking_budget={inst.thinking_budget}"
         )
         return inst
@@ -403,12 +450,8 @@ class ChatService:
         # ===== scope 摘要（v0.8.0）=====
         # 注意：sys_prompt 构造在 scope 解析之前，但 scope dict 构造需要解析结果。
         # 所以这里先把 sys_prompt 的最终构造放到 scope 解析之后；上面只准备 desc。
-        # Agent 模式：始终启用工具
-        _enabled_tools = (
-            "search_knowledge_base", "grep_chunks", "context_window", "drill_down",
-            "skeleton", "roll_up", "read_chunks", "read_image_chunks",
-            "skills_list", "skill_view"
-        )
+        # Agent 模式：始终启用工具（与上下文计量共用 AGENT_ENABLED_TOOLS）
+        _enabled_tools = AGENT_ENABLED_TOOLS
         # model 字段优先级：request > session > None（None 时由 model_preset 决定）
         # 注意：``model`` 与 ``model_preset`` 并存——``model`` 选定具体模型，
         # ``model_preset`` 仍作为采样参数模板（temperature / max_tokens 等）。
@@ -519,6 +562,7 @@ class ChatService:
             folder_label=folder_label,
             include_subfolders=effective_include_subfolders,
             scope_document_ids=scope_document_ids,
+            skills_index=_skills_index or "",
             forced_skills_block=_forced_skills_block,
             forced_skill_names=_resolved_forced_skill_names,
         )
@@ -1083,27 +1127,24 @@ class ChatService:
             },
         )
 
-        # ---- 3) 加载历史 ----
+        # ---- 3) 加载历史（全量，按时间正序）----
         try:
-            history = await self._session_service.load_history(
+            history_full = await self._session_service.load_full_history(
                 session_id=ctx.session_id,
-                limit=self._cfg.max_history_messages,
+                limit=self._cfg.history_load_limit,
             )
             # 把刚写入的 user 消息排除（避免它出现在 history + user_message 两处）
-            history = [m for m in history if m.id != user_msg_id]
-
-            # 上下文压缩：如果有 summary 消息，跳过已总结的旧消息
-            history = self._apply_context_compression(history)
-
+            history_full = [m for m in history_full if m.id != user_msg_id]
         except Exception as e:  # noqa: BLE001
             logger.warning(f"加载历史异常，按空历史继续: {e}")
-            history = []
+            history_full = []
 
-        # 从历史 assistant.metadata.alias_additions 累加重建 alias_map。
-        # 这样下面 retrieval 阶段为新 chunks 分配 alias 时不会与历史冲突，
-        # 历史 assistant content 里的 [cN] 在下一轮也仍能被 unwrap 成真实 chunk_id。
+        # 硬约束：alias_map / turn_citations 必须用压缩前全量 history 重建。
+        # 二者是纯服务端内存结构，不进 LLM 上下文；若在 _apply_context_compression
+        # 之后重建，被 summarized 的 assistant.metadata.alias_additions / citations
+        # 会丢失，导致压缩后新轮引用旧 [cN] 死链或错链。
         try:
-            alias_map = rebuild_alias_map_from_history(history)
+            alias_map = rebuild_alias_map_from_history(history_full)
             logger.debug(
                 f"alias_map 重建完成：size={alias_map.size}, counter={alias_map.counter}"
             )
@@ -1111,42 +1152,94 @@ class ChatService:
             logger.warning(f"alias_map 重建失败（按空 map 继续）: {e}")
             alias_map = ChunkAliasMap()
 
-        # 从历史 assistant 消息中恢复 citations，供跨 turn 引用解析。
-        # alias_map 已从 alias_additions 重建，这里把历史 citations 也加载进
-        # turn_citations，这样当 LLM 在新 turn 引用历史 [cN] 时，
-        # _build_citations_for_round 能通过 extra_citations 找到对应 chunk。
         turn_citations: Dict[str, Citation] = {}
-        for m in history:
+        for m in history_full:
             if m.role == "assistant" and m.citations:
                 for c in m.citations:
                     if c.chunk_id:
                         turn_citations[c.chunk_id] = c
 
-        # ---- 4) 收敛历史（轮 → token → 摘要） ----
+        # 应用已持久化的摘要压缩：跳过 summarized=true 的旧消息，保留最新 summary
+        history = self._apply_context_compression(history_full)
+
+        # ---- 4) 收敛历史（ContextBudgeter + Cursor 式持久化摘要压缩）----
         client = self._get_llm_client(model=ctx.model, model_preset=ctx.model_preset)
         history = drop_assistant_tool_dangling(history)
-        history = apply_history_window(
-            history, max_turns=self._cfg.max_history_turns, keep_system=False,
+
+        # Cursor 式 @ 内联引用：解析 mentions → 「引用资料」块（方案A 小文件全量注入 +
+        # 方案C 大文件/目录仅提示 document_id），拼进 *给 LLM 的* user 副本尾部
+        # （软引用：不锁死 scope）。持久化/显示用的 user 消息仍是 ctx.query 原文（见 §2）。
+        # 必须在预算计量前定稿：该块最多可达 mention_inject_total_budget 字符，
+        # 漏算会让压缩触发系统性偏晚。
+        references = self._resolve_mentions(
+            user_id=ctx.user_id,
+            mentions=getattr(request, "mentions", None),
+            knowledge_base_ids=ctx.knowledge_base_ids,
         )
+        # 顺序：用户原文 → @ 引用资料块 → 显式技能块（/ 召唤，置于最末尾以强化 recency）。
+        user_message_for_llm = (
+            ctx.query
+            + await self._build_references_block(references)
+            + ctx.forced_skills_block
+        )
+
+        budgeter = self._get_context_budgeter()
+        reserved = budgeter.resolve_reserved_output(
+            client.model,
+            preset_max_tokens=self._cfg.max_completion_tokens,
+        )
+        # 计入本轮完整请求：system（含技能索引）+ 工具 schema + 历史 +
+        # 给 LLM 的 user 副本（含 @ 引用块与显式技能块）。
+        budget_report = budgeter.evaluate(
+            ContextBudgetInput(
+                model=client.model,
+                system_prompt=ctx.system_prompt or "",
+                history=history,
+                user_message=user_message_for_llm,
+                tools_schema=agent_tools_schema(),
+                reserved_output_tokens=reserved,
+                skills_block=ctx.skills_index,
+            )
+        )
+        est_tokens = budget_report.used_tokens
+
+        if (
+            self._cfg.summary_compress_threshold_ratio > 0
+            and budget_report.over_soft_limit
+        ):
+            # Cursor 式持久化压缩：保留最近 1 轮（含完整工具链）+ 1 条摘要
+            try:
+                await self._session_service.compaction_keep_recent_turns(
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    keep_recent_turns=self._cfg.summary_keep_recent_turns,
+                    summarize_fn=self._build_summarize_fn(model=client.model),
+                    trigger="auto_threshold",
+                    budget_snapshot=budget_report.to_dict(),
+                )
+                # 压缩后重新加载并应用压缩（alias_map / turn_citations 保持全量重建结果）
+                history_full = await self._session_service.load_full_history(
+                    session_id=ctx.session_id,
+                    limit=self._cfg.history_load_limit,
+                )
+                history_full = [m for m in history_full if m.id != user_msg_id]
+                history = self._apply_context_compression(history_full)
+                history = drop_assistant_tool_dangling(history)
+                logger.info(
+                    f"上下文已压缩: used={est_tokens}, ratio={budget_report.ratio:.2f}, "
+                    f"counting={budget_report.counting}, 压缩后 history={len(history)} 条"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"上下文压缩失败，按未压缩继续: {e}")
+
+        # token 窗口兜底（按模型 max_context；正常压缩后远不会触及）
+        model_max_context = get_model_context_catalog().resolve(client.model).max_context
         history = apply_token_window(
             history,
-            max_tokens=self._cfg.max_context_tokens,
+            max_tokens=model_max_context or self._cfg.context_window_tokens,
             model=client.model,
             keep_system=False,
         )
-        # 摘要压缩（仅当依然超阈值时启用；Phase 3 默认 ChatService 自带的 fast preset 做摘要）
-        summary_dict: Optional[Dict[str, Any]] = None
-        if (
-            self._cfg.summary_compress_threshold_turns
-            and self._cfg.summary_compress_threshold_turns > 0
-        ):
-            user_count = sum(1 for m in history if m.role == "user")
-            if user_count > self._cfg.summary_compress_threshold_turns:
-                summary_dict, history = await compress_history_to_summary(
-                    history,
-                    summarize_fn=self._build_summarize_fn(),
-                    keep_recent_turns=self._cfg.summary_keep_recent_turns,
-                )
 
         # ---- 6) 种子命中（固定初始检索已下线，恒空）----
         # Chat 模式去掉后不再做固定初始检索，统一由 Agent 工具循环按需检索；
@@ -1154,23 +1247,7 @@ class ChatService:
         seed_hits: List[ChunkItem] = []
 
         # ---- 7) 组装首轮 messages ----
-        # Cursor 式 @ 内联引用：解析 mentions → 「引用资料」块（方案A 小文件全量注入 +
-        # 方案C 大文件/目录仅提示 document_id），注入到 *给 LLM 的* user 消息尾部
-        # （软引用：不锁死 scope）。
-        # 注意：持久化/显示用的 user 消息仍是 ctx.query 原文（见 §2），此处仅增强 LLM 副本。
-        references = self._resolve_mentions(
-            user_id=ctx.user_id,
-            mentions=getattr(request, "mentions", None),
-            knowledge_base_ids=ctx.knowledge_base_ids,
-        )
-        # 顺序：用户原文 → @ 引用资料块 → 显式技能块（/ 召唤，置于最末尾以强化 recency）。
-        # 三者仅拼进「给 LLM 的」user 副本；持久化/显示用的 user 消息仍是 ctx.query 原文。
-        user_message_for_llm = (
-            ctx.query
-            + await self._build_references_block(references)
-            + ctx.forced_skills_block
-        )
-
+        # user 副本（原文 + @ 引用块 + 显式技能块）已在 §4 预算计量前定稿。
         # 组装首轮 messages（seed_hits 现恒空，参考片段注入由 Agent 工具循环按需触发）
         # （compose_chat_messages 内部处理格式化 + alias 替换）
         messages: List[Dict[str, Any]] = compose_chat_messages(
@@ -1180,8 +1257,6 @@ class ChatService:
             retrieved_chunks=seed_hits,
             alias_map=alias_map,
         )
-        if summary_dict is not None:
-            messages.insert(1, summary_dict)
 
         # ---- 8) 进入执行路径（Agent 模式）----
         supplemented: List[ChunkItem] = []
@@ -1296,6 +1371,7 @@ class ChatService:
                 "tool_rounds": result.tool_rounds,
                 "tool_calls_count": result.tool_calls_count,
                 "citations_count": result.citations_count,
+                "context_shrinks": result.context_shrinks,
                 "finish_reason": result.final_finish_reason,
                 "total_time_ms": result.total_time_ms,
                 "retrieval_time_ms": result.retrieval_time_ms,
@@ -1339,10 +1415,59 @@ class ChatService:
         引导其在拿到充分证据后立即作答）。
         """
 
+        budgeter = self._get_context_budgeter()
+        reserved = budgeter.resolve_reserved_output(
+            client.model, preset_max_tokens=self._cfg.max_completion_tokens,
+        )
+
         round_idx = 0
         while True:
             assistant_msg_id = generate_message_id()
             acc = StreamAccumulator(model=client.model)
+
+            # ---- 每次 LLM 调用前重做预算 ----
+            # 循环不设轮数上限，每轮追加的工具结果都会推高用量；单条 32K 硬顶
+            # 只能约束"一条不太大"，管不住"多条加起来超窗"。这里按即将发出的
+            # messages 重算，超线则由旧到新收缩工具结果（不删消息，配对不断）。
+            if self._cfg.tool_loop_budget_check:
+                try:
+                    shrink = budgeter.shrink_messages_to_fit(
+                        messages,
+                        model=client.model,
+                        tools_schema=tools_schema,
+                        reserved_output_tokens=reserved,
+                        floor_tokens=self._cfg.tool_output_floor_tokens,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"工具循环预算检查失败，按原样发送: {e}")
+                else:
+                    if shrink.applied:
+                        result.context_shrinks += 1
+                        logger.info(
+                            f"工具循环预算收缩: round={round_idx}, "
+                            f"释放 {shrink.freed_tokens} tokens "
+                            f"(收紧 {shrink.shrunk_count} 条 / 省略 "
+                            f"{shrink.elided_count} 条), "
+                            f"收缩后 used={shrink.report.used_tokens}"
+                        )
+                    if not shrink.fits:
+                        msg = (
+                            f"上下文仍超出窗口: used={shrink.report.used_tokens}, "
+                            f"soft_limit={shrink.report.soft_limit}"
+                        )
+                        logger.error(f"{msg}，中止工具循环")
+                        yield ChatEvent(
+                            ChatEventType.ERROR,
+                            {
+                                "phase": "context_budget",
+                                "error": msg,
+                                "round": round_idx,
+                                "used_tokens": shrink.report.used_tokens,
+                                "soft_limit": shrink.report.soft_limit,
+                            },
+                        )
+                        result.error = msg
+                        return
 
             # 流式拉一轮
             try:
@@ -1492,6 +1617,21 @@ class ChatService:
                         break
             tool_results = await tool_task
             result.tool_time_ms += (time.perf_counter() - tool_t0) * 1000
+
+            # 工具结果硬顶截断（避免单条 tool output 撑爆窗口）
+            hard_cap = self._cfg.tool_output_hard_cap_tokens
+            if hard_cap > 0:
+                truncated_results = []
+                for tc, content, items_added, time_ms in tool_results:
+                    new_content = truncate_tool_output(
+                        content or "",
+                        max_tokens=hard_cap,
+                        model=client.model,
+                        catalog=get_model_context_catalog(),
+                        heuristic_safety_factor=self._cfg.heuristic_safety_factor,
+                    )
+                    truncated_results.append((tc, new_content, items_added, time_ms))
+                tool_results = truncated_results
 
             # enrich 检索工具的 chunks_brief（补充 file_name / section_title 等渲染元数据）
             if kit and kit._search_results:
@@ -2049,49 +2189,73 @@ class ChatService:
     # 子功能：摘要回调（fast preset）
     # ============================================================
 
-    def _build_summarize_fn(self):
-        """返回一个绑定到主对话 preset 的 ``summarize_fn``。
+    def _get_context_budgeter(self) -> ContextBudgeter:
+        return ContextBudgeter(
+            catalog=get_model_context_catalog(),
+            threshold_ratio=self._cfg.summary_compress_threshold_ratio,
+            reserved_output_fallback=self._cfg.reserved_output_fallback,
+            heuristic_safety_factor=self._cfg.heuristic_safety_factor,
+            tool_output_hard_cap_tokens=self._cfg.tool_output_hard_cap_tokens,
+        )
 
-        history_compressor 的 ``SummarizeFn`` 是 ``Callable[[Sequence[Any]],
-        Awaitable[str]]``；本函数把它绑到 ``self._cfg.agent_model_preset``
-        指向的 LLMClient，避免摘要意外使用与主对话不同的模型造成上下文漂移。
+    def _build_summarize_fn(self, *, model: Optional[str] = None):
+        """返回 HierarchicalSummarizer 驱动的 ``summarize_fn``。
+
+        签名兼容 ``Callable[[Sequence[Any]], Awaitable[str]]``，供
+        ``compaction_keep_recent_turns`` / 手动摘要复用。
         """
         summarize_preset = self._cfg.agent_model_preset
+        cfg = self._cfg
 
-        async def _summarize(early_history) -> str:
+        async def _generate(messages: List[dict], max_tokens: int) -> str:
             try:
-                client = self._get_llm_client(model_preset=summarize_preset)
+                client = self._get_llm_client(
+                    model=model, model_preset=summarize_preset,
+                )
             except Exception:  # noqa: BLE001
                 from src.client.llm import create_llm_client_from_preset
 
                 client = create_llm_client_from_preset(summarize_preset)
-            # 拼一段非常短的 instruction
-            text_parts: List[str] = []
-            for m in early_history:
-                role = getattr(m, "role", None)
-                content = getattr(m, "content", "") or ""
-                if role and content:
-                    text_parts.append(f"[{role}] {content}")
-            transcript = "\n".join(text_parts)[:6000]
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是对话历史压缩助手。请将下面这段多轮对话压缩为 200 字"
-                        "以内的中文要点列表，保留：用户主要诉求、助手已给出的关键"
-                        "结论、命中的 chunk_id（如有）；删除冗余对话和闲聊。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"对话片段：\n\n{transcript}\n\n要点摘要：",
-                },
-            ]
             resp = await client.agenerate(
-                messages=messages, temperature=0.2, max_tokens=400,
+                messages=messages, temperature=0.2, max_tokens=max_tokens,
             )
             return (resp.content or "").strip()
 
+        summarizer = HierarchicalSummarizer(
+            generate_fn=_generate,
+            model=model or summarize_preset,
+            catalog=get_model_context_catalog(),
+            budgeter=self._get_context_budgeter(),
+            chunk_budget_tokens=cfg.summary_chunk_tokens,
+            summary_target_tokens=cfg.summary_target_tokens,
+            map_concurrency=cfg.summary_map_concurrency,
+            heuristic_safety_factor=cfg.heuristic_safety_factor,
+        )
+
+        async def _summarize(early_history) -> str:
+            old_summary = None
+            msgs = []
+            for m in early_history:
+                role = getattr(m, "role", None)
+                if role == "summary":
+                    content = (getattr(m, "content", None) or "").strip()
+                    if content:
+                        # 多条旧 summary 时取最后一条作为 old_summary，其余当普通消息
+                        if old_summary:
+                            msgs.append(m)
+                        old_summary = content
+                    continue
+                msgs.append(m)
+            result = await summarizer.summarize(
+                msgs,
+                old_summary=old_summary,
+                target_tokens=cfg.summary_target_tokens,
+            )
+            # 把计量元数据挂到函数属性，供 session_service 写入 summary.metadata
+            _summarize.last_result = result  # type: ignore[attr-defined]
+            return result.summary_text
+
+        _summarize.last_result = None  # type: ignore[attr-defined]
         return _summarize
 
     # ============================================================

@@ -3,7 +3,6 @@
   "models": [
     "deepseek-v4-flash",
     "deepseek-v4-pro",
-    "glm-4.5-air",
     "glm-4.7",
     "glm-5.1",
     "qwen3.6-flash",

@@ -1,0 +1,29 @@
+{
+  "_comment": "模型上下文长度声明（单位：tokens），ModelContextCatalog 的最高优先真相源。有效预算窗口 = min(此处声明值, [chat.context] max_context_cap)，因此窗口小于统一上限的模型必须如实声明，否则会按默认 200K 计量导致超发。未在此声明的模型会回落到 proxy /v1/model/info 上报值，仍取不到才用默认值（模型不会因此被隐藏；选择器展示全部 chat 模型）。模型名与 LiteLLM Proxy /v1/models 返回的 id 一致（不含 litellm_proxy/ 前缀）。值可为整数（仅 max_context）或对象 {max_context, max_output?}。",
+  "models": {
+    "deepseek-v4-pro": {
+      "max_context": 1000000,
+      "max_output": 65536
+    },
+    "deepseek-v4-flash": {
+      "max_context": 1000000,
+      "max_output": 65536
+    },
+    "glm-5.1": {
+      "max_context": 200000,
+      "max_output": 65536
+    },
+    "glm-4.7": {
+      "max_context": 200000,
+      "max_output": 65536
+    },
+    "qwen3.7-plus": {
+      "max_context": 1000000,
+      "max_output": 65536
+    },
+    "qwen3.6-flash": {
+      "max_context": 1000000,
+      "max_output": 65536
+    }
+  }
+}

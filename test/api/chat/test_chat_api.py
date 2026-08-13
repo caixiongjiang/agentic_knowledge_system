@@ -139,8 +139,10 @@ class _FakeSessionService:
                        include_subfolders: bool = True,
                        model_preset: str = "fast", model: Optional[str] = None,
                        agent_mode: bool = True,
+                       mode: str = "agent",
                        enable_thinking: bool = False, max_tool_rounds: int = 5,
-                       system_prompt: Optional[str] = None):
+                       system_prompt: Optional[str] = None, **_: Any):
+        # mode 为现行会话交互模式字段；agent_mode 保留兼容旧测试调用
         sid = self._gen_id()
         s = _FakeSession(
             session_id=sid, user_id=user_id, title=title,
@@ -393,6 +395,41 @@ def test_rest_messages_endpoint() -> bool:
         assert [m["message_id"] for m in data["items"]] == ["m1", "m2", "m3"]
         assert data["items"][1]["role"] == "assistant"
         _ok(f"消息历史 OK: total={data['total']}, 顺序={[m['role'] for m in data['items']]}")
+
+        # 长会话 UI 回放：page=1 从最早开始；前端翻页拼全量。LLM 上下文另走 load_history
+        long_msgs = [
+            _FakeChatMessage(id=f"m{i}", role="user" if i % 2 else "assistant",
+                             content=f"c{i}")
+            for i in range(1, 6)
+        ]
+        msg.seed(sid, long_msgs)
+        r = client.get(
+            f"/api/chat/sessions/{sid}/messages",
+            headers=headers,
+            params={"page": 1, "page_size": 2},
+        )
+        data = r.json()["data"]
+        assert data["total"] == 5
+        assert [m["message_id"] for m in data["items"]] == ["m1", "m2"], data["items"]
+        _ok("page=1 返回最早 2 条 OK")
+
+        r = client.get(
+            f"/api/chat/sessions/{sid}/messages",
+            headers=headers,
+            params={"page": 2, "page_size": 2},
+        )
+        data = r.json()["data"]
+        assert [m["message_id"] for m in data["items"]] == ["m3", "m4"], data["items"]
+        _ok("page=2 返回后续窗口且无重叠 OK")
+
+        r = client.get(
+            f"/api/chat/sessions/{sid}/messages",
+            headers=headers,
+            params={"page": 3, "page_size": 2},
+        )
+        data = r.json()["data"]
+        assert [m["message_id"] for m in data["items"]] == ["m5"], data["items"]
+        _ok("page=3 拉完剩余消息 OK")
 
         # 跨用户 404
         r = client.get(
@@ -692,10 +729,14 @@ def test_rest_list_chat_models() -> bool:
         assert len(models) == 2, models
         ids = [m["id"] for m in models]
         assert "openai/gpt-4o-mini" in ids
-        # 仅返回 id / label / provider，不带 capabilities / pricing 等
+        # 仅返回 id / label / provider / supports_thinking / supports_multimodal / max_context，
+        # 不带 pricing / 内部 alias 等
         for m in models:
-            assert set(m.keys()) == {"id", "label", "provider"}, m
-        _ok("/api/chat/models 字段裁剪 OK，仅返回 id/label/provider")
+            assert set(m.keys()) == {
+                "id", "label", "provider",
+                "supports_thinking", "supports_multimodal", "max_context",
+            }, m
+        _ok("/api/chat/models 字段裁剪 OK，仅返回 id/label/provider/capabilities/max_context")
 
         # 缺 X-User-Id → 422（与 sessions 端点对齐，FastAPI 422 校验失败）
         r = client.get("/api/chat/models")
@@ -735,6 +776,37 @@ def test_rest_list_chat_models() -> bool:
     assert "glm-5.1" in labels
     _ok("启发式过滤 embedding / rerank OK")
     _ok("裸 alias / 已带 provider 前缀的 id 都被归一为 litellm_proxy/<inner>")
+
+
+    # ---- max_context 注入：本地声明 > proxy 上报 > None，且一律不过滤 ----
+    parsed = LiteLLMRegistry._parse_models_response(
+        {"data": [
+            {"id": "deepseek-v4-flash"},   # 本地声明 1M
+            {"id": "glm-5.1"},             # 本地声明 128K（小于统一上限，仍须保留）
+            {"id": "small-32k"},           # 本地未声明，proxy 上报 32768
+            {"id": "openai/gpt-4o-mini"},   # 两处都没有 -> None
+        ]},
+        info_map={
+            "small-32k": {"mode": "chat", "max_input_tokens": 32768},
+            # 本地已声明的模型：proxy 上报值不得覆盖本地声明
+            "glm-5.1": {"mode": "chat", "max_input_tokens": 999},
+        },
+        long_context_map={
+            "deepseek-v4-flash": 1000000,
+            "glm-5.1": 128000,
+        },
+    )
+    by_id = {it.id: it for it in parsed}
+    assert by_id["litellm_proxy/deepseek-v4-flash"].max_context == 1000000
+    assert by_id["litellm_proxy/glm-5.1"].max_context == 128000
+    assert by_id["litellm_proxy/small-32k"].max_context == 32768
+    assert by_id["litellm_proxy/openai/gpt-4o-mini"].max_context is None
+    _ok("max_context: 本地声明优先，未声明回落 proxy /v1/model/info OK")
+
+    # 小于统一上限的模型不再被剔除（它们由 catalog 按自身窗口计量）
+    assert len(parsed) == 4, [it.id for it in parsed]
+    assert not hasattr(LiteLLMRegistry, "_filter_long_context"), "200K 过滤应已移除"
+    _ok("模型选择器不再按 200K 阈值过滤（含 128K / 32K / 未声明模型）")
 
     # info_map.mode 精确路径
     items = LiteLLMRegistry._parse_models_response(

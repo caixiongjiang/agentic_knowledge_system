@@ -15,7 +15,7 @@
 =================================================="""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +39,14 @@ class ChatModelItem(BaseModel):
     supports_multimodal: bool = Field(
         default=False,
         description="模型是否支持多模态读图（来自 config/multimodal_models.json 白名单，前端据此控制多模态 Chip 显隐）",
+    )
+    max_context: Optional[int] = Field(
+        default=None,
+        description=(
+            "模型自身声明的最大上下文长度（tokens）：优先 config/long_context_models.json，"
+            "其次 proxy /v1/model/info 上报值；None 表示未知。"
+            "实际参与预算的窗口是 min(该值, [chat.context] max_context_cap)"
+        ),
     )
 
     # ``model`` 字段需要解除 Pydantic v2 的保护命名空间

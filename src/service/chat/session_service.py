@@ -37,7 +37,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -393,89 +393,174 @@ class ChatSessionService:
         *,
         session_id: str,
         user_id: str,
+        summarize_fn: Optional[Callable[..., Awaitable[str]]] = None,
     ) -> Optional[str]:
-        """总结当前对话上下文，生成摘要并标记旧消息
+        """手动 /summary：压缩全部未总结消息（``keep_recent_turns=0``）。
 
-        流程：
-        1. 加载会话的 user/assistant 消息（跳过 tool/thinking 轮次）
-        2. 调用 LLM 生成摘要
-        3. 存储为 role="summary" 的消息
-        4. 标记之前所有消息的 metadata.summarized = true
-
-        Args:
-            session_id: 会话 ID
-            user_id: 当前用户 ID（用于权限校验）
-
-        Returns:
-            生成的摘要文本，失败返回 None
+        与自动 compaction 共用同一管线，仅保留轮数参数不同。
         """
-        # 1. 权限校验
+        return await self.compaction_keep_recent_turns(
+            session_id=session_id,
+            user_id=user_id,
+            keep_recent_turns=0,
+            summarize_fn=summarize_fn,
+            trigger="manual",
+        )
+
+    # ============================================================
+    # Cursor 式持久化上下文压缩
+    # ============================================================
+
+    async def compaction_keep_recent_turns(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        keep_recent_turns: int = 1,
+        summarize_fn: Optional[Callable[..., Awaitable[str]]] = None,
+        trigger: str = "auto_threshold",
+        budget_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Cursor 式持久化上下文压缩：保留最近 ``keep_recent_turns`` 轮 + 1 条摘要。
+
+        - ``keep_recent_turns=0``：压缩全部消息（手动 /summary）
+        - ``keep_recent_turns>=1``：保留最近 N 轮原始消息
+        - 旧 ``role="summary"`` 内容并入新摘要（summary of summary）
+        - summary.metadata 写入可观测字段（trigger / tokens / version 等）
+        """
+        # 1. 权限
         manager = get_mysql_manager()
         with manager.get_session() as db:
             session = self._session_repo.get_by_id_and_user(db, session_id, user_id)
             if session is None:
                 return None
 
-        # 2. 加载会话所有消息（排除已软删和已总结的）
+        # 2. 全量加载
         all_messages = await self._message_repo.list_by_session(
-            session_id, limit=1000, ascending=True,
+            session_id, limit=100000, ascending=True,
         )
-        # 过滤掉已总结的消息和 summary 消息
-        all_messages = [
-            m for m in all_messages
-            if not m.metadata.get("summarized", False) and m.role != "summary"
-        ]
-
         if not all_messages:
             return None
 
-        # 3. 只保留 user/assistant 消息用于总结（跳过 tool/thinking 轮次）
-        messages_for_summary = [
-            m for m in all_messages
-            if m.role in ("user", "assistant")
-        ]
-
-        if not messages_for_summary:
+        # 3. 定位最近 N 轮起点
+        keep_recent_turns = max(0, int(keep_recent_turns))
+        user_indices = [i for i, m in enumerate(all_messages) if m.role == "user"]
+        if keep_recent_turns == 0:
+            recent_start = len(all_messages)
+            early_part = list(all_messages)
+        else:
+            if len(user_indices) <= keep_recent_turns:
+                return None
+            recent_start = user_indices[-keep_recent_turns]
+            early_part = all_messages[:recent_start]
+        if not early_part:
             return None
 
-        # 4. 构建对话历史文本
-        history_text = []
-        for msg in messages_for_summary:
-            if msg.role == "user":
-                history_text.append(f"用户: {msg.content}")
-            elif msg.role == "assistant":
-                # 截断避免过长，保留核心内容
-                content = msg.content[:500] if len(msg.content) > 500 else msg.content
-                history_text.append(f"助手: {content}")
+        # 若 early 全空内容则退出
+        if not any((m.content or "").strip() for m in early_part):
+            return None
 
-        conversation = "\n".join(history_text)
+        # 统计旧 summary
+        old_summary_ids = [m.id for m in early_part if m.role == "summary"]
+        # summary_version：已有 summary 条数 + 1
+        existing_summary_count = sum(1 for m in all_messages if m.role == "summary")
 
-        # 5. 调用 LLM 生成摘要（使用独立的总结提示词）
+        # 4. 生成摘要
+        summary_meta_extra: Dict[str, Any] = {}
         try:
-            from src.client.llm import LLMClient, LLMClientConfig
-            from src.prompts.chat.summary_prompt import SUMMARY_SYSTEM_PROMPT
+            if summarize_fn is not None:
+                summary_content = await summarize_fn(early_part)
+                last = getattr(summarize_fn, "last_result", None)
+                if last is not None:
+                    summary_meta_extra = {
+                        "input_tokens": getattr(last, "input_tokens", None),
+                        "summary_tokens": getattr(last, "summary_tokens", None),
+                        "counting": getattr(last, "counting", None),
+                        "chunk_count": getattr(last, "chunk_count", None),
+                    }
+            else:
+                from src.client.llm import (
+                    create_llm_client_from_model,
+                    create_llm_client_from_preset,
+                )
+                from src.service.chat.context import (
+                    HierarchicalSummarizer,
+                    get_model_context_catalog,
+                )
 
-            config = LLMClientConfig(
-                model=session.model or "fast",
-                temperature=0.3,
-                max_tokens=800,
-            )
-            client = LLMClient(config)
+                if session.model:
+                    client = create_llm_client_from_model(
+                        model=session.model,
+                        chat_template_preset=session.model_preset or "fast",
+                    )
+                    model_name = session.model
+                else:
+                    client = create_llm_client_from_preset(session.model_preset or "fast")
+                    model_name = getattr(client, "model", None) or (session.model_preset or "fast")
 
-            response = await client.agenerate(
-                messages=[
-                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"请总结以下对话：\n\n{conversation}"},
-                ]
-            )
-            summary_content = response.content
+                async def _generate(messages: List[dict], max_tokens: int) -> str:
+                    resp = await client.agenerate(
+                        messages=messages, temperature=0.2, max_tokens=max_tokens,
+                    )
+                    return (resp.content or "").strip()
 
-        except Exception as e:
-            logger.error(f"生成摘要失败: {e}")
+                summarizer = HierarchicalSummarizer(
+                    generate_fn=_generate,
+                    model=model_name,
+                    catalog=get_model_context_catalog(),
+                )
+                old_summary = None
+                msgs = []
+                for msg in early_part:
+                    if msg.role == "summary":
+                        content = (msg.content or "").strip()
+                        if content:
+                            if old_summary:
+                                msgs.append(msg)
+                            old_summary = content
+                        continue
+                    msgs.append(msg)
+                result = await summarizer.summarize(msgs, old_summary=old_summary)
+                summary_content = result.summary_text
+                summary_meta_extra = {
+                    "input_tokens": result.input_tokens,
+                    "summary_tokens": result.summary_tokens,
+                    "counting": result.counting,
+                    "chunk_count": result.chunk_count,
+                }
+            summary_content = (summary_content or "").strip()
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"compaction 生成摘要失败: {e}", exc_info=True)
+            return None
+        if not summary_content:
             return None
 
-        # 6. 存储 summary 消息
+        # 5. 持久化新 summary 消息（带可观测 metadata）
         from datetime import datetime
+
+        meta: Dict[str, Any] = {
+            "summary_type": "context_compression",
+            "trigger": trigger,
+            "compressed_message_count": len(early_part),
+            "compressed_range": {
+                "first_message_id": early_part[0].id,
+                "last_message_id": early_part[-1].id,
+            },
+            "keep_recent_turns": keep_recent_turns,
+            "summary_version": existing_summary_count + 1,
+            "merged_summary_ids": old_summary_ids,
+            "model": getattr(session, "model", None) or getattr(session, "model_preset", None),
+        }
+        for k, v in summary_meta_extra.items():
+            if v is not None:
+                meta[k] = v
+        if budget_snapshot:
+            meta["budget_snapshot"] = {
+                "used_tokens": budget_snapshot.get("used_tokens"),
+                "soft_limit": budget_snapshot.get("soft_limit"),
+                "ratio": budget_snapshot.get("ratio"),
+                "counting": budget_snapshot.get("counting"),
+            }
 
         summary_msg = ChatMessage(
             id=generate_message_id(),
@@ -483,23 +568,22 @@ class ChatSessionService:
             user_id=user_id,
             role="summary",
             content=summary_content,
-            metadata={"summary_type": "context_compression"},
+            metadata=meta,
             create_time=datetime.now(),
             update_time=datetime.now(),
         )
         await summary_msg.insert()
 
-        # 7. 标记所有消息为已总结（包括 tool/thinking 等中间轮次）
-        all_msg_ids = [m.id for m in all_messages]
-        if all_msg_ids:
-            await self._message_repo.mark_as_summarized(all_msg_ids, updater=user_id)
+        # 6. 标记 early_part 全部消息为已总结（含旧 summary）
+        early_ids = [m.id for m in early_part]
+        if early_ids:
+            await self._message_repo.mark_as_summarized(early_ids, updater=user_id)
 
         logger.info(
-            f"上下文总结完成: session_id={session_id}, "
-            f"总结了 {len(messages_for_summary)} 条对话消息，"
-            f"标记了 {len(all_msg_ids)} 条消息（含工具调用）"
+            f"上下文压缩(compaction): session={session_id}, "
+            f"trigger={trigger}, early={len(early_part)} 条已标记, "
+            f"keep_recent_turns={keep_recent_turns}"
         )
-
         return summary_content
 
     # ============================================================
@@ -542,6 +626,234 @@ class ChatSessionService:
     # 历史加载
     # ============================================================
 
+
+    @staticmethod
+    def _apply_context_compression(history: List[Any]) -> List[Any]:
+        """与 ChatService._apply_context_compression 语义对齐的轻量实现。"""
+        latest_summary_idx = -1
+        for i, msg in enumerate(history):
+            if getattr(msg, "role", None) == "summary":
+                latest_summary_idx = i
+        if latest_summary_idx < 0:
+            return list(history)
+        compressed = []
+        for i, msg in enumerate(history):
+            if i == latest_summary_idx:
+                compressed.append(msg)
+            elif i < latest_summary_idx:
+                meta = getattr(msg, "metadata", None) or {}
+                if not meta.get("summarized", False):
+                    compressed.append(msg)
+            else:
+                compressed.append(msg)
+        return compressed
+
+    @staticmethod
+    def _rebuild_system_prompt_for_status(session: Any) -> tuple[str, str]:
+        """重建"若现在发一轮"的 system prompt，用于 context-status 计量。
+
+        返回 ``(system_prompt, skills_index)``——技能索引已嵌在 prompt 内，
+        单独回传一份供 Skills 分项扣除。
+
+        与 ``ChatService._merge_turn_config`` 的构造对齐：会话自定义提示词优先，
+        否则按 Agent 固定工具集 + folder scope + 技能索引渲染。folder 的
+        ``document_count`` 不在此解析（仅影响一行文本），按 0 估。
+        """
+        custom = getattr(session, "system_prompt", None)
+        if custom:
+            return str(custom), ""
+
+        from src.prompts.chat import build_chat_system_prompt
+        from src.service.chat.tools.registry import AGENT_ENABLED_TOOLS
+
+        scope: Optional[Dict[str, Any]] = None
+        folder_id = getattr(session, "folder_id", None)
+        if folder_id:
+            scope = {
+                "kind": "folder",
+                "folder_id": folder_id,
+                "label": folder_id,
+                "include_subfolders": bool(
+                    getattr(session, "include_subfolders", True),
+                ),
+                "document_count": 0,
+                "knowledge_base_ids": list(
+                    getattr(session, "knowledge_base_ids", None) or [],
+                ),
+            }
+
+        skills_index = None
+        try:
+            from src.service.skill.registry_singleton import get_registry
+
+            skills_index = get_registry().build_index(set(AGENT_ENABLED_TOOLS))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"context-status 技能索引构建失败（忽略）: {e}")
+
+        try:
+            prompt = build_chat_system_prompt(
+                enabled_tools=AGENT_ENABLED_TOOLS,
+                scope=scope,
+                skills_index=skills_index,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"context-status system prompt 重建失败: {e}")
+            return "", ""
+        return prompt, (skills_index or "")
+
+    async def get_context_status(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        system_prompt: str = "",
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
+        skills_block: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """计算会话当前上下文用量（供 REST context-status）。
+
+        对"若现在发一轮空 query"做计量：history + system + tools schema；
+        user 按 0 估。``system_prompt`` / ``tools_schema`` 未显式传入时，按下一轮
+        真实请求重建，避免这两项恒为 0 导致用量系统性低估。
+        会话不存在时返回 None。
+        """
+        from src.service.chat.chat_service import ChatServiceConfig
+        from src.service.chat.context import (
+            ContextBudgetInput,
+            ContextBudgeter,
+            get_model_context_catalog,
+        )
+
+        manager = get_mysql_manager()
+        with manager.get_session() as db:
+            session = self._session_repo.get_by_id_and_user(db, session_id, user_id)
+            if session is None:
+                return None
+
+        cfg = ChatServiceConfig.from_config_manager()
+        history_full = await self.load_full_history(
+            session_id=session_id, limit=cfg.history_load_limit,
+        )
+        # 复用与 ChatService 相同的压缩语义：跳过 summarized，保留最新 summary
+        history = self._apply_context_compression(history_full)
+        model = session.model or None
+        if not model:
+            # 回落到 preset 对应模型字符串（若可得）
+            try:
+                from src.client.llm import create_llm_client_from_preset
+                client = create_llm_client_from_preset(session.model_preset or cfg.agent_model_preset)
+                model = getattr(client, "model", None) or cfg.agent_model_preset
+            except Exception:  # noqa: BLE001
+                model = session.model_preset or cfg.agent_model_preset
+
+        rebuilt_skills = ""
+        if not system_prompt:
+            try:
+                system_prompt, rebuilt_skills = (
+                    self._rebuild_system_prompt_for_status(session)
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"context-status 重建 system prompt 失败: {e}")
+                system_prompt = ""
+        if skills_block is None:
+            skills_block = rebuilt_skills
+        if tools_schema is None:
+            from src.service.chat.tools.registry import agent_tools_schema
+
+            tools_schema = agent_tools_schema()
+
+        budgeter = ContextBudgeter(
+            catalog=get_model_context_catalog(),
+            threshold_ratio=cfg.summary_compress_threshold_ratio,
+            reserved_output_fallback=cfg.reserved_output_fallback,
+            heuristic_safety_factor=cfg.heuristic_safety_factor,
+            tool_output_hard_cap_tokens=cfg.tool_output_hard_cap_tokens,
+        )
+        reserved = budgeter.resolve_reserved_output(
+            model, preset_max_tokens=cfg.max_completion_tokens,
+        )
+        report = budgeter.evaluate(
+            ContextBudgetInput(
+                model=model,
+                system_prompt=system_prompt or "",
+                history=history,
+                user_message="",
+                tools_schema=tools_schema,
+                reserved_output_tokens=reserved,
+                skills_block=skills_block or "",
+            )
+        )
+
+        # last_compaction from latest summary metadata
+        last_compaction = None
+        summary_count = 0
+        latest_summary = None
+        for m in history_full:
+            if m.role == "summary":
+                summary_count += 1
+                latest_summary = m
+        if latest_summary is not None:
+            md = latest_summary.metadata or {}
+            at = None
+            ct = getattr(latest_summary, "create_time", None)
+            if ct is not None:
+                try:
+                    at = ct.isoformat()
+                except Exception:  # noqa: BLE001
+                    at = str(ct)
+            last_compaction = {
+                "at": at,
+                "trigger": md.get("trigger"),
+                "input_tokens": md.get("input_tokens"),
+                "summary_tokens": md.get("summary_tokens"),
+            }
+
+        return {
+            "session_id": session_id,
+            "model": model,
+            "max_context": report.max_context,
+            "reserved_output": report.reserved_output,
+            "used_tokens": report.used_tokens,
+            "soft_limit": report.soft_limit,
+            "ratio": round(report.ratio, 4),
+            "threshold_ratio": cfg.summary_compress_threshold_ratio,
+            "will_compact_at": report.will_compact_at,
+            "counting": report.counting,
+            "breakdown": {
+                "system": report.breakdown.get("system", 0),
+                "skills": report.breakdown.get("skills", 0),
+                "tools_schema": report.breakdown.get("tools_schema", 0),
+                "summary": report.breakdown.get("summary", 0),
+                "history": report.breakdown.get("history", 0),
+                "user": report.breakdown.get("user", 0),
+                "reserved_output": report.breakdown.get("reserved_output", 0),
+            },
+            "last_compaction": last_compaction,
+            "summary_count": summary_count,
+        }
+
+    async def load_full_history(
+        self,
+        *,
+        session_id: str,
+        limit: int = 100000,
+    ) -> List[ChatMessage]:
+        """加载会话全部历史消息（按 create_time 正序），供 ChatService 做压缩/装配。
+
+        与 ``load_history``（取最近 N 条）不同：本方法从头拉全量，确保摘要压缩
+        能看到所有未总结的早期消息。``limit`` 仅作防御性上限。
+
+        Args:
+            session_id: 会话 ID（外层应已通过 ``get_session`` 完成权限校验）
+            limit: 防御性上限（默认 100000）
+
+        Returns:
+            按 create_time 正序的消息列表
+        """
+        return await self._message_repo.list_by_session(
+            session_id, limit=limit, skip=0, ascending=True,
+        )
+
     async def load_history(
         self,
         *,
@@ -551,15 +863,17 @@ class ChatSessionService:
     ) -> List[ChatMessage]:
         """加载会话历史消息（按 create_time 正序，便于直接拼回 messages）
 
+        **仅用于 LLM 上下文装配**（``ChatService``），不是 UI 全量回放接口。
         Chat 主流程（``skip=0``）取**最近** ``limit`` 条，而非最早 ``limit`` 条。
         Agent 模式一轮常含多条 assistant/tool 消息；若从头部截断会在
         ``tool_calls`` 与 ``role=tool`` 之间切开，导致下一轮 LLM 400。
 
+        UI 全量回放请走 REST ``GET /sessions/{id}/messages``（从头分页拼全量）。
+
         Args:
             session_id: 会话 ID（外层应已通过 ``get_session`` 完成权限校验）
-            limit: 单次加载上限（默认 200）
-            skip: 跳过条数。仅在前端「加载更早」分页时使用；``skip>0`` 时
-                仍按时间正序分页（从最早消息起算），与 ``limit`` 组合。
+            limit: 单次加载上限（默认 200；配置项 ``chat.history.max_messages``）
+            skip: 跳过条数。``skip>0`` 时按时间正序从最早消息起算分页。
         """
         if skip > 0:
             return await self._message_repo.list_by_session(

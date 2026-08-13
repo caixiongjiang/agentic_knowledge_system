@@ -792,6 +792,73 @@ def test_summary_compression() -> bool:
     return True
 
 
+# ==================== Test 10: summary role 持久化摘要注入 ====================
+
+
+def test_summary_role_injection() -> bool:
+    _hr("Test 10 · role=summary 持久化摘要注入（Cursor 式压缩）")
+    from src.prompts.chat import compose_chat_messages, rebuild_messages_from_history
+
+    # 模拟压缩后的 history：[summary, 最近1轮 user+assistant]
+    history = [
+        _FakeMsg(role="summary", content="早期对话摘要：用户讨论了论文第三章方法论"),
+        _FakeMsg(role="user", content="那和第四章对比呢？"),
+        _FakeMsg(role="assistant", content="第四章的对比分析如下..."),
+    ]
+
+    # 1) rebuild：summary 保留独立 role（不转 system，避免被 compose 的 system 去重跳过）
+    rebuilt = rebuild_messages_from_history(history)
+    roles = [m["role"] for m in rebuilt]
+    if roles != ["summary", "user", "assistant"]:
+        _fail(f"rebuild role 序列错：{roles}")
+        return False
+    _ok(f"rebuild 保留 summary 独立 role：{roles}")
+
+    # 2) compose：summary 转为 system 注入，不被去重跳过
+    msgs = compose_chat_messages(
+        system_prompt="NEW SYS",
+        history=history,
+        user_message="继续",
+        retrieved_chunks=[],
+    )
+    compose_roles = [m["role"] for m in msgs]
+    # 期望：[system(NEW SYS), system(summary), user, assistant, user(继续)]
+    if compose_roles != ["system", "system", "user", "assistant", "user"]:
+        _fail(f"compose role 序列错：{compose_roles}")
+        return False
+    if msgs[0]["content"] != "NEW SYS":
+        _fail("主 system_prompt 不在 messages[0]")
+        return False
+    if "早期对话摘要" not in msgs[1]["content"]:
+        _fail("summary 未转为 system 注入到 messages[1]")
+        return False
+    _ok("compose: summary→system 注入 messages[1]，主 system_prompt 在 messages[0]")
+
+    # 3) history 中的旧 system 快照仍被去重（不与 summary 冲突）
+    history2 = [
+        _FakeMsg(role="system", content="OLD SYS（旧快照，应被去重）"),
+        _FakeMsg(role="summary", content="早期摘要"),
+        _FakeMsg(role="user", content="问"),
+        _FakeMsg(role="assistant", content="答"),
+    ]
+    msgs2 = compose_chat_messages(
+        system_prompt="NEW SYS",
+        history=history2,
+        user_message="新问",
+        retrieved_chunks=[],
+    )
+    roles2 = [m["role"] for m in msgs2]
+    # 期望：[system(NEW SYS), system(summary), user, assistant, user(新问)]；OLD SYS 被去重
+    if roles2 != ["system", "system", "user", "assistant", "user"]:
+        _fail(f"含旧 system 快照时 role 序列错：{roles2}")
+        return False
+    if any("OLD SYS" in m.get("content", "") for m in msgs2):
+        _fail("旧 system 快照未被去重")
+        return False
+    _ok("旧 system 快照去重 + summary 保留，互不冲突")
+    return True
+
+
 # ==================== 主入口 ====================
 
 
@@ -810,6 +877,7 @@ def main() -> int:
         ("token_counters", test_token_counters),
         ("apply_token_window", test_apply_token_window),
         ("summary_compression", test_summary_compression),
+        ("summary_role_injection", test_summary_role_injection),
     ]
     results = []
     for name, fn in tests:

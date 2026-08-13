@@ -65,6 +65,16 @@ class LLMModelInfo(BaseModel):
         default=False,
         description="模型是否支持多模态读图（来自 config/multimodal_models.json 白名单）",
     )
+    max_context: Optional[int] = Field(
+        default=None,
+        description=(
+            "模型自身声明的最大上下文长度（tokens）：优先取 "
+            "config/long_context_models.json，其次取 proxy /v1/model/info 的 "
+            "max_input_tokens；None 表示两处都未提供。"
+            "注意这是模型能力值，实际参与预算的窗口是 "
+            "min(该值, [chat.context] max_context_cap)，见 ModelContextCatalog。"
+        ),
+    )
 
     model_config = ConfigDict(extra="ignore", protected_namespaces=())
 
@@ -90,6 +100,8 @@ class LiteLLMRegistry:
     _THINKING_MODELS_PATH = Path(__file__).resolve().parents[3] / "config" / "thinking_models.json"
     # config/multimodal_models.json 的路径（相对于项目根）
     _MULTIMODAL_MODELS_PATH = Path(__file__).resolve().parents[3] / "config" / "multimodal_models.json"
+    # config/long_context_models.json 的路径（相对于项目根）
+    _LONG_CONTEXT_MODELS_PATH = Path(__file__).resolve().parents[3] / "config" / "long_context_models.json"
 
     def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self._ttl = max(0, int(ttl_seconds))
@@ -102,6 +114,8 @@ class LiteLLMRegistry:
         self._thinking_models: Set[str] = self._load_thinking_models()
         # multimodal 模型白名单（从 config/multimodal_models.json 加载）
         self._multimodal_models: Set[str] = self._load_multimodal_models()
+        # 长上下文模型声明（从 config/long_context_models.json 加载：model -> max_context tokens）
+        self._long_context_map: Dict[str, int] = self._load_long_context_models()
 
     # ---- 公共 API ----
 
@@ -142,6 +156,23 @@ class LiteLLMRegistry:
                 self._cache = fallback
                 self._cache_at = time.monotonic() - max(0, self._ttl - 30)
                 return list(fallback)
+
+    def peek_max_context(self, bare_name: str) -> Optional[int]:
+        """从**已有缓存**里查模型声明的上下文长度；缓存为空时返回 None。
+
+        专供 ``ModelContextCatalog`` 在对话主链路上调用：绝不触发 proxy 拉取，
+        避免把 5s 超时的 HTTP 往返引入每轮预算计量。
+        """
+        cache = self._cache or self._fallback_cache
+        if not cache:
+            return None
+        target = (bare_name or "").strip()
+        if not target:
+            return None
+        for m in cache:
+            if self._bare_model_name(m.id) == target and m.max_context:
+                return int(m.max_context)
+        return None
 
     def invalidate(self) -> None:
         """清空缓存；下一次 ``list_models`` 强制刷新。"""
@@ -199,6 +230,47 @@ class LiteLLMRegistry:
             logger.warning(f"[LiteLLMRegistry] 加载 multimodal 白名单失败: {e}")
             return set()
 
+    @classmethod
+    def _load_long_context_models(cls) -> Dict[str, int]:
+        """从 ``config/long_context_models.json`` 加载模型上下文长度声明。
+
+        JSON 格式（向后兼容）::
+
+            {
+              "models": {
+                "deepseek-v4-pro": 1000000,
+                "qwen3.7-plus": {"max_context": 262144, "max_output": 8192}
+              }
+            }
+
+        返回 ``{model_name: max_context_tokens}`` 字典；对象形式只取
+        ``max_context``（``max_output`` 由 ModelContextCatalog 使用）。
+        文件不存在或解析失败时返回空字典。
+        """
+        path = cls._LONG_CONTEXT_MODELS_PATH
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = data.get("models") or {}
+            result: Dict[str, int] = {}
+            for k, v in raw.items():
+                if not isinstance(k, str) or not k.strip():
+                    continue
+                name = k.strip()
+                if isinstance(v, int) and v > 0:
+                    result[name] = v
+                elif isinstance(v, dict):
+                    mc = v.get("max_context")
+                    if isinstance(mc, int) and mc > 0:
+                        result[name] = mc
+            logger.debug(f"[LiteLLMRegistry] 加载 long_context 声明: {len(result)} 个模型")
+            return result
+        except FileNotFoundError:
+            logger.debug(f"[LiteLLMRegistry] long_context 声明文件不存在: {path}")
+            return {}
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LiteLLMRegistry] 加载 long_context 声明失败: {e}")
+            return {}
+
     def _is_fresh(self) -> bool:
         if self._cache is None:
             return False
@@ -251,7 +323,9 @@ class LiteLLMRegistry:
             # /v1/model/info 是 LiteLLM 私有扩展，没就降级（按 mode 不可知处理）
             logger.debug(f"[LiteLLMRegistry] /v1/model/info 不可用: {e}")
 
-        return self._parse_models_response(payload, info_map, self._thinking_models, self._multimodal_models)
+        return self._parse_models_response(
+            payload, info_map, self._thinking_models, self._multimodal_models, self._long_context_map,
+        )
 
     # LiteLLM SDK 走 proxy 的官方前缀。SDK 看到该前缀会按 OpenAI 协议把请求转发
     # 给 ``api_base`` 指向的 LiteLLM Proxy，并在转发前**剥离这个前缀**——也就是
@@ -265,6 +339,7 @@ class LiteLLMRegistry:
         info_map: Optional[Dict[str, Dict[str, Any]]] = None,
         thinking_models: Optional[Set[str]] = None,
         multimodal_models: Optional[Set[str]] = None,
+        long_context_map: Optional[Dict[str, int]] = None,
     ) -> List[LLMModelInfo]:
         """解析 ``/v1/models`` 响应；只保留 chat 类模型，并归一化 id 给 SDK 用。
 
@@ -296,6 +371,7 @@ class LiteLLMRegistry:
         info_map = info_map or {}
         thinking_set = thinking_models or set()
         multimodal_set = multimodal_models or set()
+        long_ctx_map = long_context_map or {}
 
         non_chat_keywords = (
             "embed", "embedding",
@@ -310,7 +386,8 @@ class LiteLLMRegistry:
             if not isinstance(mid, str) or not mid:
                 continue
 
-            mode = (info_map.get(mid) or {}).get("mode")
+            info = info_map.get(mid) or {}
+            mode = info.get("mode")
             if mode and mode != "chat":
                 continue
             if not mode:
@@ -319,6 +396,7 @@ class LiteLLMRegistry:
                     continue
 
             normalized_id, label, provider = LiteLLMRegistry._normalize_proxy_id(mid)
+            bare = LiteLLMRegistry._bare_model_name(mid)
             out.append(
                 LLMModelInfo(
                     id=normalized_id,
@@ -326,6 +404,9 @@ class LiteLLMRegistry:
                     provider=provider,
                     supports_thinking=mid in thinking_set,
                     supports_multimodal=mid in multimodal_set,
+                    max_context=LiteLLMRegistry._resolve_declared_context(
+                        bare, long_ctx_map, info,
+                    ),
                 ),
             )
 
@@ -367,6 +448,33 @@ class LiteLLMRegistry:
 
         return sdk_id, label, provider
 
+    @staticmethod
+    def _bare_model_name(raw_id: str) -> str:
+        """剥离 ``litellm_proxy/`` 前缀，返回用于查 long_context 白名单的裸名。"""
+        if raw_id.startswith(LiteLLMRegistry.PROXY_MODEL_PREFIX):
+            return raw_id[len(LiteLLMRegistry.PROXY_MODEL_PREFIX):]
+        return raw_id
+
+    @staticmethod
+    def _resolve_declared_context(
+        bare: str,
+        long_ctx_map: Dict[str, int],
+        model_info: Dict[str, Any],
+    ) -> Optional[int]:
+        """解析模型自身声明的上下文长度：本地声明优先，其次 proxy 上报。
+
+        小于统一上限的模型**不再被剔除**——它们照常出现在选择器里，
+        由 ``ModelContextCatalog`` 按 ``min(声明值, max_context_cap)`` 计量。
+        """
+        declared = long_ctx_map.get(bare)
+        if isinstance(declared, int) and declared > 0:
+            return declared
+        for key in ("max_input_tokens", "max_tokens"):
+            v = (model_info or {}).get(key)
+            if isinstance(v, int) and v > 0:
+                return v
+        return None
+
     def _build_offline_fallback(self) -> List[LLMModelInfo]:
         """离线兜底：从 ``[llm.presets.*]`` 抽取所有 model 字符串去重。"""
         if self._fallback_cache:
@@ -389,6 +497,7 @@ class LiteLLMRegistry:
                 continue
             seen.add(mid)
             sdk_id, label, provider = self._normalize_proxy_id(mid)
+            bare = self._bare_model_name(mid)
             out.append(
                 LLMModelInfo(
                     id=sdk_id,
@@ -396,6 +505,7 @@ class LiteLLMRegistry:
                     provider=provider,
                     supports_thinking=mid in self._thinking_models,
                     supports_multimodal=mid in self._multimodal_models,
+                    max_context=self._long_context_map.get(bare),
                 ),
             )
 

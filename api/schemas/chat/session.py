@@ -256,3 +256,42 @@ class ChatMessageListResponse(BaseModel):
     total: int = 0
     page: int = 1
     page_size: int = 50
+
+
+class ContextStatusBreakdown(BaseModel):
+    """上下文用量分项。"""
+
+    system: int = 0
+    skills: int = 0
+    tools_schema: int = 0
+    summary: int = 0
+    history: int = 0
+    user: int = 0
+    reserved_output: int = 0
+
+
+class ContextCompactionInfo(BaseModel):
+    """最近一次压缩的可观测摘要。"""
+
+    at: Optional[str] = None
+    trigger: Optional[str] = None
+    input_tokens: Optional[int] = None
+    summary_tokens: Optional[int] = None
+
+
+class ContextStatusResponse(BaseModel):
+    """GET /sessions/{id}/context-status 响应。"""
+
+    session_id: str
+    model: Optional[str] = None
+    max_context: int
+    reserved_output: int
+    used_tokens: int
+    soft_limit: int
+    ratio: float
+    threshold_ratio: float
+    will_compact_at: int
+    counting: str
+    breakdown: ContextStatusBreakdown
+    last_compaction: Optional[ContextCompactionInfo] = None
+    summary_count: int = 0

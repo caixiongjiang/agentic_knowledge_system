@@ -25,6 +25,7 @@
 =================================================="""
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,6 +44,7 @@ from api.schemas.chat import (
     CitationItem,
     TokenUsageItem,
     ToolCallItem,
+    ContextStatusResponse,
 )
 from api.schemas.common import ApiResponse
 from src.db.mongodb.models.conversation.chat_message import ChatMessage
@@ -358,28 +360,35 @@ async def list_messages(
     page_size: int = Query(50, ge=1, le=200),
     user_id: str = Depends(get_current_user_id),
 ) -> ApiResponse[ChatMessageListResponse]:
-    """拉取会话历史消息（按 ``create_time`` 正序）
+    """拉取会话历史消息（窗口内按 ``create_time`` 正序）
 
-    分页方案：第 1 页是会话最早的 ``page_size`` 条；第 2 页紧随其后。
-    前端"加载更早"通常配合 ``GET /{id}/messages?page=N`` 反向拼接。
+    用途：前端 UI **全量回放**。与 Chat 主流程上下文装配分离：
+    - 本接口按时间从头分页（page=1 = 最早），前端应翻页拼完整会话
+    - LLM 上下文装配走 ``ChatSessionService.load_history`` → 最近 N 条
+      （再叠加轮数/token/摘要滑窗），不会用本接口截断结果
     """
     service = _get_service()
     obj = service.get_session(session_id=session_id, user_id=user_id)
     if obj is None:
         raise HTTPException(status_code=404, detail="会话不存在或无权限")
 
-    messages = await chat_message_repo.list_by_session(
-        session_id,
-        limit=page_size,
-        skip=(page - 1) * page_size,
-        ascending=True,
-    )
-    total = await chat_message_repo.count_by_session(session_id)
+    total = int(await chat_message_repo.count_by_session(session_id))
+    # 从头分页：page=1 → [0, page_size)；page=2 → 下一段，前端循环拉完即全量回放
+    start = (page - 1) * page_size
+    if start >= total or total <= 0:
+        messages = []
+    else:
+        messages = await chat_message_repo.list_by_session(
+            session_id,
+            limit=page_size,
+            skip=start,
+            ascending=True,
+        )
 
     payload = ChatMessageListResponse(
         session_id=session_id,
         items=[_to_message_item(m) for m in messages],
-        total=int(total),
+        total=total,
         page=page,
         page_size=page_size,
     )
@@ -418,6 +427,56 @@ async def clear_messages(
     )
 
 
+# ---- context-status 进程内短缓存 ----
+_CONTEXT_STATUS_CACHE: dict = {}
+
+
+@router.get(
+    "/{session_id}/context-status",
+    response_model=ApiResponse[ContextStatusResponse],
+    summary="会话上下文用量状态",
+)
+async def get_context_status(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ApiResponse[ContextStatusResponse]:
+    """返回当前会话的上下文 token 用量（Cursor 式 Context 指示器数据源）。
+
+    - 权限不匹配 / 会话不存在 → 404
+    - 结果带进程内短缓存（默认 15s，按 session 最新消息 id 作为 key 的一部分）
+    """
+    service = _get_service()
+
+    # 用最新消息 id 做缓存戳，避免压缩后仍返回旧用量
+    try:
+        latest = await chat_message_repo.list_by_session(
+            session_id, limit=1, ascending=False,
+        )
+        stamp = latest[0].id if latest else "empty"
+    except Exception:  # noqa: BLE001
+        stamp = "na"
+
+    cache_key = f"{session_id}:{user_id}:{stamp}"
+    now = time.time()
+    cached = _CONTEXT_STATUS_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < 15:
+        data = cached[1]
+        return ApiResponse.success(data=ContextStatusResponse(**data))
+
+    data = await service.get_context_status(session_id=session_id, user_id=user_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    _CONTEXT_STATUS_CACHE[cache_key] = (now, data)
+    # 简单限幅，防止缓存无限涨
+    if len(_CONTEXT_STATUS_CACHE) > 256:
+        oldest = sorted(_CONTEXT_STATUS_CACHE.items(), key=lambda kv: kv[1][0])[:64]
+        for k, _ in oldest:
+            _CONTEXT_STATUS_CACHE.pop(k, None)
+
+    return ApiResponse.success(data=ContextStatusResponse(**data))
+
+
 @router.post(
     "/{session_id}/summarize",
     response_model=ApiResponse[ChatSessionUpdateResponse],
@@ -439,12 +498,20 @@ async def summarize_context(
 
     权限：仅会话所有者可操作。
     """
-    summary = await _get_service().summarize_context(
+    service = _get_service()
+    # 404 只表达会话不存在或无权限；不能把模型调用失败误报为会话丢失。
+    if service.get_session(session_id=session_id, user_id=user_id) is None:
+        raise HTTPException(status_code=404, detail="会话不存在、无权限或已删除")
+
+    summary = await service.summarize_context(
         session_id=session_id,
         user_id=user_id,
     )
     if summary is None:
-        raise HTTPException(status_code=404, detail="会话不存在、无权限或无消息可总结")
+        raise HTTPException(
+            status_code=422,
+            detail="当前会话没有可总结的对话消息，或摘要模型调用失败，请查看服务端日志",
+        )
     logger.info(f"REST summarize_context: session_id={session_id}")
     return ApiResponse.success(
         data=ChatSessionUpdateResponse(
