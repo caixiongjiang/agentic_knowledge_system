@@ -270,18 +270,21 @@ default_max_retries = 2
 # - api_base / api_key 默认走 [proxy]，可在单个 preset 中覆盖
 
 [llm]
-# 思考链（thinking）三层语义，便于全局对齐：
+# 思考强度（pi 标准 7 档：off/minimal/low/medium/high/xhigh/max）统一语义：
 #
-#   1) ``[llm.presets.<name>].thinking_budget`` / ``components.<name>.llm.thinking_budget``
-#      —— **某条调用路径"默认"是否开思考及预算**（int）。
-#         缺省视为 0，意为"不显式声明，按上游模型/Proxy 默认行为"。
+#   1) ``[llm.presets.<name>].thinking_level`` —— **某条后台调用路径默认的思考档位**。
+#      工厂 ``create_llm_client_from_preset`` 会经 ``LiteLLMRegistry.resolve_reasoning_effort``
+#      把 pi 档位翻译成厂商原生 ``reasoning_effort`` 字符串（如 'high' / 'none'），
+#      作为该客户端的默认；模型不支持思考或档位不合法时降级为 None（不下发）。
+#      缺省视为 "off"（不显式声明思考）。
 #
-#   2) 业务请求 ``LLMClient.astream(thinking_budget=...)``（Optional[int]）
-#      —— **本次调用如何覆盖默认**：``None`` 沿用 cfg；``0`` 显式关；``>0`` 显式开+预算。
+#   2) 业务请求 ``LLMClient.astream(reasoning_effort=...)``（Optional[str]）
+#      —— **本次调用如何覆盖默认**：``None`` 沿用客户端默认；传字符串即透传
+#      （``"none"`` 显式关思考）。前端用户层 ``thinking_level`` 由 ``ChatService``
+#      在调用前翻译成 ``reasoning_effort`` 逐轮下发。
 #
-#   3) 实际下发：``reasoning_effort = none | low | medium | high``（LiteLLM 统一参数），
-#      由 LiteLLM / Proxy 按 provider 翻译；不支持的参数应 ``drop_params: true`` 丢弃。
-#      详见 ``LLMClient._apply_thinking_params``。
+#   3) Provider 差异（Qwen ``enable_thinking``、GLM ``thinking`` 等）交给 LiteLLM
+#      翻译；不支持的参数由 ``drop_params: true`` 丢弃。
 #
 # 注：``model`` 字段必须是你的 LiteLLM Proxy 上真实可路由的模型名。
 # 推荐写法：``litellm_proxy/<proxy 上 model_name 的原值>``，让 LiteLLM SDK
@@ -291,44 +294,56 @@ default_max_retries = 2
 
 [llm.presets.fast]
 # 性价比优先；用于起标题 / 摘要压缩 / 检索结果 LLM 验证等"短轻"调用
-model = "litellm_proxy/deepseek-v4-flash"
-temperature = 0.0
-max_tokens = 65536
-timeout = 60
-
-[llm.presets.quality]
-model = "litellm_proxy/deepseek-v4-pro"
+model = "litellm_proxy/qwen3.7-flash"
 temperature = 0.3
 max_tokens = 65536
 timeout = 60
+thinking_level = "off"
+
+[llm.presets.quality]
+model = "litellm_proxy/deepseek-v4-pro"
+temperature = 0.5
+max_tokens = 65536
+timeout = 120
+thinking_level = "high"
 
 [llm.presets.reasoning]
 # 推理优先；用于 RoutePlanner（检索路由规划）等需要复杂推理的内部调用
 model = "litellm_proxy/glm-5.1"
-temperature = 0.0
+temperature = 0.5
 max_tokens = 65536
 timeout = 120
-thinking_budget = 4096
+thinking_level = "high"
 
 [llm.presets.long_context]
 model = "litellm_proxy/deepseek-v4-flash"
 temperature = 0.5
 max_tokens = 65536
 timeout = 90
+thinking_level = "low"
+
+[llm.presets.pro]
+model = "litellm_proxy/glm-5.2"
+temperature = 0.5
+max_tokens = 65536
+timeout = 150
+thinking_level = "max"
 
 [llm.presets.multimodal]
 # 若 proxy 上没有真正的多模态模型，可保留作占位；
 # 业务路径只在显式启用多模态时才会引用本 preset
-model = "litellm_proxy/qwen3.6-flash"
+model = "litellm_proxy/qwen3.7-flash"
 temperature = 0.7
 max_tokens = 65536
 timeout = 90
+thinking_level = "medium"
 
 [llm.presets.test]
-model = "litellm_proxy/deepseek-v4-flash"
+model = "litellm_proxy/qwen3.7-flash"
 temperature = 0.3
 max_tokens = 65536
 timeout = 60
+thinking_level = "low"
 
 # ==================== Chat 模块配置 ====================
 # 知识库对话服务（src/service/chat/chat_service.py）的运行参数
@@ -338,28 +353,27 @@ timeout = 60
 
 [chat]
 # 主对话 LLM 的 preset（ChatRequest / ChatSession 都未指定时用该默认）
-# 如需细调 temperature / max_tokens / thinking_budget，请在 [llm.presets.*] 加自定义 preset
+# 如需细调 temperature / max_tokens / thinking_level，请在 [llm.presets.*] 加自定义 preset
 agent_model_preset = "fast"
 # 异步起标题用的 preset（首轮结束后调用 1 次，性价比优先）
 title_model_preset = "fast"
 # 用户从前端 /api/chat/models 选了具体 model 时，作为采样参数模板的 preset
-# （temperature / max_tokens / thinking_budget / extra_params 取自该 preset，
-#  model 字段被前端选定的字符串覆盖）
+# （temperature / max_tokens / extra_params 取自该 preset，
+#  model 字段被前端选定的字符串覆盖；思考强度由前端 thinking_level 逐轮传入）
 user_chat_template_preset = "fast"
 # read_image_chunks 工具内 VLM 的 preset（引用 [llm.presets.multimodal]）
 multimodal_model_preset = "multimodal"
 # 会话默认交互模式（agent=工具循环 / plan=先规划再执行）
 default_mode = "agent"
-# 是否默认启用思考链（仅 reasoning 类模型生效）
-default_enable_thinking = false
+# 新建会话默认思考强度档位（pi 标准 7 档之一）；仅 reasoning 类模型生效，
+# 后端会按模型 thinking_levels 钳位。前端不传时用该默认。
+default_thinking_level = "off"
 # Agent 模式默认工具批次上限
 default_max_tool_rounds = 5
 # @ 内联引用（方案A）：单个 @ 文件全量注入正文的字符上限；超过则退化为方案C（仅提示 document_id）
 mention_inject_max_chars = 6000
 # @ 内联引用（方案A）：单轮所有 @ 文件全量注入正文的合计字符预算；超预算的文件退化为方案C
 mention_inject_total_budget = 12000
-# 启用思考链时的预算（tokens）；仅 enable_thinking=true 时透传给 LLMClient.astream
-thinking_budget = 4096
 # 单轮 assistant 输出 token 上限；0 / 缺省表示由模型 / preset 决定
 max_completion_tokens = 0
 
@@ -478,16 +492,6 @@ model = "cohere/qwen3-reranker-0.6b"
 # API 服务地址（api_url 由环境变量 MINERU_API_URL 提供，如 http://192.168.19.232:18000）
 # 超时时间（秒）
 timeout = 300
-
-# LibreOffice 配置（用于 PPT/Word/图片 转 PDF，统一走 MinerU 解析链路）
-[libreoffice]
-# soffice 可执行文件路径（跨平台）：
-#   - macOS 开发环境: /Applications/LibreOffice.app/Contents/MacOS/soffice
-#   - Ubuntu 生产环境: soffice（PATH 中可用时）或 /usr/bin/soffice
-# 可通过环境变量 LIBREOFFICE_SOFFICE_PATH 覆盖（推荐本地用 .env 覆盖，避免提交 macOS 路径）
-soffice_path = "soffice"
-# 转换超时时间（秒）；毕业论文等大文档建议 300~600
-convert_timeout = 600
 
 # ==================== 系统配置 ====================
 

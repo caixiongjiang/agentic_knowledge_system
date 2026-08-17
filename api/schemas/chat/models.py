@@ -34,7 +34,22 @@ class ChatModelItem(BaseModel):
     provider: str = Field(..., description="provider 名（用于前端按 provider 分组）")
     supports_thinking: bool = Field(
         default=False,
-        description="模型是否支持思考链 / reasoning（来自 config/thinking_models.json 白名单，前端据此控制 ThinkingChip 显隐）",
+        description="模型是否支持思考链 / reasoning（来自 config/thinking_models.json 白名单，前端据此控制思考档位下拉显隐）",
+    )
+    thinking_levels: List[str] = Field(
+        default_factory=list,
+        description=(
+            "该模型支持的思考强度档位（pi 标准 7 档子集，保持顺序："
+            "off/minimal/low/medium/high/xhigh/max）。supports_thinking=False 时为 ['off']；"
+            "前端据此渲染档位下拉。"
+        ),
+    )
+    default_thinking_level: Optional[str] = Field(
+        default=None,
+        description=(
+            "新建会话时默认选中的档位（必须在 thinking_levels 内）。"
+            "supports_thinking=False 时为 None。"
+        ),
     )
     supports_multimodal: bool = Field(
         default=False,

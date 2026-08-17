@@ -22,12 +22,17 @@
     4. **多模态原生支持**：``messages`` 里直接传 OpenAI 风格的 multi-content
        结构（``{"type":"text","text":...}`` / ``{"type":"image_url",...}``），
        LiteLLM 会负责按 provider 转换。
-    5. **思考链（统一经 LiteLLM 翻译）**：应用只传 ``thinking_budget`` 三态语义，
-       ``LLMClient`` 映射为 LiteLLM 统一的 ``reasoning_effort``（``none/low/medium/high``），
-       由 LiteLLM / Proxy 按 provider 转成 ``enable_thinking``、``thinking`` 等原生参数。
-       - **配置层 ``thinking_budget=0``**：默认不下发（上游自决）。
-       - **调用层 ``thinking_budget=0``**：显式关 → ``reasoning_effort="none"``。
-       - **调用层 ``thinking_budget>0``**：显式开 → 按 budget 映射 effort 档位。
+    5. **思考强度（pi 标准 7 档，统一经 LiteLLM 翻译）**：调用方传 ``reasoning_effort``
+       字符串（pi 档位 ``off/minimal/low/medium/high/xhigh/max`` 经 registry 翻译后的厂商
+       原生值，如 ``"high"`` / ``"max"``），由 LiteLLM / Proxy 按 provider 转成
+       ``enable_thinking``、``thinking`` 等原生参数。
+       - **配置层 ``default_reasoning_effort``**：preset 在构造时由
+         ``LiteLLMRegistry.resolve_reasoning_effort`` 把 pi 档位翻译成厂商字符串；
+         ``None`` 表示默认不下发（上游自决）。
+       - **调用层 ``reasoning_effort``**：单次调用覆盖配置默认。语义：
+         未传（哨兵 ``_REASONING_UNSET``）→ 沿用 ``default_reasoning_effort``；
+         显式 ``None`` → **off，不下发**（与 pi 一致，避免部分厂商在
+         ``reasoning_effort="none"`` 时禁用工具调用）；传字符串即透传。
        不在应用侧写 provider 分支；Proxy 建议开启 ``litellm_settings.drop_params: true``。
        响应里若有 ``reasoning_content`` 会自动归入 ``LLMResponse.thinking``。
     6. **观测**：用户运行的 LiteLLM Proxy 把日志写入 PostgreSQL，本地客户端
@@ -56,6 +61,11 @@ from src.client.llm.types import (
 # 延迟 import litellm，避免启动期立即拉依赖
 _LITELLM_INITIALIZED = False
 
+# reasoning_effort 哨兵：区分「调用方未传」（沿用 cfg.default_reasoning_effort）
+# 与「调用方显式传 None」（off → 不下发 reasoning_effort）。None 本身无法
+# 区分这两种语义，故用哨兵作默认值。
+_REASONING_UNSET = object()
+
 
 def _ensure_litellm_initialized() -> None:
     """全局只跑一次：禁用 LiteLLM 的网络遥测、设默认日志级别。"""
@@ -67,12 +77,12 @@ def _ensure_litellm_initialized() -> None:
 
     litellm.suppress_debug_info = True
     litellm.set_verbose = False  # type: ignore[attr-defined]
-    litellm.drop_params = True   # 自动丢掉 provider 不支持的参数
+    litellm.drop_params = False  # 关闭自动过滤，允许参数完整透传以便测试真实生效情况
     litellm.telemetry = False    # 关闭 LiteLLM 的匿名遥测
     litellm.modify_params = True  # 容许 LiteLLM 微调入参（例如 anthropic system 拼接）
 
     _LITELLM_INITIALIZED = True
-    logger.debug("LiteLLM 全局初始化完成（telemetry=False, drop_params=True）")
+    logger.debug("LiteLLM 全局初始化完成（telemetry=False, drop_params=False）")
 
 
 # ==================== 客户端配置 ====================
@@ -97,13 +107,14 @@ class LLMClientConfig(BaseModel):
     max_tokens: int = Field(2048, ge=1)
     timeout: float = Field(60.0, gt=0.0)
     max_retries: int = Field(2, ge=0)
-    thinking_budget: int = Field(
-        0,
-        ge=0,
+    default_reasoning_effort: Optional[str] = Field(
+        None,
         description=(
-            "本客户端的默认思考策略：0=不主动声明（按上游默认），"
-            ">0=默认开思考并设置预算（tokens）。单次调用可被 "
-            "``astream(thinking_budget=...)`` 覆盖（None / 0 / >0 三态）。"
+            "本客户端的默认思考强度（已翻译为厂商原生 reasoning_effort 字符串，"
+            "如 'high' / 'none'）。None=不主动声明（按上游默认）；"
+            "单次调用可被 ``astream(reasoning_effort=...)`` 覆盖。"
+            "由工厂 ``create_llm_client_from_preset`` 通过 "
+            "``LiteLLMRegistry.resolve_reasoning_effort`` 翻译 pi 档位得到。"
         ),
     )
     extra_params: Dict[str, Any] = Field(
@@ -162,7 +173,7 @@ class LLMClient:
         tool_choice: Optional[Any] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
+        reasoning_effort: Any = _REASONING_UNSET,
         **kwargs: Any,
     ) -> LLMResponse:
         """同步请求，内部仍走 LiteLLM 的 ``completion``。"""
@@ -174,7 +185,7 @@ class LLMClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
-            thinking_budget=thinking_budget,
+            reasoning_effort=reasoning_effort,
             extra=kwargs,
         )
         t0 = time.perf_counter()
@@ -197,7 +208,7 @@ class LLMClient:
         tool_choice: Optional[Any] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
+        reasoning_effort: Any = _REASONING_UNSET,
         **kwargs: Any,
     ) -> LLMResponse:
         """异步请求。"""
@@ -209,7 +220,7 @@ class LLMClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
-            thinking_budget=thinking_budget,
+            reasoning_effort=reasoning_effort,
             extra=kwargs,
         )
         t0 = time.perf_counter()
@@ -234,7 +245,7 @@ class LLMClient:
         tool_choice: Optional[Any] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
+        reasoning_effort: Any = _REASONING_UNSET,
         **kwargs: Any,
     ) -> Iterator[StreamChunk]:
         """同步流式生成。支持 ``tools / tool_choice`` 透传，便于 Agent 模式
@@ -248,7 +259,7 @@ class LLMClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
-            thinking_budget=thinking_budget,
+            reasoning_effort=reasoning_effort,
             extra=kwargs,
         )
         params["stream"] = True
@@ -265,7 +276,7 @@ class LLMClient:
         tool_choice: Optional[Any] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
+        reasoning_effort: Any = _REASONING_UNSET,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
         """异步流式生成。支持 ``tools / tool_choice`` 透传。
@@ -284,7 +295,7 @@ class LLMClient:
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
-            thinking_budget=thinking_budget,
+            reasoning_effort=reasoning_effort,
             extra=kwargs,
         )
         params["stream"] = True
@@ -323,7 +334,7 @@ class LLMClient:
         tool_choice: Optional[Any] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        thinking_budget: Optional[int] = None,
+        reasoning_effort: Any = _REASONING_UNSET,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         cfg = self.config
@@ -354,46 +365,34 @@ class LLMClient:
                     continue
                 params[k] = v
 
-        # 与全局 litellm.drop_params 双保险；Proxy 侧也建议 drop_params: true
-        params["drop_params"] = True
-        self._apply_thinking_params(params, thinking_budget)
+        # 关闭自动过滤参数，允许自定义与思考强度参数完整透传至网关/上游
+        params["drop_params"] = False
+
+        # 思考强度参数适配（Thinking Adapter）：
+        # 调用层 reasoning_effort 优先；显式 None = 不主动下发参数；
+        # 哨兵 _REASONING_UNSET = 调用方未传，沿用 cfg.default_reasoning_effort。
+        if reasoning_effort is _REASONING_UNSET:
+            effective_effort = cfg.default_reasoning_effort
+        elif reasoning_effort is None:
+            effective_effort = None
+        else:
+            effective_effort = reasoning_effort
+
+        if effective_effort is not None:
+            from src.client.llm.thinking_adapter import (
+                get_thinking_adapter,
+                merge_thinking_params,
+            )
+
+            adapter = get_thinking_adapter(cfg.model)
+            adapted = adapter.adapt(
+                model=cfg.model,
+                level_or_effort=effective_effort,
+                max_tokens=params.get("max_tokens"),
+            )
+            merge_thinking_params(params, adapted)
 
         return params
-
-    def _apply_thinking_params(
-        self,
-        params: Dict[str, Any],
-        call_budget: Optional[int],
-    ) -> None:
-        """把 ``thinking_budget`` 映射为 LiteLLM 统一参数 ``reasoning_effort``。
-
-        ===========================  ====================================
-        ``call_budget``               下发策略
-        ===========================  ====================================
-        ``None``                     沿用 ``cfg.thinking_budget``；cfg=0 则不下发
-        ``0``                        ``reasoning_effort="none"``（显式关）
-        ``>0``                       ``reasoning_effort=low|medium|high``
-        ===========================  ====================================
-
-        Provider 差异（Qwen ``enable_thinking``、GLM ``thinking`` 等）交给 LiteLLM
-        翻译；不支持的参数由 ``drop_params`` 丢弃。
-        """
-        effective_budget = self._resolve_effective_thinking_budget(call_budget)
-        if effective_budget is None:
-            return
-        if effective_budget <= 0:
-            params["reasoning_effort"] = "none"
-            return
-        params["reasoning_effort"] = _budget_to_reasoning_effort(effective_budget)
-
-    def _resolve_effective_thinking_budget(
-        self,
-        call_budget: Optional[int],
-    ) -> Optional[int]:
-        if call_budget is None:
-            cfg_budget = int(self.config.thinking_budget or 0)
-            return cfg_budget if cfg_budget > 0 else None
-        return int(call_budget)
 
     def _log_metrics(self, mode: str, resp: LLMResponse, elapsed_ms: float) -> None:
         usage = resp.usage
@@ -410,15 +409,6 @@ class LLMClient:
             fr=resp.finish_reason,
             n=len(resp.tool_calls),
         )
-
-
-def _budget_to_reasoning_effort(budget: int) -> str:
-    """把 token 预算粗映射为 LiteLLM 统一的 ``reasoning_effort`` 档位。"""
-    if budget < 1024:
-        return "low"
-    if budget < 4096:
-        return "medium"
-    return "high"
 
 
 # ==================== 工厂函数 ====================
@@ -454,7 +444,7 @@ def create_llm_client(
     max_tokens: int = 2048,
     timeout: Optional[float] = None,
     max_retries: Optional[int] = None,
-    thinking_budget: int = 0,
+    default_reasoning_effort: Optional[str] = None,
     extra_params: Optional[Dict[str, Any]] = None,
 ) -> LLMClient:
     """显式参数构造；通常由 ``ComponentConfigManager`` 调用。
@@ -477,7 +467,7 @@ def create_llm_client(
         max_tokens=max_tokens,
         timeout=timeout if timeout is not None else float(proxy.get("default_timeout", 60.0)),
         max_retries=max_retries if max_retries is not None else int(proxy.get("default_max_retries", 2)),
-        thinking_budget=thinking_budget,
+        default_reasoning_effort=default_reasoning_effort,
         extra_params=extra_params or {},
     )
     return LLMClient(cfg)
@@ -521,8 +511,11 @@ def create_llm_client_from_model(
     使用场景：用户在前端从 ``/api/chat/models`` 选了一个 LiteLLM 模型字符串
     （如 ``openai/gpt-4o-mini`` 或 ``litellm_proxy/deepseek-v4-flash``），后端
     不再走 preset 的 ``model`` 字段，但仍希望复用 preset 里调好的
-    ``temperature / max_tokens / thinking_budget / extra_params`` 这些采样
+    ``temperature / max_tokens / extra_params`` 这些采样
     参数——这就是 ``chat_template_preset`` 的用途。
+
+    注：思考强度由 ``ChatService`` 按用户当轮 ``thinking_level`` 解析后通过
+    ``astream(reasoning_effort=...)`` 逐轮传入，不在此 preset 模板里固化。
 
     优先级：
         - ``model`` ← 入参（覆盖 preset.model）；裸名会自动加 ``litellm_proxy/``
@@ -558,7 +551,6 @@ def create_llm_client_from_model(
         max_tokens=p.get("max_tokens", 2048),
         timeout=p.get("timeout"),
         max_retries=p.get("max_retries"),
-        thinking_budget=p.get("thinking_budget", 0),
         extra_params=p.get("extra_params") or {},
     )
 
@@ -575,7 +567,11 @@ def create_llm_client_from_preset(preset_name: str) -> LLMClient:
        temperature = 0.3
        max_tokens = 2048
        timeout = 60
-       # 可选: thinking_budget, api_base, api_key, max_retries, extra_params
+       # 可选: thinking_level, api_base, api_key, max_retries, extra_params
+
+    ``thinking_level`` 取 pi 标准 7 档之一（off/minimal/low/medium/high/xhigh/max），
+    由 ``LiteLLMRegistry.resolve_reasoning_effort`` 翻译成厂商原生 reasoning_effort
+    字符串后作为该客户端的默认思考强度；模型不支持思考或档位不合法时降级为 None。
 
     ``api_base`` / ``api_key`` 默认走 LiteLLM Proxy（``.env`` + ``[proxy]``）；
     单个 preset 也可在自身字段中强制覆盖。
@@ -597,6 +593,21 @@ def create_llm_client_from_preset(preset_name: str) -> LLMClient:
             f"'{raw_model}' → '{routable_model}' (自动补 litellm_proxy/ 前缀)"
         )
 
+    # pi 档位 → 厂商原生 reasoning_effort 字符串（模型不支持思考时返回 None）
+    default_reasoning_effort: Optional[str] = None
+    thinking_level = p.get("thinking_level")
+    if thinking_level:
+        try:
+            from src.client.llm.registry import get_litellm_registry
+            default_reasoning_effort = get_litellm_registry().resolve_reasoning_effort(
+                routable_model, str(thinking_level),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                f"create_llm_client_from_preset[{preset_name}] 解析 thinking_level "
+                f"'{thinking_level}' 失败，忽略: {e}"
+            )
+
     return create_llm_client(
         model=routable_model,
         api_base=p.get("api_base"),
@@ -605,7 +616,7 @@ def create_llm_client_from_preset(preset_name: str) -> LLMClient:
         max_tokens=p.get("max_tokens", 2048),
         timeout=p.get("timeout"),
         max_retries=p.get("max_retries"),
-        thinking_budget=p.get("thinking_budget", 0),
+        default_reasoning_effort=default_reasoning_effort,
         extra_params=p.get("extra_params") or {},
     )
 

@@ -64,7 +64,13 @@ class ChatSessionCreateRequest(BaseModel):
         ),
     )
     mode: str = Field("agent", description="会话交互模式（agent / plan 等）")
-    enable_thinking: bool = Field(False, description="是否默认启用思考链")
+    thinking_level: str = Field(
+        "off",
+        description=(
+            "思考强度档位（pi 标准 7 档：off/minimal/low/medium/high/xhigh/max）。"
+            "不支持思考的模型忽略此字段；后端会按模型 thinking_levels 钳位。"
+        ),
+    )
     enable_multimodal: bool = Field(False, description="是否默认启用多模态读图")
     max_tool_rounds: int = Field(5, ge=1, le=20, description="Agent 工具批次上限")
     system_prompt: Optional[str] = Field(
@@ -167,6 +173,7 @@ class ChatSessionInfo(BaseModel):
         ),
     )
     mode: str = "agent"
+    thinking_level: Optional[str] = None
     enable_thinking: bool = False
     enable_multimodal: bool = False
     max_tool_rounds: int = 5
@@ -206,6 +213,7 @@ class ChatSessionListItem(BaseModel):
     model_preset: str = "fast"
     model: Optional[str] = None
     mode: str = "agent"
+    thinking_level: Optional[str] = None
     message_count: int = 0
     last_message_at: Optional[datetime] = None
     create_time: Optional[datetime] = None

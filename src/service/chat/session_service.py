@@ -91,6 +91,7 @@ class ChatSessionService:
         model: Optional[str] = None,
         mode: str = "agent",
         enable_thinking: bool = False,
+        thinking_level: str = "off",
         enable_multimodal: bool = False,
         max_tool_rounds: int = 5,
         system_prompt: Optional[str] = None,
@@ -113,9 +114,10 @@ class ChatSessionService:
             model_preset: ``[llm.presets.*]`` 名称（后台 agent 仍走 preset）
             model: LiteLLM 模型字符串；``None`` 表示由 ``model_preset`` 决定。
                 与 ``model_preset`` 并存：``model`` 非空时优先用它选模型，
-                ``model_preset`` 仍作为 temperature / max_tokens / thinking_budget
-                等采样参数模板（详见 ``ChatService._get_llm_client``）。
-            enable_thinking: 默认是否启用思考链
+                ``model_preset`` 仍作为 temperature / max_tokens 等采样参数模板
+                （详见 ``ChatService._get_llm_client``）；思考强度由前端 thinking_level 逐轮传入。
+            enable_thinking: [兼容] 默认是否启用思考链；新代码用 thinking_level
+            thinking_level: 默认思考强度档位（off/minimal/low/medium/high/xhigh/max）
             enable_multimodal: 默认是否启用多模态读图
             max_tool_rounds: Agent 模式默认工具批次上限
             system_prompt: 用户自定义 system_prompt（``None`` 表示用模块默认）
@@ -144,7 +146,8 @@ class ChatSessionService:
                 model_preset=model_preset,
                 model=model,
                 mode=mode,
-                enable_thinking=enable_thinking,
+                enable_thinking=enable_thinking or (thinking_level not in ("off", "")),
+                thinking_level=thinking_level,
                 enable_multimodal=enable_multimodal,
                 max_tool_rounds=max_tool_rounds,
                 system_prompt=system_prompt,
@@ -294,6 +297,7 @@ class ChatSessionService:
         user_id: str,
         mode: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
+        thinking_level: Optional[str] = None,
         max_tool_rounds: Optional[int] = None,
     ) -> bool:
         """首条消息发出后，把用户选择的运行参数回写到 session。"""
@@ -304,6 +308,7 @@ class ChatSessionService:
                 session_id,
                 mode=mode,
                 enable_thinking=enable_thinking,
+                thinking_level=thinking_level,
                 max_tool_rounds=max_tool_rounds,
                 updater=user_id,
             )
@@ -316,6 +321,7 @@ class ChatSessionService:
         model: Optional[str] = None,
         model_preset: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
+        thinking_level: Optional[str] = None,
     ) -> bool:
         """把"会话级偏好"回写到 session（用户每轮可改的项）。
 
@@ -325,7 +331,7 @@ class ChatSessionService:
           ``max_tool_rounds`` 等"会话定型"项；UI 上对应的 chip 在有消息后
           就是 disabled 的，不能再变。
         - ``update_session_settings``：随时可改的"轻偏好"——前端选了哪个
-          ``model``、是否开思考链、用哪个 preset 模板，只要每轮请求带上
+          ``model``、思考强度档位、用哪个 preset 模板，只要每轮请求带上
           就持久化，下次进同一会话时 UI 默认选项跟随。
 
         所有参数都是 ``Optional``：``None`` 表示"不动这一项"。
@@ -338,6 +344,7 @@ class ChatSessionService:
                 model=model,
                 model_preset=model_preset,
                 enable_thinking=enable_thinking,
+                thinking_level=thinking_level,
                 updater=user_id,
             )
 

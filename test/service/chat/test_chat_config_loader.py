@@ -81,17 +81,15 @@ def test_from_config_manager_full_load() -> bool:
         "chat": {
             "agent_model_preset": "smart",
             "title_model_preset": "quality",
-            "default_agent_mode": False,
-            "default_enable_thinking": True,
+            "default_mode": "plan",
+            "default_thinking_level": "high",
             "default_max_tool_rounds": 8,
-            "thinking_budget": 8192,
             "max_completion_tokens": 1024,
             "retrieval": {"top_k": 16},
             "history": {
                 "max_messages": 60,
-                "max_turns": 20,
                 "max_tokens": 12000,
-                "summary_compress_threshold_turns": 25,
+                "summary_compress_threshold_ratio": 0.85,
                 "summary_keep_recent_turns": 6,
             },
         }
@@ -99,16 +97,14 @@ def test_from_config_manager_full_load() -> bool:
     cfg = ChatServiceConfig.from_config_manager(mgr)
     assert cfg.agent_model_preset == "smart"
     assert cfg.title_model_preset == "quality"
-    assert cfg.default_agent_mode is False
-    assert cfg.default_enable_thinking is True
+    assert cfg.default_mode == "plan"
+    assert cfg.default_thinking_level == "high"
     assert cfg.default_max_tool_rounds == 8
-    assert cfg.thinking_budget == 8192
     assert cfg.max_completion_tokens == 1024
     assert cfg.retrieve_top_k == 16
-    assert cfg.max_history_messages == 60
-    assert cfg.max_history_turns == 20
-    assert cfg.max_context_tokens == 12000
-    assert cfg.summary_compress_threshold_turns == 25
+    assert cfg.history_load_limit == 60
+    assert cfg.context_window_tokens == 12000
+    assert cfg.summary_compress_threshold_ratio == 0.85
     assert cfg.summary_keep_recent_turns == 6
     _ok("所有字段读取 + 类型转换正确")
     return True
@@ -116,15 +112,15 @@ def test_from_config_manager_full_load() -> bool:
 
 def test_from_config_manager_missing_fields_use_defaults() -> bool:
     _hr("ChatServiceConfig.from_config_manager · 缺字段沿用默认")
-    mgr = _FakeConfigManager({"chat": {"thinking_budget": 2048}})
+    mgr = _FakeConfigManager({"chat": {"default_thinking_level": "medium"}})
     cfg = ChatServiceConfig.from_config_manager(mgr)
     default = ChatServiceConfig()
-    assert cfg.thinking_budget == 2048
+    assert cfg.default_thinking_level == "medium"
     assert cfg.retrieve_top_k == default.retrieve_top_k
-    assert cfg.max_context_tokens == default.max_context_tokens
+    assert cfg.context_window_tokens == default.context_window_tokens
     assert cfg.agent_model_preset == default.agent_model_preset
     assert cfg.title_model_preset == default.title_model_preset
-    _ok("仅指定 thinking_budget；其余沿用默认")
+    _ok("仅指定 default_thinking_level；其余沿用默认")
     return True
 
 
@@ -145,7 +141,7 @@ def test_from_config_manager_empty_section_returns_defaults() -> bool:
     cfg = ChatServiceConfig.from_config_manager(mgr)
     default = ChatServiceConfig()
     assert cfg.retrieve_top_k == default.retrieve_top_k
-    assert cfg.thinking_budget == default.thinking_budget
+    assert cfg.default_thinking_level == default.default_thinking_level
     assert cfg.agent_model_preset == default.agent_model_preset
     assert cfg.title_model_preset == default.title_model_preset
     _ok("空节 → 全部默认值")
@@ -201,20 +197,20 @@ def test_get_llm_client_direct_preset() -> bool:
     llm_pkg.create_llm_client_from_preset = _patched  # type: ignore
 
     try:
-        client = svc._get_llm_client("fast")
+        client = svc._get_llm_client(model_preset="fast")
         assert client is fake, "应当直接返回 preset client"
         assert captured["calls"] == 1
         assert captured["last_preset"] == "fast"
         _ok("preset=fast → create_llm_client_from_preset 被调一次")
 
         # 再请求同 preset，走缓存
-        client2 = svc._get_llm_client("fast")
+        client2 = svc._get_llm_client(model_preset="fast")
         assert client2 is client
         assert captured["calls"] == 1
         _ok("缓存命中：create_llm_client_from_preset 仍只被调一次")
 
         # 请求不同 preset，再次构造
-        svc._get_llm_client("reasoning")
+        svc._get_llm_client(model_preset="reasoning")
         assert captured["calls"] == 2
         assert captured["last_preset"] == "reasoning"
         _ok("不同 preset → 重新构造（按 preset 名缓存）")
@@ -244,7 +240,7 @@ def test_get_llm_client_does_not_touch_components() -> bool:
     try:
         svc = ChatService(config=ChatServiceConfig())
         svc._client_cache.clear()
-        client = svc._get_llm_client("fast")
+        client = svc._get_llm_client(model_preset="fast")
         assert client is fake
         _ok("即使 ComponentConfigManager 抛异常，_get_llm_client 仍然成功")
     finally:

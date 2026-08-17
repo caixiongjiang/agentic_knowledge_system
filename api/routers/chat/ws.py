@@ -163,7 +163,7 @@ async def _run_chat_turn(
         user_id=session.user_id,
         query=payload.query,
         mode=payload.mode,
-        enable_thinking=payload.enable_thinking,
+        thinking_level=payload.thinking_level,
         enable_multimodal=payload.enable_multimodal,
         model_preset=payload.model_preset,
         model=payload.model,

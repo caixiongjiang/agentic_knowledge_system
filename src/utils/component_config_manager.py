@@ -186,7 +186,7 @@ class ComponentConfigManager:
         "max_tokens",
         "timeout",
         "max_retries",
-        "thinking_budget",
+        "thinking_level",
         "extra_params",
     })
 
@@ -206,7 +206,7 @@ class ComponentConfigManager:
               "max_tokens": 2048,
               "timeout": 60,
               "max_retries": 2,
-              "thinking_budget": 2048,
+              "thinking_level": "medium",          # pi 标准 7 档之一
               "extra_params": { ... }              # 透传 litellm.acompletion
             }
 
@@ -247,6 +247,21 @@ class ComponentConfigManager:
                 logger.warning(
                     f"组件 '{component_name}' 的 llm 配置包含未识别字段 {sorted(unknown)}，已忽略"
                 )
+            # pi 档位 → 厂商原生 reasoning_effort（模型不支持思考时返回 None）
+            thinking_level = llm_params.pop("thinking_level", None)
+            if thinking_level:
+                try:
+                    from src.client.llm.registry import get_litellm_registry
+                    llm_params["default_reasoning_effort"] = (
+                        get_litellm_registry().resolve_reasoning_effort(
+                            llm_params["model"], str(thinking_level),
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        f"组件 '{component_name}' 解析 thinking_level "
+                        f"'{thinking_level}' 失败，忽略: {e}"
+                    )
             llm_params.update(kwargs)
             return create_llm_client(**llm_params)
 

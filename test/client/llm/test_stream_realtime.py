@@ -171,7 +171,7 @@ async def test_thinking_streaming() -> bool:
         _warn(f"reasoning preset 不可用，跳过: {e}")
         return True
     print(f"  preset=reasoning  model={client.model}  "
-          f"thinking_budget={client.config.thinking_budget}")
+          f"default_reasoning_effort={client.config.default_reasoning_effort}")
 
     acc = StreamAccumulator()
     thinking_chars = 0

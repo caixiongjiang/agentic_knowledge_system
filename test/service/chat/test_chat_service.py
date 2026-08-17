@@ -109,6 +109,7 @@ class _FakeSession:
     model: Optional[str] = None
     agent_mode: bool = False
     enable_thinking: bool = False
+    thinking_level: Optional[str] = None
     max_tool_rounds: int = 3
     system_prompt: Optional[str] = None
     message_count: int = 0
@@ -206,13 +207,13 @@ class _FakeLLMClient:
         self.calls: List[Dict[str, Any]] = []
 
     def astream(self, messages, *, tools=None, tool_choice=None,
-                temperature=None, max_tokens=None, thinking_budget=None,
+                temperature=None, max_tokens=None, reasoning_effort=None,
                 **kwargs):
         self.calls.append({
             "messages": list(messages),
             "tools": tools,
             "tool_choice": tool_choice,
-            "thinking_budget": thinking_budget,
+            "reasoning_effort": reasoning_effort,
         })
         if not self._scripts:
             raise AssertionError(

@@ -19,6 +19,7 @@
 from src.client.llm.client import (
     LLMClient,
     LLMClientConfig,
+    _REASONING_UNSET,
     create_llm_client,
     create_llm_client_from_model,
     create_llm_client_from_preset,
@@ -27,6 +28,18 @@ from src.client.llm.registry import (
     LLMModelInfo,
     LiteLLMRegistry,
     get_litellm_registry,
+)
+from src.client.llm.thinking_adapter import (
+    BaseThinkingAdapter,
+    DefaultThinkingAdapter,
+    DeepSeekThinkingAdapter,
+    GLMThinkingAdapter,
+    QwenThinkingAdapter,
+    AnthropicThinkingAdapter,
+    GeminiThinkingAdapter,
+    OpenAIThinkingAdapter,
+    get_thinking_adapter,
+    merge_thinking_params,
 )
 from src.client.llm.types import (
     LLMResponse,
@@ -43,9 +56,20 @@ from src.client.llm.types import (
 __all__ = [
     "LLMClient",
     "LLMClientConfig",
+    "_REASONING_UNSET",
     "create_llm_client",
     "create_llm_client_from_preset",
     "create_llm_client_from_model",
+    "BaseThinkingAdapter",
+    "DefaultThinkingAdapter",
+    "DeepSeekThinkingAdapter",
+    "GLMThinkingAdapter",
+    "QwenThinkingAdapter",
+    "AnthropicThinkingAdapter",
+    "GeminiThinkingAdapter",
+    "OpenAIThinkingAdapter",
+    "get_thinking_adapter",
+    "merge_thinking_params",
     "LLMResponse",
     "TokenUsage",
     "ThinkingContent",

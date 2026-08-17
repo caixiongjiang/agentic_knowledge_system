@@ -15,7 +15,7 @@
     3. 流式异步生成
     4. 多模态消息构造（仅构造 + 调用，不强求模型支持图片）
     5. OpenAI 原生 tool calling 走通：模型返回 tool_calls → 我们注入工具结果 → 模型给最终答复
-    6. thinking_budget > 0 时 ``LLMResponse.thinking`` 字段可被解析（如模型不支持，跳过断言）
+    6. reasoning_effort 下发时 ``LLMResponse.thinking`` 字段可被解析（如模型不支持，跳过断言）
 
     运行::
 
@@ -244,9 +244,9 @@ async def test_tool_calling() -> bool:
         return False
 
 
-# ---- 测试 5: thinking 字段 ----
-async def test_thinking_budget() -> bool:
-    _hr("Test 5 · thinking_budget（reasoning_content）")
+# ---- 测试 5: reasoning_effort 字段 ----
+async def test_reasoning_effort() -> bool:
+    _hr("Test 5 · reasoning_effort（reasoning_content）")
     from src.client.llm import create_llm_client
 
     # 用 reasoning preset 类似的模型；如失败则跳过断言
@@ -255,7 +255,7 @@ async def test_thinking_budget() -> bool:
             model="deepseek/deepseek-reasoner",
             temperature=0.0,
             max_tokens=128,
-            thinking_budget=2048,
+            default_reasoning_effort="high",
         )
         resp = await client.agenerate(
             messages=[{"role": "user", "content": "1+1=? 请简要解释。"}],
@@ -283,7 +283,7 @@ async def main() -> int:
     results.append(("stream",     await test_streaming()))
     results.append(("multimodal", await test_multimodal_messages()))
     results.append(("tool",       await test_tool_calling()))
-    results.append(("thinking",   await test_thinking_budget()))
+    results.append(("thinking",   await test_reasoning_effort()))
 
     print("\n" + "=" * 60)
     passed = sum(1 for _, ok in results if ok)

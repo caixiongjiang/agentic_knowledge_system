@@ -3,9 +3,14 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # 装系统依赖(pymilvus/pymysql/pypdf 等可能需要)
+# libreoffice-writer/-impress/-calc: Word/PPT/Excel 转 PDF（走 MinerU 链路）
+#   用子包而非完整 libreoffice 元包，镜像更小（省约 1GB+）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libffi-dev \
+    libreoffice-writer \
+    libreoffice-impress \
+    libreoffice-calc \
     && rm -rf /var/lib/apt/lists/*
 
 # 装 uv

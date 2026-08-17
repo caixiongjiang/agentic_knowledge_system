@@ -12,7 +12,7 @@
 
     - **ChatRequest**：单轮对话请求；既包含会话身份信息（``session_id`` /
       ``user_id`` / ``query``），也允许在请求级别覆盖会话默认参数
-      （``mode`` / ``enable_thinking`` / ``retrieve_top_k`` 等），
+      （``mode`` / ``thinking_level`` / ``retrieve_top_k`` 等），
       方便客户端做"试一下不开 agent"之类的临时切换。
     - **ChatEvent / ChatEventType**：服务端 → 客户端的语义事件序列。
       与 ``src/chat/stream_buffer.py::StreamEvent`` 的差异：
@@ -168,8 +168,12 @@ class ChatRequest(BaseModel):
             "会话交互模式（agent / plan 等）；None 表示沿用 session 默认。"
         ),
     )
-    enable_thinking: Optional[bool] = Field(
-        None, description="是否启用思考链；None 表示沿用 session 默认",
+    thinking_level: Optional[str] = Field(
+        None,
+        description=(
+            "思考强度档位（pi 标准 7 档：off/minimal/low/medium/high/xhigh/max）；"
+            "None 表示沿用 session 默认。后端会按模型 thinking_levels 钳位"
+        ),
     )
     enable_multimodal: Optional[bool] = Field(
         None, description="是否启用多模态读图；None 表示沿用 session 默认",
@@ -255,7 +259,9 @@ class ChatTurnContext(BaseModel):
     mode: str
     """会话交互模式（agent / plan 等）"""
 
-    enable_thinking: bool
+    thinking_level: str
+    """当前生效的思考强度档位（pi 标准 7 档之一；已按模型 thinking_levels 钳位）"""
+
     model_preset: str
     model: Optional[str] = None
     """显式选定的 LiteLLM 模型字符串；为 ``None`` 时由 ``model_preset`` 决定模型"""

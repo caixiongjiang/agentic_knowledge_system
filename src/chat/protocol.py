@@ -71,8 +71,12 @@ class ChatRequestPayload(BaseModel):
     mode: Optional[str] = Field(
         None, description="会话交互模式（agent / plan 等）；None 表示沿用 session 默认",
     )
-    enable_thinking: Optional[bool] = Field(
-        None, description="是否启用思考链；None 表示沿用 session 默认",
+    thinking_level: Optional[str] = Field(
+        None,
+        description=(
+            "思考强度档位（pi 标准 7 档：off/minimal/low/medium/high/xhigh/max）；"
+            "None 表示沿用 session 默认"
+        ),
     )
     enable_multimodal: Optional[bool] = Field(
         None, description="是否启用多模态读图；None 表示沿用 session 默认",

@@ -163,9 +163,6 @@ class ChatServiceConfig:
     max_completion_tokens: Optional[int] = None
     """单轮 assistant 输出 token 上限；``None`` 表示由模型 / preset 决定"""
 
-    thinking_budget: int = 4096
-    """启用思考链时透传给 ``LLMClient.astream(thinking_budget=...)`` 的预算"""
-
     # ---------- LLM 选型 ----------
     agent_model_preset: str = "fast"
     """主对话 LLM 的 preset 名（``ChatRequest`` / ``ChatSession`` 都未指定时使用）"""
@@ -177,9 +174,10 @@ class ChatServiceConfig:
     """用户从前端 ``/api/chat/models`` 选定具体 ``model`` 时，作为采样参数模板的 preset 名
 
     业务语义：preset 仍然是后台抽取/起标题/摘要的真相源（model + 调好的
-    temperature / max_tokens / thinking_budget 等）；当用户在前端选了某个
-    具体模型字符串时，``model`` 由用户提供，但 temperature 之类继续从这个
-    template preset 里读，保持 Agent 单轮的体验稳定。
+    temperature / max_tokens 等）；当用户在前端选了某个具体模型字符串时，
+    ``model`` 由用户提供，但 temperature 之类继续从这个 template preset 里读，
+    保持 Agent 单轮的体验稳定。思考强度由前端 ``thinking_level`` 逐轮传入，
+    不在此 preset 模板里固化。
     """
 
     multimodal_model_preset: str = "multimodal"
@@ -187,7 +185,9 @@ class ChatServiceConfig:
 
     # ---------- session 默认（仅当 ChatRequest 与 ChatSession 都未指定时使用） ----------
     default_mode: str = "agent"
-    default_enable_thinking: bool = False
+    default_thinking_level: str = "off"
+    """新建会话默认思考强度档位（pi 标准 7 档之一）；仅 reasoning 类模型生效，
+    后端会按模型 thinking_levels 钳位。前端不传时用该默认。"""
     default_max_tool_rounds: int = 5
 
     # ---------- @ 内联引用注入（方案A + 方案C）----------
@@ -227,7 +227,6 @@ class ChatServiceConfig:
         inst = cls()
 
         # 顶层
-        inst.thinking_budget = int(chat_cfg.get("thinking_budget", inst.thinking_budget))
         max_ct = chat_cfg.get("max_completion_tokens")
         # 0 / None → 透传 None（让模型/preset 决定）
         inst.max_completion_tokens = (
@@ -252,8 +251,8 @@ class ChatServiceConfig:
         inst.default_mode = str(
             chat_cfg.get("default_mode", inst.default_mode),
         )
-        inst.default_enable_thinking = bool(
-            chat_cfg.get("default_enable_thinking", inst.default_enable_thinking),
+        inst.default_thinking_level = str(
+            chat_cfg.get("default_thinking_level", inst.default_thinking_level),
         )
         inst.default_max_tool_rounds = int(
             chat_cfg.get("default_max_tool_rounds", inst.default_max_tool_rounds),
@@ -327,7 +326,7 @@ class ChatServiceConfig:
             f"top_k={inst.retrieve_top_k}, "
             f"context_window_tokens={inst.context_window_tokens}, "
             f"summary_threshold_ratio={inst.summary_compress_threshold_ratio}, "
-            f"thinking_budget={inst.thinking_budget}"
+            f"default_thinking_level={inst.default_thinking_level}"
         )
         return inst
 
@@ -528,6 +527,32 @@ class ChatService:
             )
         )
 
+        # 思考强度档位优先级：request > session.thinking_level > 由 session.enable_thinking
+        # 降级（True→medium / False→off）> cfg.default_thinking_level。最后按
+        # effective_model 的 thinking_levels 钳位成可下发 / 可持久化的合法档位。
+        if request.thinking_level is not None:
+            _raw_thinking_level = request.thinking_level
+        elif getattr(session, "thinking_level", None):
+            _raw_thinking_level = session.thinking_level
+        else:
+            _raw_thinking_level = (
+                "medium" if bool(getattr(session, "enable_thinking", False))
+                else self._cfg.default_thinking_level
+            )
+        try:
+            from src.client.llm.registry import get_litellm_registry
+            _clamp_model = effective_model or ""
+            effective_thinking_level = (
+                get_litellm_registry().clamp_thinking_level(
+                    _clamp_model, _raw_thinking_level,
+                )
+                if _clamp_model
+                else _raw_thinking_level
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"钳位 thinking_level 失败，沿用原值: {e}")
+            effective_thinking_level = _raw_thinking_level
+
         return ChatTurnContext(
             session_id=session.session_id,
             user_id=session.user_id,
@@ -537,11 +562,7 @@ class ChatService:
                 if request.mode is not None
                 else getattr(session, "mode", None) or self._cfg.default_mode
             ),
-            enable_thinking=(
-                request.enable_thinking
-                if request.enable_thinking is not None
-                else session.enable_thinking
-            ),
+            thinking_level=effective_thinking_level,
             model_preset=(
                 request.model_preset
                 or session.model_preset
@@ -1081,14 +1102,15 @@ class ChatService:
                     session_id=ctx.session_id,
                     user_id=ctx.user_id,
                     mode=ctx.mode,
-                    enable_thinking=ctx.enable_thinking,
+                    thinking_level=ctx.thinking_level,
+                    enable_thinking=(ctx.thinking_level != "off"),
                     max_tool_rounds=ctx.max_tool_rounds,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"锁定会话模式失败（忽略）: {e}")
 
         # ---- 2b) 每轮：把"轻偏好"回写到 session ----
-        # 与首轮"锁模式"互补：``model`` / ``enable_thinking`` / ``model_preset``
+        # 与首轮"锁模式"互补：``model`` / ``thinking_level`` / ``model_preset``
         # 是用户每轮可调整的项；只要本轮 ctx 与 session 当前值不同就 update，
         # 让用户下次进同一会话时 chip 默认选项跟随其上次选择。
         try:
@@ -1100,13 +1122,14 @@ class ChatService:
                 and session.model_preset != request.model_preset
             ):
                 updates_payload["model_preset"] = request.model_preset
-            # 非首轮（首轮已被 update_session_mode 写过 enable_thinking）才写
+            # 非首轮（首轮已被 update_session_mode 写过 thinking_level）才写
             if (
                 not is_first_turn
-                and request.enable_thinking is not None
-                and bool(session.enable_thinking) != bool(request.enable_thinking)
+                and request.thinking_level is not None
+                and (getattr(session, "thinking_level", None) or "off") != ctx.thinking_level
             ):
-                updates_payload["enable_thinking"] = request.enable_thinking
+                updates_payload["thinking_level"] = ctx.thinking_level
+                updates_payload["enable_thinking"] = ctx.thinking_level != "off"
             if updates_payload:
                 self._session_service.update_session_settings(
                     session_id=ctx.session_id,
@@ -1292,11 +1315,19 @@ class ChatService:
         tool_msg_ids: List[str] = []
 
         tools_schema = kit.schemas() if kit else None
-        # 业务"开/关" → LLMClient 的三态 thinking_budget：
-        #   ctx.enable_thinking=True  → cfg.thinking_budget（>0 → reasoning_effort 档位）
-        #   ctx.enable_thinking=False → 0（显式 reasoning_effort="none"）
-        # Provider 差异由 LiteLLM 翻译，应用侧不再发 extra_body.thinking。
-        thinking_budget = self._cfg.thinking_budget if ctx.enable_thinking else 0
+        # 思考强度：把 ctx.thinking_level（pi 标准档位，已按模型钳位）翻译成
+        # 厂商原生 reasoning_effort 字符串（如 'high' / 厂商原生 'max'）。off 及
+        # 「模型不支持思考」均返回 None（不下发该参数，让模型按默认不思考；与 pi 一致，
+        # 避免部分厂商在 reasoning_effort='none' 时禁用工具调用）。Provider 差异由 LiteLLM
+        # 翻译，应用侧不再发 extra_body.thinking。
+        try:
+            from src.client.llm.registry import get_litellm_registry
+            reasoning_effort = get_litellm_registry().resolve_reasoning_effort(
+                client.model, ctx.thinking_level,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"解析 reasoning_effort 失败，不下发: {e}")
+            reasoning_effort = None
 
         llm_start = time.perf_counter()
         try:
@@ -1313,7 +1344,7 @@ class ChatService:
                 enrich_cache=enrich_cache,
                 alias_map=alias_map,
                 tools_schema=tools_schema,
-                thinking_budget=thinking_budget,
+                reasoning_effort=reasoning_effort,
                 search_progress_queue=search_progress_queue,
                 turn_citations=turn_citations,
             ):
@@ -1400,7 +1431,7 @@ class ChatService:
         enrich_cache: TurnEnrichCache,
         alias_map: ChunkAliasMap,
         tools_schema: Optional[List[Dict[str, Any]]],
-        thinking_budget: Optional[int],
+        reasoning_effort: Optional[str],
         search_progress_queue: Optional[
             asyncio.Queue[Optional[Tuple[str, str, Optional[str], str]]]
         ] = None,
@@ -1475,7 +1506,7 @@ class ChatService:
                     messages=messages,
                     tools=tools_schema,
                     tool_choice="auto" if tools_schema else None,
-                    thinking_budget=thinking_budget,
+                    reasoning_effort=reasoning_effort,
                     max_tokens=self._cfg.max_completion_tokens,
                 )
                 async for chunk in stream:
@@ -2283,7 +2314,7 @@ def _assistant_message(resp: LLMResponse) -> Dict[str, Any]:
 
     特殊处理
     --------
-    - DeepSeek 在 thinking mode（含 ``deepseek-reasoner`` 和开启 ``thinking_budget``
+    - DeepSeek 在 thinking mode（含 ``deepseek-reasoner`` 和开启 ``reasoning_effort``
       的 ``deepseek-chat``）下，要求上一轮 assistant 的 ``reasoning_content``
       必须**原样**回传到下一轮 messages，否则 round 1+ 会被 DeepSeek 以
       ``"The reasoning_content in the thinking mode must be passed back to

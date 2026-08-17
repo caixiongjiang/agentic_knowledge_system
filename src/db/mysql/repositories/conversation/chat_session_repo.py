@@ -196,6 +196,7 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         *,
         mode: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
+        thinking_level: Optional[str] = None,
         enable_multimodal: Optional[bool] = None,
         max_tool_rounds: Optional[int] = None,
         updater: str = "",
@@ -207,6 +208,8 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
                 updates[self.model.mode] = mode
             if enable_thinking is not None:
                 updates[self.model.enable_thinking] = enable_thinking
+            if thinking_level is not None:
+                updates[self.model.thinking_level] = thinking_level
             if enable_multimodal is not None:
                 updates[self.model.enable_multimodal] = enable_multimodal
             if max_tool_rounds is not None:
@@ -240,14 +243,15 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         model: Optional[str] = None,
         model_preset: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
+        thinking_level: Optional[str] = None,
         enable_multimodal: Optional[bool] = None,
         updater: str = "",
     ) -> bool:
-        """轻量偏好回写：``model`` / ``model_preset`` / ``enable_thinking`` / ``enable_multimodal``。
+        """轻量偏好回写：``model`` / ``model_preset`` / ``thinking_level`` / ``enable_multimodal``。
 
         与 ``update_mode`` 的分工：``update_mode`` 是"会话首条消息后锁定"的
         模式参数（``mode`` / ``max_tool_rounds``）；本方法是"用户每轮
-        可调整的偏好"——选了哪个模型、是否开思考链等，每次都允许改。
+        可调整的偏好"——选了哪个模型、思考强度等，每次都允许改。
 
         所有参数都是 ``Optional``：``None`` 表示"不动这一项"。返回 ``True``
         表示找到记录（即便 updates 为空也算成功）。
@@ -261,6 +265,8 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
                 updates[self.model.model_preset] = model_preset
             if enable_thinking is not None:
                 updates[self.model.enable_thinking] = enable_thinking
+            if thinking_level is not None:
+                updates[self.model.thinking_level] = thinking_level
             if enable_multimodal is not None:
                 updates[self.model.enable_multimodal] = enable_multimodal
             if not updates:

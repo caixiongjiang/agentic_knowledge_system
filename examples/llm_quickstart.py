@@ -11,7 +11,7 @@
     覆盖：
         1) 同步基础生成
         2) 异步并发
-        3) 推理模型 + thinking_budget（DeepSeek-Reasoner）
+        3) 推理模型 + reasoning_effort（DeepSeek-Reasoner）
         4) 多 provider 切换 —— 只改 model 字符串
         5) OpenAI 原生 tool calling 简化示例
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
@@ -71,17 +71,20 @@ async def example_async_concurrent() -> None:
 
 def example_thinking() -> None:
     print("=" * 60)
-    print("示例 3: 推理模型 + thinking_budget")
+    print("示例 3: 推理模型 + reasoning_effort")
     print("=" * 60)
 
     client = create_llm_client(
         model="deepseek/deepseek-reasoner",
         temperature=0.0,
         max_tokens=400,
-        thinking_budget=2048,
+        # 思考强度：直接传厂商原生 reasoning_effort 字符串（或经
+        # LiteLLMRegistry.resolve_reasoning_effort 翻译 pi 档位得到）。
+        default_reasoning_effort="high",
     )
     resp = client.generate(
         messages=[{"role": "user", "content": "分析快速排序的时间复杂度"}],
+        # 也可单次调用覆盖：reasoning_effort="medium"
     )
     print(f"回答: {resp.content[:120]}...")
     if resp.thinking:

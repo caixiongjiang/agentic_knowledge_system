@@ -74,7 +74,8 @@ class ChatSession(BaseModel):
         - ``model``: LiteLLM 模型字符串（如 ``openai/gpt-4o-mini``）；前端从
           ``/api/chat/models`` 选定后写回，``None`` 表示由 ``model_preset`` 决定
         - ``mode``: 会话交互模式（``agent`` 默认 / ``plan`` 等）
-        - ``enable_thinking``: 是否启用思考链（``deepseek-reasoner`` 等）
+        - ``enable_thinking``: [兼容] 是否启用思考链；新代码用 ``thinking_level``
+        - ``thinking_level``: 思考强度档位（off/minimal/low/medium/high/xhigh/max）
         - ``max_tool_rounds``: Agent 模式下含工具批次的调整轮数上限
         - ``system_prompt``: 用户可覆盖的自定义 system prompt
 
@@ -170,7 +171,16 @@ class ChatSession(BaseModel):
         Boolean,
         nullable=False,
         default=False,
-        comment="是否启用思考链（仅 reasoning 类模型生效）",
+        comment="[兼容] 是否启用思考链；新代码请用 thinking_level（NULL=旧会话，按本字段降级）",
+    )
+    thinking_level = Column(
+        String(16),
+        nullable=True,
+        default=None,
+        comment=(
+            "思考强度档位（pi 标准 7 档：off/minimal/low/medium/high/xhigh/max）。"
+            "NULL 表示旧会话，读取时按 enable_thinking 降级（True→medium / False→off）。"
+        ),
     )
 
     enable_multimodal = Column(

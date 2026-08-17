@@ -3,27 +3,39 @@
   "models": {
     "deepseek-v4-pro": {
       "max_context": 1000000,
-      "max_output": 65536
+      "max_output": 384000
     },
     "deepseek-v4-flash": {
       "max_context": 1000000,
-      "max_output": 65536
+      "max_output": 384000
     },
     "glm-5.1": {
       "max_context": 200000,
-      "max_output": 65536
+      "max_output": 128000
     },
-    "glm-4.7": {
-      "max_context": 200000,
-      "max_output": 65536
+    "glm-5.2": {
+      "max_context": 1000000,
+      "max_output": 128000
+    },
+    "glm-5.3": {
+      "max_context": 1000000,
+      "max_output": 128000
+    },
+    "qwen3.8-max": {
+      "max_context": 1000000,
+      "max_output": 131072
+    },
+    "qwen3.8-max-preview": {
+      "max_context": 1000000,
+      "max_output": 262144
     },
     "qwen3.7-plus": {
       "max_context": 1000000,
-      "max_output": 65536
+      "max_output": 131072
     },
-    "qwen3.6-flash": {
+    "qwen3.7-flash": {
       "max_context": 1000000,
-      "max_output": 65536
+      "max_output": 131072
     }
   }
 }

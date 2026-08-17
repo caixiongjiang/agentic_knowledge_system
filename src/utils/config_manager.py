@@ -322,19 +322,27 @@ class ConfigManager:
         """
         获取 LibreOffice 配置（用于 PPT/Word/图片 转 PDF）
 
-        soffice_path 优先级：环境变量 LIBREOFFICE_SOFFICE_PATH > config.toml
-        （macOS 开发与 Ubuntu 生产路径不同，便于按环境覆盖）
+        全部来自环境变量（与 MINERU_API_URL / MINIO_ENDPOINT 等主机/路径类配置一致）：
+        - LIBREOFFICE_SOFFICE_PATH：soffice 可执行文件路径
+            - macOS: /Applications/LibreOffice.app/Contents/MacOS/soffice
+            - Linux/Docker: soffice（PATH 中）或 /usr/bin/soffice
+            - 未设置时默认 "soffice"（Linux 生产装 libreoffice 后即可用）
+        - LIBREOFFICE_CONVERT_TIMEOUT：转换超时（秒），未设置默认 600
 
         Returns:
             {soffice_path, convert_timeout}
         """
-        config = self.get_section("libreoffice")
-        env_path = self._env_manager.get("LIBREOFFICE_SOFFICE_PATH")
-        if env_path:
-            config["soffice_path"] = env_path
-        config.setdefault("soffice_path", "soffice")
-        config.setdefault("convert_timeout", 120)
-        return config
+        env = self._env_manager
+        soffice_path = env.get("LIBREOFFICE_SOFFICE_PATH") or "soffice"
+        convert_timeout_raw = env.get("LIBREOFFICE_CONVERT_TIMEOUT")
+        try:
+            convert_timeout = int(convert_timeout_raw) if convert_timeout_raw else 600
+        except (TypeError, ValueError):
+            convert_timeout = 600
+        return {
+            "soffice_path": soffice_path,
+            "convert_timeout": convert_timeout,
+        }
     
     # ==================== 系统配置获取 ====================
     
@@ -373,7 +381,6 @@ class ConfigManager:
             "sparse_embedding": ["model_name"],  # api_base 由 env 提供
             "reranker": ["default_preset", "presets"],
             "mineru": [],  # api_url 由 env 提供
-            "libreoffice": [],  # soffice_path / convert_timeout 均有默认值
             "logging": ["level", "log_dir", "log_file"],
             "file_upload": ["supported_formats", "max_file_size", "temp_dir"],
         }

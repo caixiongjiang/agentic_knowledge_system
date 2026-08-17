@@ -3,27 +3,29 @@
     "组件 LLM 配置说明（LiteLLM 时代）：",
     "1) 推荐使用 'llm_preset' 复用 config/config.toml [llm.presets.*] 里的预设；",
     "2) 也可以在 'llm' 内联完整配置：仅需 'model'（LiteLLM 'provider/model' 字符串），",
-    "   可选 api_base / api_key / temperature / max_tokens / timeout / thinking_budget / extra_params；",
+    "   可选 api_base / api_key / temperature / max_tokens / timeout / thinking_level / extra_params；",
     "3) 'llm' 与 'llm_preset' 同时存在时，以 'llm' 字段为准（见 ComponentConfigManager.get_llm_client_for_component）。"
   ],
-
   "file_parser": {
     "enabled": true,
     "max_pages": 1000,
     "timeout": 300,
     "comment": "文件解析组件（Mineru）"
   },
-
   "text_splitter": {
     "enabled": true,
     "split_method": "structure_first",
     "chunk_size": 1000,
     "chunk_overlap": 200,
-    "separators": ["\n", "。", "，", " "],
+    "separators": [
+      "\n",
+      "。",
+      "，",
+      " "
+    ],
     "enable_text_clean": true,
     "comment": "文本切分组件（TextSplitter）"
   },
-
   "file_summary": {
     "enabled": true,
     "llm_preset": "fast",
@@ -33,7 +35,6 @@
     "extract_document_type": true,
     "comment": "文件摘要组件（FileSummary，基于 section_summary 汇总生成 file 级摘要）"
   },
-
   "section_summary": {
     "enabled": true,
     "llm_preset": "fast",
@@ -41,7 +42,6 @@
     "max_retries": 2,
     "comment": "Section 摘要组件（SectionSummary，基础抽取第一步，紧接 split.end）"
   },
-
   "kg_extractor": {
     "enabled": true,
     "llm_preset": "fast",
@@ -49,49 +49,49 @@
     "max_relations": 200,
     "comment": "知识图谱提取组件（KGExtractor）"
   },
-
   "text_analyzer": {
     "enabled": true,
     "llm_preset": "fast",
+    "llm": {
+      "model": "litellm_proxy/deepseek-v4-flash",
+      "temperature": 0.3,
+      "max_tokens": 8192,
+      "thinking_level": "low"
+    },
     "max_concurrency": 4,
     "max_retries": 2,
     "chunk_batch_size": 6,
     "comment": "文本分析组件（TextAnalyzer v1.1，section 级 atomic_qa 抽取；chunk_batch_size=单次 LLM 调用覆盖的 chunk 数 N，超长 section 自动分批全量抽取，无 per-section QA 上限）"
   },
-
   "route_planner": {
     "enabled": true,
     "llm_preset": "reasoning",
     "llm": {
       "model": "litellm_proxy/deepseek-v4-flash",
-      "temperature": 0.1,
-      "max_tokens": 8192,
-      "thinking_budget": 2048
+      "temperature": 0.3,
+      "max_tokens": 65536,
+      "thinking_level": "medium"
     },
     "comment": "LLM₁ 路由规划器（推理型；llm 字段优先于 llm_preset）。model 必须是 LiteLLM Proxy 上真实可路由的模型，推荐显式 ``litellm_proxy/<alias>`` 走透传分支"
   },
-
   "mysql_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
     "max_retries": 3,
     "comment": "MySQL批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
-
   "mongo_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
     "max_retries": 3,
     "comment": "MongoDB批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
-
   "neo4j_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
     "max_retries": 3,
     "comment": "Neo4j批量写入器（批处理参数见 config.toml [kafka.batch]）"
   },
-
   "embedding_milvus_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",
     "enabled": true,
