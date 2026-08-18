@@ -69,7 +69,7 @@ DEFAULT_CHAT_SYSTEM = """\
 
 - 简单或常识问题可直接回答，不必检索。
 - 两条检索链路（互补）：
-  - `search_knowledge_base`：语义相关，返回 Top-K，适合概念 / 解释 / 开放式探索，也是首轮探索入口。
+  - `search_knowledge_base`：语义相关，返回 Top-K；若命中高置信原子问答会先置顶 Q/A 与依据原文，其它路仍走精排。适合概念 / 解释 / 开放式探索，也是首轮探索入口。
   - `grep_chunks`：字面穷举，找某词在已索引文本中的**全部命中**。仅在需要**穷举所有出现、
     对比多处、确认精确数值/配置、或精确引用某术语**时优先用；问题里只是「提到某个词」不必 grep。
   - 典型链路：`search_knowledge_base` 定位 →（需穷举/精确时）`grep_chunks` → `read_chunks` 取全文 → 作答。
@@ -382,6 +382,7 @@ _TOOL_BRIEF: dict = {
     "search_knowledge_base": (
         "- **search_knowledge_base(query_text, top_k=10, chunk_type=None)**："
         "**语义相关**片段检索（路由规划 + 多路召回 + 精排），返回 Top-K。"
+        "高置信原子问答会置顶在结果最前（含依据原文），**不会**因此跳过其它路。"
         "适合概念 / 解释 / 开放式探索；**不保证**某术语的字面全部命中。"
         "需穷举某词全部出现或确认精确数值时改用 `grep_chunks`。"
         "可用不同角度 query 多次调用；`chunk_type` 可过滤 text/image/table/code_block。"

@@ -247,7 +247,7 @@ async def _parallel_recall(self, route_plan: List[RouteConfig], query: str, filt
 |--------|---------|---------|
 | Chunk (chunk_dense / enhanced / bm25 / exact_match) | 直接使用 | 原始分数 |
 | Section (section_dense) | 查询 `ChunkSectionDocumentRepo` 获取该 Section 下所有 Chunk，用 query 向量 in-memory 二次精排取 top-N | 继承 Section 分数 × 衰减系数 (0.9) |
-| QA (qa_dense) | 通过 QA 元数据中的 `chunk_id` 溯源 | 继承 QA 分数 |
+| QA (qa_dense) | 通过 QA 元数据中的 `source_chunk_ids` 溯源 | 继承 QA 分数；top1≥θ_pin 时 QA 置顶、依据 chunk 不进精排 |
 | Document/Summary (summary_dense) | Document → Section → Chunk 逐级下钻，每级取 top-N | 继承 Summary 分数 × 衰减系数 (0.7) |
 | Graph (graph_explore) | 通过 Link 的 `chunk_id` 溯源到原始 Chunk | 继承图谱分数 |
 
@@ -275,6 +275,17 @@ RRF 的优势在于不依赖原始分数的绝对值，只关注相对排名，�
 - 输出：相关性分数
 - 候选数量：取融合后的 top-N（默认 N=100，由 LLM₁ 的 `rerank_top_n` 控制）
 - 最终保留：top-K（用户指定的最终返回数量）
+
+### 4.5 QA 置顶（两档，不短路）
+
+`qa_dense` 与其它路并行召回。Phase 2 之后看该路最高分：
+
+| 档 | 条件 | 工具返回 | 管道 |
+|----|------|----------|------|
+| A | top1 < θ_pin（默认 0.9）或无 answer | 仅精排 Top-K | 对齐 → 融合 → 精排（QA 只注入 source chunk） |
+| B | top1 ≥ θ_pin 且 answer 非空 | 置顶 QA + 该 QA 的依据 chunk + 去重后 Top-K | 对齐 / 融合 / 精排照跑；依据 `chunk_id` 从精排候选剔除 |
+
+不再存在「直答短路」（旧档 C）：高分也不会丢掉其它路结果。`search_knowledge_base` 把置顶块写在返回文本最前；`RecallStats.qa_pinned=True`，`short_circuited` 恒为 False。
 
 ---
 
@@ -468,7 +479,8 @@ LLM₂ 可调用的工具直接对应已实现的导航类原子能力和新增�
 - Capability: `QAVectorSearch`
 - Collection: `atomic_qa_store`
 - 适用: 问答型查询，直接匹配预生成的 QA 对
-- 对齐: 通过 QA 元数据中的 chunk_id 溯源
+- 对齐: 通过 QA 元数据中的 `source_chunk_ids` 溯源
+- 高置信: top1 ≥ θ_pin 时置顶该 QA 与依据 chunk（不短路、不进精排）
 
 **Route: summary_dense — 文档摘要级检索**
 - Capability: `SummaryVectorSearch`

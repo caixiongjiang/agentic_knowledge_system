@@ -28,7 +28,7 @@
 
 - **多格式解析**：PDF / PPT / Word 经 LibreOffice 转 PDF 后走 MinerU 2.0，保留真实 bbox；JSON / CSV 内联解析；Excel / TXT / Markdown / 图片为 stub。
 - **多粒度索引**：chunk 向量、section 向量、section 摘要、file 摘要、atomic QA、知识图谱（SPO / Tag）分别落 Milvus 不同集合，自底向上两级摘要。
-- **LLM 路由检索**：LLM₁ 规划路由 → 并行多路召回（语义 6 路 + 词法 3 路 + 导航 4 路）→ 跨粒度对齐 → 融合 → Rerank；高置信 atomic QA 直答短路。
+- **LLM 路由检索**：LLM₁ 规划路由 → 并行多路召回（语义 6 路 + 词法 3 路 + 导航 4 路）→ 跨粒度对齐 → 融合 → Rerank；高置信 atomic QA 置顶（不短路），依据 chunk 不进精排。
 - **Agentic 对话**：WebSocket 流式 + 会话管理 + 模型选择器；LLM 可调用 `search_knowledge_base` / `drill_down` / `roll_up` / `skeleton` / `context_window` / `grep_chunks` / `read_image_chunks` / `skills` 等工具自主查证。
 - **bbox 溯源**：Word/PPT 转换 PDF 持久化到 MinIO，`/raw` `/preview` 默认下发转换 PDF，前端按 MinerU 0~1000 归一化坐标叠加高亮框。
 - **Skill 技能系统**：可声明式注册的复用提示/工具集，对话中通过 `@skill` 调用。

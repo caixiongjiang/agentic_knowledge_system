@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900"
+     font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif">
+  <title>QA &#x53ec;&#x56de;&#x4e24;&#x6863;&#x6d41;&#x7a0b;</title>
+  <desc>&#x5171;&#x7528;&#x5e76;&#x884c;&#x53ec;&#x56de;&#x540e;&#xff0c;&#x6309; qa_dense top1 &#x5206;&#x6570;&#x5206;&#x4e3a;&#x4f4e;&#x5206;&#x53ea;&#x6ce8; chunk&#x3001;&#x9ad8;&#x5206;&#x7f6e;&#x9876;&#x4e24;&#x6761;&#x8def;&#x5f84;&#x3002;&#x6ca1;&#x6709;&#x76f4;&#x7b54;&#x77ed;&#x8def;&#x3002;</desc>
+
+  <defs>
+    <linearGradient id="gradPrimary" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14b8a6"/>
+      <stop offset="100%" stop-color="#0d9488"/>
+    </linearGradient>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0d9488"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="900" fill="#ffffff"/>
+
+  <text x="48" y="48" font-size="24" font-weight="600" fill="#111827">QA &#x53ec;&#x56de;&#xff1a;&#x4e24;&#x6863;&#x600e;&#x4e48;&#x8d70;</text>
+  <text x="48" y="76" font-size="13" fill="#6b7280">&#x4e0a;&#x534a;&#x6bb5;&#x6240;&#x6709;&#x8bf7;&#x6c42;&#x5171;&#x7528;&#xff1b;&#x4e0b;&#x534a;&#x6bb5;&#x53ea;&#x770b; qa_dense &#x7684; top1 &#x5206;&#x6570;&#x3002;&#x6ca1;&#x6709;&#x76f4;&#x7b54;&#x77ed;&#x8def;&#x3002;&#x9608;&#x503c;&#x9700;&#x5b9e;&#x6d4b;&#x6821;&#x51c6;&#x3002;</text>
+
+  <text x="48" y="116" font-size="10" fill="#9ca3af">&#x5171;&#x7528;</text>
+  <g>
+    <rect x="48" y="128" width="176" height="64" rx="8" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+    <text x="136" y="154" text-anchor="middle" font-size="16" font-weight="500" fill="#0d9488">&#x7528;&#x6237;&#x63d0;&#x95ee;</text>
+    <text x="136" y="176" text-anchor="middle" font-size="10" fill="#6b7280">query</text>
+
+    <line x1="224" y1="160" x2="256" y2="160" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+    <rect x="264" y="128" width="176" height="64" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="352" y="154" text-anchor="middle" font-size="16" font-weight="500" fill="#111827">&#x8def;&#x7531;&#x89c4;&#x5212;</text>
+    <text x="352" y="176" text-anchor="middle" font-size="10" fill="#6b7280">&#x53ef;&#x80fd;&#x5e26;&#x4e0a; qa_dense</text>
+
+    <line x1="440" y1="160" x2="472" y2="160" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+    <rect x="480" y="128" width="672" height="64" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="816" y="154" text-anchor="middle" font-size="16" font-weight="500" fill="#111827">&#x5e76;&#x884c;&#x53ec;&#x56de;&#xff08;&#x5176;&#x5b83;&#x8def; + qa_dense &#x4e00;&#x8d77;&#x8dd1;&#x5b8c;&#xff09;</text>
+    <text x="816" y="176" text-anchor="middle" font-size="10" fill="#6b7280">chunk_dense / bm25 / section / qa_dense</text>
+  </g>
+
+  <line x1="600" y1="192" x2="600" y2="216" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+  <g>
+    <polygon points="600,220 720,268 600,316 480,268" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+    <text x="600" y="262" text-anchor="middle" font-size="13" font-weight="500" fill="#111827">qa_dense top1</text>
+    <text x="600" y="280" text-anchor="middle" font-size="13" fill="#0d9488">&#x5206;&#x6570;&#x600e;&#x4e48;&#x5206;</text>
+  </g>
+
+  <path d="M 510 284 L 296 284 L 296 348" fill="none" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <path d="M 690 284 L 904 284 L 904 348" fill="none" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+  <!-- A -->
+  <g>
+    <rect x="48" y="356" width="496" height="480" rx="16" fill="#f9fafb" stroke="#e5e7eb"/>
+    <rect x="48" y="356" width="496" height="48" rx="16" fill="#f3f4f6"/>
+    <rect x="48" y="388" width="496" height="16" fill="#f3f4f6"/>
+    <text x="296" y="386" text-anchor="middle" font-size="16" font-weight="500" fill="#111827">&#x6863; A &#x00b7; &#x5206;&#x4e0d;&#x591f;</text>
+    <text x="296" y="424" text-anchor="middle" font-size="13" fill="#6b7280">score &lt; 0.9 &#x6216;&#x6ca1;&#x6709; answer</text>
+    <text x="296" y="444" text-anchor="middle" font-size="10" fill="#9ca3af">&#x5f53;&#x4e00;&#x8def;&#x666e;&#x901a;&#x53ec;&#x56de;</text>
+
+    <rect x="80" y="464" width="432" height="56" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="296" y="486" text-anchor="middle" font-size="13" fill="#111827">&#x4e0d;&#x628a; answer &#x7ed9;&#x6a21;&#x578b;</text>
+    <text x="296" y="506" text-anchor="middle" font-size="10" fill="#6b7280">QA &#x62c6;&#x6210;&#x4f9d;&#x636e; chunk&#xff0c;&#x6ce8;&#x5165;&#x5019;&#x9009;&#x6c60;</text>
+
+    <line x1="296" y1="520" x2="296" y2="536" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+    <rect x="80" y="536" width="432" height="72" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="296" y="562" text-anchor="middle" font-size="13" fill="#111827">&#x5bf9;&#x9f50; &#x2192; &#x878d;&#x5408; &#x2192; &#x7cbe;&#x6392;</text>
+    <text x="296" y="584" text-anchor="middle" font-size="10" fill="#6b7280">&#x7cbe;&#x6392;&#x6253;&#x5206;&#x5bf9;&#x8c61;&#x662f; chunk &#x6b63;&#x6587;</text>
+    <text x="296" y="598" text-anchor="middle" font-size="10" fill="#6b7280">&#x4e0d;&#x662f; QA &#x7684; question / answer</text>
+
+    <line x1="296" y1="608" x2="296" y2="624" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+    <rect x="80" y="624" width="432" height="72" rx="8" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="296" y="650" text-anchor="middle" font-size="13" font-weight="500" fill="#111827">&#x5de5;&#x5177;&#x53ea;&#x56de; Top-K chunk</text>
+    <text x="296" y="672" text-anchor="middle" font-size="10" fill="#6b7280">answer &#x7559;&#x5728; metadata</text>
+    <text x="296" y="686" text-anchor="middle" font-size="10" fill="#6b7280">&#x6a21;&#x578b;&#x770b;&#x4e0d;&#x5230;&#x8fd9;&#x6761; QA &#x539f;&#x6587;</text>
+
+    <text x="296" y="744" text-anchor="middle" font-size="13" fill="#6b7280">&#x9002;&#x5408;</text>
+    <text x="296" y="768" text-anchor="middle" font-size="13" fill="#111827">&#x95ee;&#x53e5;&#x4e0d;&#x50cf;&#x5e93;&#x91cc;&#x4efb;&#x4f55;&#x4e00;&#x6761; QA</text>
+    <text x="296" y="800" text-anchor="middle" font-size="10" fill="#9ca3af">&#x9ad8;&#x4ef7;&#x503c; QA &#x6709;&#x53ef;&#x80fd;&#x88ab; chunk rerank &#x6324;&#x51fa; Top-K</text>
+  </g>
+
+  <!-- B -->
+  <g>
+    <rect x="656" y="356" width="496" height="480" rx="16" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.5"/>
+    <rect x="656" y="356" width="496" height="48" rx="16" fill="#0d9488"/>
+    <rect x="656" y="388" width="496" height="16" fill="#0d9488"/>
+    <text x="904" y="386" text-anchor="middle" font-size="16" font-weight="500" fill="#ffffff">&#x6863; B &#x00b7; &#x7f6e;&#x9876;</text>
+    <text x="904" y="424" text-anchor="middle" font-size="13" fill="#0d9488">score ≥ 0.9 &#x4e14; answer &#x975e;&#x7a7a;</text>
+    <text x="904" y="444" text-anchor="middle" font-size="10" fill="#6b7280">&#x7b54;&#x6848;&#x9489;&#x4f4f;&#xff0c;&#x94fe;&#x8def;&#x4e0d;&#x65ad;</text>
+
+    <rect x="688" y="464" width="432" height="56" rx="8" fill="#ffffff" stroke="#0d9488"/>
+    <text x="904" y="486" text-anchor="middle" font-size="13" fill="#0d9488">&#x901a;&#x9053; 1&#xff1a;&#x7f6e;&#x9876; QA + &#x4f9d;&#x636e;&#x539f;&#x6587;</text>
+    <text x="904" y="506" text-anchor="middle" font-size="10" fill="#6b7280">&#x53ea;&#x53d6;&#x8be5; QA &#x81ea;&#x5df1;&#x7684; source_chunk_ids</text>
+
+    <line x1="904" y1="520" x2="904" y2="536" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+    <rect x="688" y="536" width="432" height="72" rx="8" fill="#ffffff" stroke="#0d9488"/>
+    <text x="904" y="562" text-anchor="middle" font-size="13" fill="#111827">&#x901a;&#x9053; 2&#xff1a;&#x5bf9;&#x9f50; &#x2192; &#x878d;&#x5408; &#x2192; &#x7cbe;&#x6392;</text>
+    <text x="904" y="584" text-anchor="middle" font-size="10" fill="#6b7280">&#x5176;&#x5b83;&#x8def;&#x7ed3;&#x679c;&#x5168;&#x90e8;&#x4fdd;&#x7559;</text>
+    <text x="904" y="598" text-anchor="middle" font-size="10" fill="#6b7280">&#x4f9d;&#x636e; chunk &#x4e0d;&#x8fdb; reranker&#xff0c;Top-K &#x53bb;&#x91cd;</text>
+
+    <line x1="904" y1="608" x2="904" y2="624" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrowTeal)"/>
+
+    <rect x="688" y="624" width="432" height="72" rx="8" fill="#ffffff" stroke="#0d9488"/>
+    <text x="904" y="650" text-anchor="middle" font-size="13" font-weight="500" fill="#0d9488">&#x5de5;&#x5177; = QA + &#x4f9d;&#x636e; + Top-K</text>
+    <text x="904" y="672" text-anchor="middle" font-size="10" fill="#6b7280">answer &#x4e0d;&#x8fdb; reranker&#xff0c;&#x4e0d;&#x4f1a;&#x88ab;&#x51b2;&#x6389;</text>
+    <text x="904" y="686" text-anchor="middle" font-size="10" fill="#6b7280">&#x6a21;&#x578b;&#x8fd8;&#x80fd;&#x7528;&#x539f;&#x6587;&#x6838;&#x5bf9;&#x3001;&#x8865;&#x5168;</text>
+
+    <text x="904" y="744" text-anchor="middle" font-size="13" fill="#0d9488">&#x89e3;&#x51b3;&#x4ec0;&#x4e48;</text>
+    <text x="904" y="768" text-anchor="middle" font-size="13" fill="#111827">&#x65e2;&#x4fdd;&#x4f4f; QA &#x9ad8;&#x5206;&#x547d;&#x4e2d;</text>
+    <text x="904" y="788" text-anchor="middle" font-size="13" fill="#111827">&#x53c8;&#x4e0d;&#x4e22;&#x6389;&#x5176;&#x5b83;&#x8bc1;&#x636e;</text>
+    <text x="904" y="816" text-anchor="middle" font-size="10" fill="#6b7280">&#x95ee;&#x53e5;&#x548c;&#x67d0;&#x6761; QA &#x5f88;&#x50cf;&#xff0c;&#x4f46;&#x4ecd;&#x8981;&#x770b;&#x539f;&#x6587;</text>
+  </g>
+
+  <text x="48" y="864" font-size="10" fill="#9ca3af">&#x8bfb;&#x56fe;&#x987a;&#x5e8f;&#xff1a;&#x5148;&#x770b;&#x6700;&#x4e0a;&#x5171;&#x7528;&#x4e09;&#x6b65; &#x2192; &#x4e2d;&#x95f4;&#x83f1;&#x5f62;&#x770b;&#x5206;&#x6570; &#x2192; &#x518d;&#x770b;&#x4e24;&#x5217;&#x5206;&#x522b;&#x7ed9;&#x6a21;&#x578b;&#x4ec0;&#x4e48;&#x3002;&#x5df2;&#x5220;&#x9664;&#x539f;&#x300c;&#x6863; C / &#x76f4;&#x7b54;&#x77ed;&#x8def;&#x300d;&#x3002;</text>
+  <text x="48" y="884" font-size="10" fill="#9ca3af">0.9 &#x4ec5;&#x4e3a;&#x5f53;&#x524d;&#x9ed8;&#x8ba4;&#x503c;&#x3002;wire &#x5b57;&#x6bb5; direct_answer &#x4ecd;&#x8868;&#x793a;&#x7f6e;&#x9876; QA&#xff1b;short_circuited &#x6052;&#x4e3a; False&#x3002;</text>
+</svg>

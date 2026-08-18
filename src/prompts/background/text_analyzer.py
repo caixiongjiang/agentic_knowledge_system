@@ -19,16 +19,14 @@
     - file_summary：全局主题锚点（来自 SummaryEndMessage 消息体），约束 QA 与文档主题对齐
     - max_qa：本批 QA 数量上限
 
-    输出：JSON 数组，每项 {question, answer, source_chunks, qa_type}
+    输出：JSON 数组，每项 {question, answer, source_chunks, qa_type}；无价值则 []。
 
-    设计原则（对齐「文档抽取提示词设计原则」）：
-    - 清晰：明确任务、输入结构、输出 schema，给示例。
-    - 自包含：file_summary 作为全局锚点直接喂入，不要求模型读外部上下文。
-    - 类型白名单：qa_type 仅允许 factual / procedural / conceptual / comparative。
-    - 数量控制：明确上限 max_qa，宁缺毋滥，禁止为凑数编造。
-    - JSON 输出：只输出 JSON 数组，无前后缀/解释/markdown 包裹。
-    - LLM 局限：忠实于 chunk 正文，不得臆造、不得补充正文之外的信息；
-      答案若需跨多个 chunk，source_chunks 列出全部相关代号。
+    设计原则：
+    - 先判断本节对文档主题有无召回价值，再抽取；目录/对照表等无实质知识则空数组。
+    - 忠实于正文，不臆造；通识背景须落到本文任务，否则不抽。
+    - qa_type 白名单：factual / procedural / conceptual / comparative。
+    - 上限 max_qa，宁缺毋滥，不必凑满。
+    - 只输出 JSON 数组。
 @Modify History:
 
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
@@ -38,37 +36,23 @@ from typing import List, Dict
 
 
 SYSTEM_PROMPT = (
-    "你是一位严谨的技术文档问答对抽取助手。"
-    "你的任务是从给定的「章节片段」中抽取原子问答（Atomic QA），"
-    "用于后续基于问题的精准召回。\n"
-    "要求：\n"
-    "1. 忠实于输入正文，不得臆造、不得补充正文之外的信息；"
-    "答案必须能由输入正文直接支撑。\n"
-    "2. 每个 QA 聚焦一个「原子事实/概念/步骤」，问题清晰可独立理解，"
-    "答案凝练完整（不只是一句话引用，但也不展开正文外的推理）。\n"
-    "3. 答案若依据多个 chunk，必须在 source_chunks 中列出全部相关代号。\n"
-    "4. qa_type 只能取以下四者之一：\n"
-    "   - factual：事实型（是什么/有哪些）\n"
-    "   - procedural：流程型（怎么做/步骤）\n"
-    "   - conceptual：概念型（为什么/含义/原理）\n"
-    "   - comparative：对比型（A 与 B 的区别/优劣）\n"
-    "5. 数量控制：最多 {max_qa} 条，宁缺毋滥；"
-    "若正文不足以支撑高质量 QA，可以少给甚至不给，禁止为凑数编造。\n"
-    "6. QA 主题应与给定的「文档全局摘要」对齐，不抽取与文档主题无关的边角细节。\n"
-    "7. QA 正文语言与输入正文主导语言一致。\n"
-    "8. 只输出一个 JSON 数组，不要输出任何前缀、标签、解释或 markdown 代码块包裹。"
+    "从章节片段抽取原子问答，供按问题召回。"
+    "先看本节对文档主题有无召回价值：没有就输出 []。"
+    "目录、术语对照、页码版式直接 []；"
+    "通识定义若不体现本文用法也不要抽。\n"
+    "答案须能由正文直接支撑，不编造。"
+    "一条一事，问题自含；选题和问法自行判断，不必凑满。\n"
+    "最多 {max_qa} 条。"
+    "qa_type 仅限 factual / procedural / conceptual / comparative。"
+    "语言跟正文主导语言走。"
+    "source_chunks 写所依据的 Cn。"
+    "只输出 JSON 数组。"
 )
 
 
-# 输出 schema 示例（注入 system prompt，约束 LLM 输出结构）
 _OUTPUT_EXAMPLE = (
-    "输出格式示例（仅示意结构，内容随输入而定）：\n"
-    "[\n"
-    "  {\"question\": \"...\", \"answer\": \"...\", "
-    "\"source_chunks\": [\"C1\"], \"qa_type\": \"factual\"},\n"
-    "  {\"question\": \"...\", \"answer\": \"...\", "
-    "\"source_chunks\": [\"C1\", \"C3\"], \"qa_type\": \"comparative\"}\n"
-    "]"
+    "格式：[{\"question\":\"...\",\"answer\":\"...\","
+    "\"source_chunks\":[\"C1\"],\"qa_type\":\"factual\"}] 或 []"
 )
 
 
@@ -100,7 +84,7 @@ def build_atomic_qa_messages(
         f"章节标题：{title_line}\n\n"
         f"文档全局摘要（主题锚点）：\n{file_summary_line}\n\n"
         f"章节片段（每个 chunk 前缀 [Cn] 代号）：\n{batch_chunks_text}\n\n"
-        f"请从上述章节片段中抽取最多 {max_qa} 条原子问答，按指定 JSON 数组格式输出。"
+        f"按文档主题判断本节是否值得抽取。有则最多 {max_qa} 条，无则输出 []。"
     )
     return [
         {"role": "system", "content": system_prompt},

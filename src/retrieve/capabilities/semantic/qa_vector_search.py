@@ -20,10 +20,10 @@
     - Milvus 只存 question 向量 + 标量，不存 answer/source_chunk_ids（数组型
       不适合 Milvus），故正文必须下钻 Mongo。
     - Mongo 下钻失败不阻断召回：保留 Milvus 命中的 qa_id/score，仅缺正文
-      （下游短路判断会因 answer 缺失而降级走正常融合路径）。
+      （下游置顶判断会因 answer 缺失而降级：只把 source_chunk 注入候选池）。
 @Modify History:
     2026/07/14 - v1.1：接入 Mongo 下钻（section_data.atomic_qa），回填
-        question/answer/source_chunk_ids，支撑直答短路 + chunk 注入融合
+        question/answer/source_chunk_ids，支撑高置信置顶 + chunk 注入融合
 
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
@@ -103,7 +103,7 @@ class QAVectorSearch(BaseVectorSearch):
             it.answer = entry.get("answer") or it.answer
             source_chunk_ids = entry.get("source_chunk_ids") or []
             section_id = entry.get("section_id") or it.metadata.get("section_id")
-            # 溯源字段放 metadata，供 GranularityAligner 展开 + 直答短路判断
+            # 溯源字段放 metadata，供 GranularityAligner 展开 + 高置信置顶判断
             it.metadata["source_chunk_ids"] = list(source_chunk_ids)
             if section_id:
                 it.metadata["section_id"] = section_id
@@ -135,7 +135,7 @@ class QAVectorSearch(BaseVectorSearch):
                 "通过匹配已抽取的问题来召回最相关的问答对，"
                 "并下钻 Mongo 回填 question/answer/source_chunk_ids。"
                 "适用于用户提问与原文表述差异较大的场景；"
-                "高置信命中可触发直答短路。"
+                "高置信命中会置顶 QA 与依据 chunk，其它路仍走精排。"
             ),
             input_schema={
                 "query_text": "str - 自然语言查询（与 query_vector 二选一）",

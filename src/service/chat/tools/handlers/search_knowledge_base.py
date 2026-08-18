@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from loguru import logger
 
 from src.client.llm.types import ToolSchema
+from src.prompts.chat.retrieval_hints import SEMANTIC_RECALL_LITERAL_HINT
+from src.retrieve.pipeline.types import DirectAnswer
+from src.retrieve.types.result import ChunkItem
+from src.service.chat.chunk_alias_map import ChunkAliasMap
 from src.service.chat.tools.base import ToolDefinition
 from src.service.chat.tools.helpers import format_chunks_for_llm
 from src.service.chat.tools.runtime import get_current_tool_call_id
@@ -25,6 +29,8 @@ SCHEMA: ToolSchema = {
         "description": (
             "在知识库中做**语义相关**片段检索（路由规划 + 多路召回 + 融合 + 精排），"
             "返回与 query 最相关的 Top-K 段落，适合概念探索与开放式问题。"
+            "若 qa_dense 高置信命中，会先置顶一条原子问答及其依据原文，再跟精排 Top-K；"
+            "**不会**因此跳过其它路的对齐/融合/精排。"
             "**不保证**某术语在全文中的字面全部命中；若需穷举某词的全部出现或确认精确数值/配置，"
             "再用 `grep_chunks` 做字面全扫，并用 `read_chunks` 取全文。"
             "返回的每条 chunk 正文为预览（默认 200 字）；preview 不完整时用 `read_chunks`，"
@@ -55,6 +61,81 @@ SCHEMA: ToolSchema = {
         },
     },
 }
+
+
+def _chunks_brief(chunks: List[ChunkItem]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "chunk_id": chunk.chunk_id,
+            "document_id": chunk.document_id,
+            "score": chunk.score,
+            "preview": (chunk.text or "")[:200],
+        }
+        for chunk in chunks
+    ]
+
+
+def format_pinned_search_for_llm(
+    pinned: Optional[DirectAnswer],
+    evidence: List[ChunkItem],
+    items: List[ChunkItem],
+    *,
+    alias_map: Optional[ChunkAliasMap] = None,
+) -> str:
+    """置顶 QA + 依据原文 + 精排 Top-K，给 LLM 看。"""
+    if pinned is None:
+        return format_chunks_for_llm(
+            items,
+            alias_map=alias_map,
+            append_semantic_literal_hint=True,
+        )
+
+    source_labels: List[str] = []
+    for cid in pinned.source_chunk_ids:
+        if not cid:
+            continue
+        source_labels.append(
+            alias_map.alias_for(cid) if alias_map else cid,
+        )
+    source_text = ", ".join(source_labels) or "（无）"
+
+    parts: List[str] = [
+        "【高置信原子问答】"
+        f"（qa_dense 相似度 {pinned.score:.4f}，已置顶；"
+        "其它路仍走对齐/融合/精排，本条未短路）\n"
+        f"Q: {pinned.question}\n"
+        f"A: {pinned.answer}\n"
+        f"依据 chunk: {source_text}（正文见下方「依据原文」，不经精排）",
+    ]
+    if evidence:
+        parts.append(
+            "【依据原文】\n"
+            + format_chunks_for_llm(
+                evidence,
+                alias_map=alias_map,
+                append_semantic_literal_hint=False,
+            ),
+        )
+    elif pinned.source_chunk_ids:
+        parts.append(
+            "（依据 chunk 正文未能从库中补全，可用 read_chunks 按上方 id 取全文）",
+        )
+    else:
+        parts.append("（该 QA 未标注依据 chunk）")
+
+    if items:
+        parts.append(
+            "【其它相关片段】\n"
+            + format_chunks_for_llm(
+                items,
+                alias_map=alias_map,
+                append_semantic_literal_hint=True,
+            ),
+        )
+    else:
+        parts.append(SEMANTIC_RECALL_LITERAL_HINT)
+
+    return "\n\n".join(parts)
 
 
 async def handle(
@@ -91,66 +172,27 @@ async def handle(
             on_progress=on_progress,
         )
 
-        # v1.1 直答短路：qa_dense 高置信命中时直接返回 answer + 来源标注
-        direct = response.direct_answer
-        if direct is not None:
-            tc_id = get_current_tool_call_id()
-            if tc_id:
-                params_da: Dict[str, Any] = {
-                    "query_text": query_text,
-                    "top_k": top_k,
-                    "direct_answer": direct.model_dump(exclude_none=True),
-                }
-                if chunk_type:
-                    params_da["chunk_type"] = chunk_type
-            if response.route_plan:
-                params_da["route_plan"] = response.route_plan.model_dump(
-                    exclude_none=True,
-                )
-            recall_stats_da = (
-                response.recall_stats.model_dump(exclude_none=True)
-                if response.recall_stats is not None
-                else None
-            )
-            kit.search_results[tc_id] = ([], params_da, recall_stats_da)
-            kit.note_result_count(0)
-            if response.planner_model:
-                kit.note_execution_model(response.planner_model)
-            source_chunks = ", ".join(direct.source_chunk_ids) or "（无）"
-            logger.debug(
-                f"search_knowledge_base({query_text!r}) → 直答短路 "
-                f"qa_id={direct.qa_id} score={direct.score:.4f}"
-            )
-            return (
-                f"{direct.answer}\n\n"
-                f"（来源：atomic_qa {direct.qa_id}；依据 chunk: {source_chunks}）"
-            )
-
+        pinned = response.direct_answer
+        evidence = list(response.pinned_evidence or [])
         items = list(response.items or [])
-        kit.supplemented.extend(items)
-        kit.note_result_count(len(items))
-        # 记录查询转化模型名称（前端展示）
+        visible = evidence + items
+
+        kit.supplemented.extend(visible)
+        kit.note_result_count(len(visible))
         if response.planner_model:
             kit.note_execution_model(response.planner_model)
-        logger.debug(f"search_knowledge_base({query_text!r}) → {len(items)} chunks")
 
         tc_id = get_current_tool_call_id()
         if tc_id:
-            chunks_brief = [
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "document_id": chunk.document_id,
-                    "score": chunk.score,
-                    "preview": (chunk.text or "")[:200],
-                }
-                for chunk in items
-            ]
             params: Dict[str, Any] = {
                 "query_text": query_text,
                 "top_k": top_k,
             }
             if chunk_type:
                 params["chunk_type"] = chunk_type
+            if pinned is not None:
+                params["direct_answer"] = pinned.model_dump(exclude_none=True)
+                params["qa_pinned"] = True
             if response.route_plan:
                 params["route_plan"] = response.route_plan.model_dump(
                     exclude_none=True,
@@ -160,12 +202,28 @@ async def handle(
                 if response.recall_stats is not None
                 else None
             )
-            kit.search_results[tc_id] = (chunks_brief, params, recall_stats_dict)
+            kit.search_results[tc_id] = (
+                _chunks_brief(visible),
+                params,
+                recall_stats_dict,
+            )
 
-        return format_chunks_for_llm(
+        if pinned is not None:
+            logger.debug(
+                f"search_knowledge_base({query_text!r}) → QA 置顶 "
+                f"qa_id={pinned.qa_id} score={pinned.score:.4f} "
+                f"evidence={len(evidence)} items={len(items)}"
+            )
+        else:
+            logger.debug(
+                f"search_knowledge_base({query_text!r}) → {len(items)} chunks"
+            )
+
+        return format_pinned_search_for_llm(
+            pinned,
+            evidence,
             items,
             alias_map=kit.alias_map,
-            append_semantic_literal_hint=True,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"search_knowledge_base 执行异常: {e}")

@@ -538,7 +538,12 @@ def merge_thinking_params(
     """把适配器构建出的思考参数安全地合并进目标请求字典中。
 
     - 普通字段直接赋值或覆盖；
-    - `extra_body` 执行子字典递归更新，不丢弃原有的其他 extra 字段。
+    - `extra_body` 执行子字典递归更新，不丢弃原有的其他 extra 字段；
+    - 兼容 LiteLLM Proxy / OpenAI SDK：OpenAI Python SDK 在发起 HTTP 请求时，
+      会将 `extra_body` 中的字段拍平解包至 HTTP JSON 根层级。对于 LiteLLM Proxy 网关，
+      网关需要请求体中显式包含 `extra_body: {...}` 才能将其完整转发给上游模型提供商。
+      因此在 `target_params["extra_body"]` 内同步维护嵌套的 `extra_body`，
+      使得经 SDK 拍平后发送给网关的 HTTP 请求中依然带有 `extra_body` 字典。
     """
     for key, val in adapted_params.items():
         if key == "extra_body" and isinstance(val, dict):
@@ -547,5 +552,11 @@ def merge_thinking_params(
             ):
                 target_params["extra_body"] = {}
             target_params["extra_body"].update(val)
+            # 同步填充嵌套 extra_body，确保 LiteLLM Proxy 网关透传有效
+            if "extra_body" not in target_params["extra_body"] or not isinstance(
+                target_params["extra_body"]["extra_body"], dict
+            ):
+                target_params["extra_body"]["extra_body"] = {}
+            target_params["extra_body"]["extra_body"].update(val)
         else:
             target_params[key] = val

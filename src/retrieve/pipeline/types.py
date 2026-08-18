@@ -132,7 +132,9 @@ class RecallStats(BaseModel):
 
     覆盖 Phase 2(召回) → 3(对齐) → 4(融合) → 5(rerank) → 5.5(阈值过滤) 各阶段计数。
     chunk_id 列表均截断（_RECALL_STATS_CHUNK_ID_CAP，默认 20），避免响应膨胀。
-    直答短路时 short_circuited=True，fused/rerank 字段留空。
+
+    高置信 QA 走「置顶」而不是短路：``qa_pinned=True`` 时 align/fusion/rerank
+    仍执行；``short_circuited`` 恒为 False（字段保留，避免旧前端误画短路横幅）。
     """
     routes: List[RouteRecallStat] = Field(default_factory=list)
     fused_count: int = Field(default=0, description="Phase 4 融合去重后候选数")
@@ -147,7 +149,15 @@ class RecallStats(BaseModel):
         default=0, description="Phase 5.5 精排后阈值过滤掉的数量",
     )
     short_circuited: bool = Field(
-        default=False, description="是否走直答短路（True 时 fused/rerank 为空）",
+        default=False,
+        description=(
+            "已废弃：直答短路已移除，恒为 False。"
+            "旧前端用此字段画「跳过对齐/融合/rerank」横幅，故不再置 True。"
+        ),
+    )
+    qa_pinned: bool = Field(
+        default=False,
+        description="qa_dense top1 ≥ θ_pin 且 answer 非空，QA 与依据 chunk 已置顶",
     )
 
 
@@ -188,19 +198,19 @@ class PhaseTimings(BaseModel):
 
 
 class DirectAnswer(BaseModel):
-    """直答短路结果（v1.1 qa_dense 高置信命中时产出）
+    """高置信 QA 置顶（wire 字段名 ``direct_answer`` 保持兼容）
 
-    当 qa_dense 路由 top1 score ≥ θ_direct 且 answer 存在时，跳过
-    align/fusion/rerank，直接返回 QA 的 answer 作为答案，附带来源标注。
-    决策 a：纯 answer + 来源标注（不拼 chunk 预览）。
+    当 qa_dense 路由 top1 score ≥ θ_pin 且 answer 存在时产出。
+    **不短路**：align / fusion / rerank 仍执行；本条 QA 与其
+    ``source_chunk_ids`` 对应 chunk 置顶在工具返回最前，依据 chunk 不进精排。
     """
-    answer: str = Field(..., description="直答正文（来自 atomic_qa.answer）")
+    answer: str = Field(..., description="QA 正文（来自 atomic_qa.answer）")
     qa_id: str = Field(default="", description="命中的 qa_id")
     question: str = Field(default="", description="命中的 question（供审计/展示）")
     score: float = Field(default=0.0, description="qa_dense 命中相似度分数")
     source_chunk_ids: List[str] = Field(
         default_factory=list,
-        description="QA 所依据的 chunk_id 列表（chunk 级溯源）",
+        description="QA 所依据的 chunk_id 列表（仅该 QA 自己的溯源，通常 1–2 条）",
     )
     document_id: Optional[str] = None
     section_id: Optional[str] = None
@@ -209,8 +219,11 @@ class DirectAnswer(BaseModel):
 
 class RetrieveResponse(BaseModel):
     """检索响应"""
-    items: List[ChunkItem] = Field(default_factory=list, description="最终结果列表")
-    total_count: int = Field(default=0, description="结果总数")
+    items: List[ChunkItem] = Field(
+        default_factory=list,
+        description="精排后的 Top-K（已剔除置顶依据 chunk，避免与 pinned_evidence 重复）",
+    )
+    total_count: int = Field(default=0, description="items 数量")
     route_plan: Optional[RoutePlan] = Field(
         default=None, description="LLM₁ 的路由计划（可审计）",
     )
@@ -219,12 +232,19 @@ class RetrieveResponse(BaseModel):
     planner_model: Optional[str] = Field(
         default=None, description="查询转化使用的 LLM₁ 模型名称",
     )
-    # v1.1 直答短路：非空表示本次检索命中高置信 QA，直接返回 answer，items 为空
+    # 字段名沿用 direct_answer，语义改为「置顶 QA」；非空时 items 仍可能有精排结果
     direct_answer: Optional[DirectAnswer] = Field(
         default=None,
         description=(
-            "直答短路结果。非空时调用方应直接采用 answer 作为答案，"
-            "无需再走 items 渲染；items 此时为空列表。"
+            "高置信置顶 QA。非空时调用方应把它渲染在 items 之前；"
+            "align/fusion/rerank 仍已执行，items 为去重后的其它 Top-K。"
+        ),
+    )
+    pinned_evidence: List[ChunkItem] = Field(
+        default_factory=list,
+        description=(
+            "置顶 QA 的依据 chunk（按 source_chunk_ids 保序，不经 reranker）。"
+            "direct_answer 为空时本列表为空。"
         ),
     )
     # v1.1 召回全链路统计：每路召回/对齐/融合/rerank 计数 + chunk_id 截断列表，供前端「召回链路」栏目

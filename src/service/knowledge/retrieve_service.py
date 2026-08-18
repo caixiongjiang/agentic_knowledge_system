@@ -10,10 +10,12 @@
     Pipeline: LLM₁ 路由规划 → 多路召回 → 跨粒度对齐 → 融合 → Rerank
 @Modify History:
     2026/04/03 - 实现核心骨架 (Phase 2-5) + 完整 retrieve() 方法
+    2026/08/18 - 取消 QA 直答短路：≥θ 置顶 QA + 依据 chunk，其它路照常精排
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from loguru import logger
 
@@ -45,11 +47,24 @@ from src.retrieve.types.query import MetadataFilter
 from src.retrieve.types.result import ChunkItem, RetrieveResult
 
 
-# v1.1 直答短路：qa_dense top1 score ≥ 此阈值且 answer 存在时，跳过 align/fusion/rerank
-_DEFAULT_DIRECT_ANSWER_THRESHOLD = 0.9
+# qa_dense top1 ≥ 此阈值且 answer 非空 → 置顶 QA + 依据 chunk（不短路、不进精排）
+_DEFAULT_QA_PIN_THRESHOLD = 0.9
+
+# 置顶依据 chunk 上限：只取该 QA 自己的 source_chunk_ids（通常 1–2）
+_MAX_PINNED_EVIDENCE = 6
 
 # v1.1 召回统计：chunk_id 列表截断上限，避免响应膨胀
 _RECALL_STATS_CHUNK_ID_CAP = 20
+
+
+@dataclass
+class _PipelineResult:
+    """Phase 2-5 内部产物。"""
+    items: List[ChunkItem]
+    timings: PhaseTimings
+    pinned_qa: Optional[DirectAnswer]
+    recall_stats: RecallStats
+    pinned_evidence: List[ChunkItem] = field(default_factory=list)
 
 
 class RetrieveService:
@@ -58,6 +73,7 @@ class RetrieveService:
     Pipeline:
     - Phase 1: LLM₁ 路由规划 (RoutePlanner)
     - Phase 2-5: ParallelRecall → Alignment → Fusion → Rerank
+    - qa_dense 高置信：置顶 QA + 依据 chunk（不短路、不进精排）
 
     提供三种调用模式:
     - retrieve(): 完整 Pipeline
@@ -79,9 +95,9 @@ class RetrieveService:
 
         self._planner = None
 
-        # v1.1 直答短路配置
-        self._direct_answer_enabled: bool = True
-        self._direct_answer_threshold: float = _DEFAULT_DIRECT_ANSWER_THRESHOLD
+        # 高置信 QA 置顶（不短路）
+        self._qa_pin_enabled: bool = True
+        self._qa_pin_threshold: float = _DEFAULT_QA_PIN_THRESHOLD
 
     def _get_embedding_client(self) -> EmbeddingClient:
         if self._embedding_client is None:
@@ -134,7 +150,7 @@ class RetrieveService:
         route_plan = self._apply_search_mode(route_plan, request.search_mode, request)
         timings.planning_ms = (time.perf_counter() - t) * 1000
 
-        items, phase_timings_partial, direct_answer, recall_stats = await self._execute_pipeline(
+        pipeline = await self._execute_pipeline(
             route_plan=route_plan,
             query_text=request.query_text,
             filters=request.filters,
@@ -143,10 +159,10 @@ class RetrieveService:
             rerank_score_threshold=request.rerank_score_threshold,
             on_progress=on_progress,
         )
-        timings.recall_ms = phase_timings_partial.recall_ms
-        timings.alignment_ms = phase_timings_partial.alignment_ms
-        timings.fusion_ms = phase_timings_partial.fusion_ms
-        timings.rerank_ms = phase_timings_partial.rerank_ms
+        timings.recall_ms = pipeline.timings.recall_ms
+        timings.alignment_ms = pipeline.timings.alignment_ms
+        timings.fusion_ms = pipeline.timings.fusion_ms
+        timings.rerank_ms = pipeline.timings.rerank_ms
 
         total_ms = (time.perf_counter() - total_start) * 1000
 
@@ -157,15 +173,17 @@ class RetrieveService:
         except Exception:
             pass
 
+        items = pipeline.items[:request.top_k]
         return RetrieveResponse(
-            items=items[:request.top_k],
+            items=items,
             total_count=len(items),
             route_plan=route_plan,
             execution_time_ms=total_ms,
             phase_timings=timings,
             planner_model=planner_model,
-            direct_answer=direct_answer,
-            recall_stats=recall_stats,
+            direct_answer=pipeline.pinned_qa,
+            pinned_evidence=pipeline.pinned_evidence,
+            recall_stats=pipeline.recall_stats,
         )
 
     # ==================== 自定义路由 ====================
@@ -185,7 +203,7 @@ class RetrieveService:
 
         route_plan = RoutePlan(route_plan=routes)
 
-        items, timings, direct_answer, recall_stats = await self._execute_pipeline(
+        pipeline = await self._execute_pipeline(
             route_plan=route_plan,
             query_text=query_text,
             filters=filters,
@@ -195,15 +213,17 @@ class RetrieveService:
         )
 
         total_ms = (time.perf_counter() - total_start) * 1000
+        items = pipeline.items[:top_k]
 
         return RetrieveResponse(
-            items=items[:top_k],
+            items=items,
             total_count=len(items),
             route_plan=route_plan,
             execution_time_ms=total_ms,
-            phase_timings=timings,
-            direct_answer=direct_answer,
-            recall_stats=recall_stats,
+            phase_timings=pipeline.timings,
+            direct_answer=pipeline.pinned_qa,
+            pinned_evidence=pipeline.pinned_evidence,
+            recall_stats=pipeline.recall_stats,
         )
 
     # ==================== 单能力旁路 ====================
@@ -226,18 +246,25 @@ class RetrieveService:
         enable_rerank: bool,
         rerank_score_threshold: Optional[float] = None,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
-    ) -> tuple[List[ChunkItem], PhaseTimings, Optional[DirectAnswer], Optional[RecallStats]]:
+    ) -> _PipelineResult:
         """执行 Phase 2-5 确定性管道
 
-        v1.1：Phase 2 后插入「直答短路」判断——qa_dense top1 score ≥ θ_direct
-        且 answer 存在时，跳过 Phase 3-5，返回空 items + DirectAnswer。
+        Phase 2 后判断 qa_dense 是否达到置顶阈值。命中时：
+        - **不短路**：Phase 3-5 照常跑完；
+        - 该 QA 的 ``source_chunk_ids`` 从精排候选中剔除（不进 reranker）；
+        - 依据 chunk 从 Mongo 补全文后放入 ``pinned_evidence``。
+        score < θ 时与原先非短路路径相同：QA 只通过 source_chunk 注入候选池。
 
-        v1.1 召回统计：各阶段计数 + chunk_id 截断列表汇总到 RecallStats，
-        供前端「召回链路」栏目渲染（覆盖 recall → align → fuse → rerank → threshold）。
+        召回统计：各阶段计数 + chunk_id 截断列表汇总到 RecallStats。
         """
         timings = PhaseTimings()
-        direct_answer: Optional[DirectAnswer] = None
         recall_stats = RecallStats()
+        empty = _PipelineResult(
+            items=[],
+            timings=timings,
+            pinned_qa=None,
+            recall_stats=recall_stats,
+        )
 
         await self._emit_progress(on_progress, "searching")
 
@@ -258,19 +285,21 @@ class RetrieveService:
         )
 
         if not recall_results:
-            return [], timings, None, recall_stats
+            return empty
 
-        # v1.1 直答短路：qa_dense 高置信命中 → 直接返回 answer，跳过 align/fusion/rerank
-        if self._direct_answer_enabled:
-            direct_answer = self._maybe_direct_answer(recall_results)
-            if direct_answer is not None:
+        pinned_qa: Optional[DirectAnswer] = None
+        if self._qa_pin_enabled:
+            pinned_qa = self._pick_pinned_qa(recall_results)
+            if pinned_qa is not None:
+                recall_stats.qa_pinned = True
+                recall_stats.short_circuited = False
                 logger.debug(
-                    f"直答短路命中: qa_id={direct_answer.qa_id}, "
-                    f"score={direct_answer.score:.4f} ≥ "
-                    f"θ={self._direct_answer_threshold:.2f}"
+                    f"QA 置顶: qa_id={pinned_qa.qa_id}, "
+                    f"score={pinned_qa.score:.4f} ≥ "
+                    f"θ={self._qa_pin_threshold:.2f}，"
+                    f"依据 chunk={pinned_qa.source_chunk_ids}；"
+                    f"其它路继续 align/fusion/rerank"
                 )
-                recall_stats.short_circuited = True
-                return [], timings, direct_answer, recall_stats
 
         # 获取 query 向量（用于跨粒度对齐的 in-memory 精排）
         query_vector = None
@@ -306,8 +335,22 @@ class RetrieveService:
             f.chunk_id for f in fused[:_RECALL_STATS_CHUNK_ID_CAP]
         ]
 
+        pinned_ids = self._pinned_chunk_id_set(pinned_qa)
+        pinned_evidence: List[ChunkItem] = []
+        if pinned_qa is not None:
+            pinned_evidence = await self._hydrate_pinned_evidence(pinned_qa)
+
         if not fused:
-            return [], timings, None, recall_stats
+            return _PipelineResult(
+                items=[],
+                timings=timings,
+                pinned_qa=pinned_qa,
+                recall_stats=recall_stats,
+                pinned_evidence=pinned_evidence,
+            )
+
+        # 置顶依据 chunk 不进精排，避免占 Top-K 槽位、也避免按 search_text 被打低分
+        rerank_input = [c for c in fused if c.chunk_id not in pinned_ids]
 
         # Phase 5: Rerank（可选）
         await self._emit_progress(on_progress, "reranking")
@@ -315,12 +358,14 @@ class RetrieveService:
             t = time.perf_counter()
             items = await self._rerank_stage.rerank(
                 query=query_text,
-                candidates=fused,
+                candidates=rerank_input,
                 top_k=top_k,
             )
             timings.rerank_ms = (time.perf_counter() - t) * 1000
         else:
-            items = RerankStage._candidates_to_items(fused[:top_k])
+            items = RerankStage._candidates_to_items(rerank_input[:top_k])
+
+        items = self._drop_pinned_chunks(items, pinned_ids)
 
         # Phase 5.5: 精排后分数阈值过滤
         if rerank_score_threshold is not None and items:
@@ -352,7 +397,13 @@ class RetrieveService:
         for rs in recall_stats.routes:
             rs.final_count = route_final_count.get(rs.route, 0)
 
-        return items, timings, None, recall_stats
+        return _PipelineResult(
+            items=items,
+            timings=timings,
+            pinned_qa=pinned_qa,
+            recall_stats=recall_stats,
+            pinned_evidence=pinned_evidence,
+        )
 
     @staticmethod
     def _build_route_stats(
@@ -387,16 +438,16 @@ class RetrieveService:
             if rs.route in aligned_map:
                 rs.aligned_count = aligned_map[rs.route]
 
-    def _maybe_direct_answer(
+    def _pick_pinned_qa(
         self,
         recall_results: List[RecallResult],
     ) -> Optional[DirectAnswer]:
-        """v1.1 直答短路判断：扫描 qa_dense 路由召回，取 top1 QA。
+        """扫描 qa_dense，取最高分 QA；达到阈值且 answer 非空则置顶。
 
-        - 仅认 route == "qa_dense" 的结果（已由 normalize_to_chunk_items 归一为
-          ChunkItem，metadata携带 _original_type="qa" / answer / source_chunk_ids / section_id）
-        - top1 score ≥ θ_direct 且 answer 非空 → 返回 DirectAnswer
-        - 否则返回 None（走正常 align/fusion/rerank）
+        - 仅认 route == "qa_dense"（已由 normalize_to_chunk_items 归一为
+          ChunkItem，metadata 带 _original_type="qa" / answer / source_chunk_ids）
+        - score ≥ θ_pin 且 answer 非空 → DirectAnswer（语义：置顶，不是短路）
+        - 否则 None（QA 只通过 source_chunk_ids 注入候选池）
         """
         best: Optional[ChunkItem] = None
         for rr in recall_results:
@@ -412,18 +463,113 @@ class RetrieveService:
         answer = (best.metadata.get("answer") or "").strip()
         if not answer:
             return None
-        if best.score < self._direct_answer_threshold:
+        if best.score < self._qa_pin_threshold:
             return None
         return DirectAnswer(
             answer=answer,
             qa_id=str(best.metadata.get("_qa_id") or best.chunk_id.replace("qa:", "", 1)),
             question=str(best.metadata.get("question") or best.text or ""),
             score=float(best.score),
-            source_chunk_ids=list(best.metadata.get("source_chunk_ids") or []),
+            source_chunk_ids=self._unique_chunk_ids(
+                list(best.metadata.get("source_chunk_ids") or []),
+            ),
             document_id=best.document_id,
             section_id=best.metadata.get("section_id"),
             knowledge_base_id=best.knowledge_base_id,
         )
+
+    @staticmethod
+    def _unique_chunk_ids(
+        ids: List[str],
+        cap: int = _MAX_PINNED_EVIDENCE,
+    ) -> List[str]:
+        """保序去重，截断到 cap。"""
+        seen: Set[str] = set()
+        out: List[str] = []
+        for cid in ids:
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.append(cid)
+            if len(out) >= cap:
+                break
+        return out
+
+    @staticmethod
+    def _pinned_chunk_id_set(pinned: Optional[DirectAnswer]) -> Set[str]:
+        if pinned is None:
+            return set()
+        return set(RetrieveService._unique_chunk_ids(pinned.source_chunk_ids))
+
+    @staticmethod
+    def _drop_pinned_chunks(
+        items: List[ChunkItem],
+        pinned_ids: Set[str],
+    ) -> List[ChunkItem]:
+        if not pinned_ids:
+            return items
+        return [it for it in items if it.chunk_id not in pinned_ids]
+
+    async def _hydrate_pinned_evidence(
+        self,
+        pinned: DirectAnswer,
+    ) -> List[ChunkItem]:
+        """按 source_chunk_ids 保序从 Mongo 补依据 chunk 展示正文（不经 reranker）。"""
+        ids = self._unique_chunk_ids(pinned.source_chunk_ids)
+        if not ids:
+            return []
+        try:
+            from src.db.mongodb.repositories.chunk_data_repository import (
+                ChunkDataRepository,
+            )
+            from src.types.utils.chunk_search_text import resolve_chunk_display_text
+
+            repo = ChunkDataRepository()
+            docs = await repo.get_by_ids(ids)
+        except Exception as e:
+            logger.warning(
+                f"置顶 QA 依据 chunk 补全文失败 qa_id={pinned.qa_id}: {e}"
+            )
+            return []
+
+        by_id = {str(cd.id): cd for cd in docs}
+        evidence: List[ChunkItem] = []
+        for cid in ids:
+            cd = by_id.get(cid)
+            if cd is None:
+                logger.debug(f"置顶依据 chunk 未入库: {cid}")
+                continue
+            text = (resolve_chunk_display_text(cd) or "").strip()
+            if not text:
+                text = (cd.search_text or "").strip()
+            if not text:
+                continue
+            extra: Dict[str, Any] = {
+                "_source_route": "qa_evidence",
+                "_qa_id": pinned.qa_id,
+                "_pinned_evidence": True,
+            }
+            if cd.chunk_type:
+                extra["chunk_type"] = cd.chunk_type
+            text_meta = cd.text_meta or {}
+            for key in (
+                "image_caption",
+                "image_footnote",
+                "table_caption",
+                "table_footnote",
+            ):
+                if text_meta.get(key):
+                    extra[key] = text_meta[key]
+            evidence.append(ChunkItem(
+                chunk_id=cid,
+                score=float(pinned.score),
+                document_id=pinned.document_id,
+                section_id=pinned.section_id,
+                knowledge_base_id=pinned.knowledge_base_id,
+                text=text,
+                metadata=extra,
+            ))
+        return evidence
 
     @staticmethod
     async def _emit_progress(
