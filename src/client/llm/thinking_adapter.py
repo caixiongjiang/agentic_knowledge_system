@@ -66,7 +66,7 @@ class BaseThinkingAdapter(ABC):
     ) -> Dict[str, Any]:
         """根据模型与思考档位构建请求参数字典。
 
-        :param model: 模型完整标识（如 "litellm_proxy/qwen3.7-flash"）
+        :param model: 模型完整标识（如 "litellm_proxy/qwen3.7-flash" 或 "openai/deepseek-v4-flash"）
         :param level_or_effort: pi 标准档位（off/minimal/low/medium/high/xhigh/max）或 effort 字符串
         :param max_tokens: 本次请求允许的最大输出 tokens
         :param spec: 可选的 ThinkingModelSpec
@@ -193,11 +193,10 @@ class QwenThinkingAdapter(BaseThinkingAdapter):
          * minimal / low: reasoning_effort="low", extra_body={"enable_thinking": True}
          * medium: reasoning_effort="medium", extra_body={"enable_thinking": True}
          * high / xhigh / max: reasoning_effort="xhigh", extra_body={"enable_thinking": True}
-    2. Qwen3.7 / Qwen3.7 / Qwen3.5 / Qwen3-VL / Qwen3 及 QwQ 等非 3.8 模型：
-       - 仅支持通过 extra_body 传入 thinking_budget（整数 token 预算）与 enable_thinking
-       - 档位映射（pi 7 档）：
-         * off: reasoning_effort="none", extra_body={"enable_thinking": False}
-         * on: reasoning_effort=effort, extra_body={"enable_thinking": True, "thinking_budget": budget}
+    2. Qwen3.7 / Qwen3.5 / Qwen3-VL / Qwen3 及 QwQ 等非 3.8 模型：
+       - 只支持思考开关，不支持强度；禁止下发 thinking_budget / reasoning_effort 档位
+       - off: reasoning_effort="none", extra_body={"enable_thinking": False}
+       - on:  extra_body={"enable_thinking": True}
     """
 
     def adapt(
@@ -211,6 +210,9 @@ class QwenThinkingAdapter(BaseThinkingAdapter):
     ) -> Dict[str, Any]:
         level = self._normalize_level(level_or_effort)
         bare_model = (model or "").lower().strip()
+        for prefix in ("litellm_proxy/", "openai/"):
+            if bare_model.startswith(prefix):
+                bare_model = bare_model[len(prefix):]
         if "/" in bare_model:
             bare_model = bare_model.split("/", 1)[1]
 
@@ -224,6 +226,7 @@ class QwenThinkingAdapter(BaseThinkingAdapter):
                     "reasoning_effort": "none",
                     "extra_body": {
                         "enable_thinking": False,
+                        "thinking": {"type": "disabled"},
                     },
                 }
 
@@ -240,36 +243,24 @@ class QwenThinkingAdapter(BaseThinkingAdapter):
                 "reasoning_effort": effort,
                 "extra_body": {
                     "enable_thinking": True,
+                    "thinking": {"type": "enabled"},
                 },
             }
 
-        # Qwen 3.7 / 3.7 及其他非 3.8 模型：使用 extra_body.thinking_budget
+        # Qwen 3.7 及其他非 3.8 模型：支持 thinking 开关与网关透传
         if level == "off":
             return {
                 "reasoning_effort": "none",
                 "extra_body": {
                     "enable_thinking": False,
+                    "thinking": {"type": "disabled"},
                 },
             }
 
-        budget = DEFAULT_THINKING_BUDGETS.get(level, 4096)
-
-        # reasoning_effort 映射
-        effort_map = {
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "high",
-            "max": "max",
-        }
-        effort = effort_map.get(level, "medium")
-
         return {
-            "reasoning_effort": effort,
             "extra_body": {
                 "enable_thinking": True,
-                "thinking_budget": budget,
+                "thinking": {"type": "enabled"},
             },
         }
 
@@ -312,6 +303,9 @@ class GLMThinkingAdapter(BaseThinkingAdapter):
     ) -> Dict[str, Any]:
         level = self._normalize_level(level_or_effort)
         bare = (model or "").lower().strip()
+        for prefix in ("litellm_proxy/", "openai/"):
+            if bare.startswith(prefix):
+                bare = bare[len(prefix):]
         if "/" in bare:
             bare = bare.split("/", 1)[1]
 
@@ -378,6 +372,40 @@ class GLMThinkingAdapter(BaseThinkingAdapter):
             },
         }
 
+
+
+
+class MiMoThinkingAdapter(BaseThinkingAdapter):
+    """小米 MiMo 系列（mimo-v2.5 / mimo-v2.5-pro）
+
+    只支持思考开关，不支持强度：
+    - off: reasoning_effort="none", extra_body={"thinking": {"type": "disabled"}}
+    - on:  extra_body={"thinking": {"type": "enabled"}}
+    官方把 reasoning_effort 除 none 以外的合法值都当成「开思考」，不下发强度档。
+    """
+
+    def adapt(
+        self,
+        model: str,
+        level_or_effort: Any,
+        *,
+        max_tokens: Optional[int] = None,
+        spec: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        level = self._normalize_level(level_or_effort)
+        if level == "off":
+            return {
+                "reasoning_effort": "none",
+                "extra_body": {
+                    "thinking": {"type": "disabled"},
+                },
+            }
+        return {
+            "extra_body": {
+                "thinking": {"type": "enabled"},
+            },
+        }
 
 
 class AnthropicThinkingAdapter(BaseThinkingAdapter):
@@ -502,16 +530,20 @@ class DefaultThinkingAdapter(BaseThinkingAdapter):
 def get_thinking_adapter(model: str) -> BaseThinkingAdapter:
     """根据模型标识获取对应的思考参数适配器。
 
-    匹配规则（不区分大小写，去除 provider/ 前缀）：
+    匹配规则（不区分大小写，去除网关及 provider 前缀后的裸模型名）：
     - 包含 'deepseek' -> DeepSeekThinkingAdapter
     - 包含 'qwen' 或 'qwq' -> QwenThinkingAdapter
     - 包含 'glm' 或 'chatglm' -> GLMThinkingAdapter
+    - 包含 'mimo' -> MiMoThinkingAdapter
     - 包含 'claude' 或 'anthropic' -> AnthropicThinkingAdapter
     - 包含 'gemini' -> GeminiThinkingAdapter
-    - 以 'o1' / 'o3' / 'o4' 开头或包含 'openai' -> OpenAIThinkingAdapter
+    - 以 'o1' / 'o3' / 'o4' / 'gpt' 开头或包含 'openai' -> OpenAIThinkingAdapter
     - 其余 -> DefaultThinkingAdapter
     """
     bare_name = (model or "").lower().strip()
+    for prefix in ("litellm_proxy/", "openai/"):
+        if bare_name.startswith(prefix):
+            bare_name = bare_name[len(prefix):]
     if "/" in bare_name:
         bare_name = bare_name.split("/", 1)[1]
 
@@ -521,11 +553,13 @@ def get_thinking_adapter(model: str) -> BaseThinkingAdapter:
         return QwenThinkingAdapter()
     if "glm" in bare_name or "chatglm" in bare_name:
         return GLMThinkingAdapter()
+    if "mimo" in bare_name:
+        return MiMoThinkingAdapter()
     if "claude" in bare_name or "anthropic" in bare_name:
         return AnthropicThinkingAdapter()
     if "gemini" in bare_name:
         return GeminiThinkingAdapter()
-    if bare_name.startswith(("o1", "o3", "o4")) or "openai" in (model or "").lower():
+    if bare_name.startswith(("o1", "o3", "o4", "gpt")) or "openai" in bare_name:
         return OpenAIThinkingAdapter()
 
     return DefaultThinkingAdapter()

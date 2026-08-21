@@ -200,8 +200,8 @@ class ComponentConfigManager:
 
             {
               "model": "deepseek/deepseek-chat",   # 必填，LiteLLM 'provider/model'
-              "api_base": "...",                   # 选填，覆盖 [proxy] / .env
-              "api_key": "...",                    # 选填，覆盖 [proxy] / .env
+              "api_base": "...",                   # 选填，覆盖 .env
+              "api_key": "...",                    # 选填，覆盖 .env
               "temperature": 0.3,
               "max_tokens": 2048,
               "timeout": 60,
@@ -215,7 +215,7 @@ class ComponentConfigManager:
             { "llm_preset": "fast" }   # → config/config.toml [llm.presets.fast]
 
         全局唯一字段（模型网关的 ``api_base`` / ``api_key`` / ``default_timeout``
-        / ``default_max_retries``）统一来自 ``ConfigManager.get_proxy_full_config``，
+        / ``default_max_retries``）统一来自环境变量（经 ``get_llm_gateway_full_config``），
         组件无需重复声明，需要差异化时再在 ``llm`` / preset 中覆盖即可。
 
         Args:
@@ -232,13 +232,11 @@ class ComponentConfigManager:
 
         config = self.get_component_config(component_name)
 
-        # ── 1) 内联 llm（LiteLLM 风格） ──
-        llm_config = config.get("llm")
-        if isinstance(llm_config, dict):
-            if "model" not in llm_config:
-                raise ValueError(
-                    f"组件 '{component_name}' 的 llm 内联配置缺少必填字段 'model'"
-                )
+        llm_config = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+        preset_name = config.get("llm_preset")
+
+        # ── 1) 内联 llm 且写了 model：仍支持，但不推荐（会把环境绑进仓库） ──
+        if llm_config.get("model"):
             llm_params: Dict[str, Any] = {
                 k: v for k, v in llm_config.items() if k in self._ALLOWED_LLM_KEYS
             }
@@ -247,7 +245,6 @@ class ComponentConfigManager:
                 logger.warning(
                     f"组件 '{component_name}' 的 llm 配置包含未识别字段 {sorted(unknown)}，已忽略"
                 )
-            # pi 档位 → 厂商原生 reasoning_effort（模型不支持思考时返回 None）
             thinking_level = llm_params.pop("thinking_level", None)
             if thinking_level:
                 try:
@@ -265,10 +262,27 @@ class ComponentConfigManager:
             llm_params.update(kwargs)
             return create_llm_client(**llm_params)
 
-        # ── 2) preset 引用 ──
-        preset_name = config.get("llm_preset")
+        # ── 2) preset 引用；llm 无 model 时只覆盖采样参数 ──
         if preset_name:
             client = create_llm_client_from_preset(preset_name)
+            overlay = {k: v for k, v in llm_config.items() if k in self._ALLOWED_LLM_KEYS and k != "model"}
+            thinking_level = overlay.pop("thinking_level", None)
+            for k, v in overlay.items():
+                if hasattr(client.config, k):
+                    setattr(client.config, k, v)
+            if thinking_level:
+                try:
+                    from src.client.llm.registry import get_litellm_registry
+                    client.config.default_reasoning_effort = (
+                        get_litellm_registry().resolve_reasoning_effort(
+                            client.config.model, str(thinking_level),
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        f"组件 '{component_name}' 解析 thinking_level "
+                        f"'{thinking_level}' 失败，忽略: {e}"
+                    )
             if kwargs:
                 for k, v in kwargs.items():
                     if hasattr(client.config, k):

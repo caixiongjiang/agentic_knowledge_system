@@ -45,7 +45,7 @@ class RerankerClient:
     --------
     - 模型字符串从 ``[reranker.presets.<name>]`` 取，形如
       ``"cohere/qwen3-reranker-0.6b"``，由 LiteLLM 路由到自托管 Proxy
-      （``api_base`` / ``api_key`` 走 ``[proxy]`` + ``.env``）。
+      （``api_base`` / ``api_key`` 走 ``.env``）。
     - 大输入按 ``batch_size`` 切批，跨批次合并后再做 Top-K 截断。
     - 重试 / 超时 / 连接池由 LiteLLM + Proxy 接管，本端无 httpx 依赖。
 

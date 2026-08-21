@@ -21,8 +21,8 @@
        避免 LiteLLM 报 "tool_call_id 找不到对应 assistant" 错。
 
     3. **Token 估算** ``count_message_tokens`` / ``estimate_history_tokens``
-       基于 LiteLLM ``token_counter`` 做精确估算，失败回退到经验值
-       （中文≈1.6 chars/token、英文≈4 chars/token）；面向"上下文预算"判断。
+       基于中英文字符比的经验估算（中文≈1.6 chars/token、英文≈4 chars/token），
+       用于"上下文预算"判断；不依赖任何 tokenizer。
 
     4. **Token 滑窗** ``apply_token_window``
        在轮次滑窗基础上叠加 token 上限约束：从尾部贪心累加，达到 ``max_tokens``
@@ -177,14 +177,13 @@ def drop_assistant_tool_dangling(history: Sequence[T]) -> List[T]:
 
 
 def _heuristic_count(text: str) -> int:
-    """无 LiteLLM 时的经验回退：按中英文字符比估算 token。
+    """中英文字符比经验估算 token。
 
     经验值：
     - 中文（含 CJK 字符）：约 ``1 token / 1.6 字符``
     - 英文/符号：约 ``1 token / 4 字符``
 
-    本函数不追求精确，只在 ``litellm.token_counter`` 抛错时兜底，
-    保证 ChatService 不会因 token 估算失败而崩。
+    本函数不追求精确，只用于上下文预算 / 截断判断，保证不抛异常。
     """
     if not text:
         return 0
@@ -236,13 +235,13 @@ def count_message_tokens(
 ) -> int:
     """估算 OpenAI/LiteLLM 协议 ``messages``（+ ``tools`` schema）的 token 总数。
 
-    优先调用 ``litellm.token_counter``（自动按 ``model`` 选 tokenizer），失败时
-    回退到 ``_heuristic_count`` 经验估算，保证不抛异常。
+    统一走 ``_heuristic_count`` 中英文字符比经验估算，不依赖任何 tokenizer，
+    保证不抛异常。``model`` 参数保留以兼容调用方签名，内部不再使用。
 
     Args:
         messages: OpenAI/LiteLLM 协议 messages 列表（典型来自
             ``rebuild_messages_from_history`` 或 ``compose_chat_messages``）。
-        model: 模型 ID，例如 ``"deepseek/deepseek-chat"``。LiteLLM 会按此选 tokenizer。
+        model: 模型 ID（保留参数兼容旧调用方，内部不再用于选 tokenizer）。
         tools: 可选——本轮要带给 LLM 的 tool schemas（OpenAI 格式）；
             tool schema 本身也吃 tokens，长会话场景必须计入。
 
@@ -252,24 +251,12 @@ def count_message_tokens(
     if not messages:
         return 0
 
-    try:
-        import litellm
-
-        kwargs: Dict[str, Any] = {"model": model, "messages": list(messages)}
-        if tools:
-            kwargs["tools"] = list(tools)
-        return int(litellm.token_counter(**kwargs))
-    except Exception as e:  # noqa: BLE001
-        logger.debug(
-            "litellm.token_counter failed (model=%s, msgs=%d), fallback to heuristic: %s",
-            model, len(messages), e,
-        )
-        total = 0
-        for m in messages:
-            total += _heuristic_count(_serialize_message_for_count(m))
-        if tools:
-            total += _heuristic_count(json.dumps(list(tools), ensure_ascii=False))
-        return total
+    total = 0
+    for m in messages:
+        total += _heuristic_count(_serialize_message_for_count(m))
+    if tools:
+        total += _heuristic_count(json.dumps(list(tools), ensure_ascii=False))
+    return total
 
 
 def estimate_history_tokens(
@@ -317,7 +304,7 @@ def apply_token_window(
         max_tokens: token 上限（含 system + history + tools schema）。
             通常由 ChatService 用"模型 context_length - 预留给 system_prompt
             - 预留给本轮 user - 预留给输出"算出。
-        model: 模型 ID，用于选 tokenizer。
+        model: 模型 ID（保留参数兼容旧调用方，内部不再用于选 tokenizer）。
         keep_system: 是否保留首条 system（默认 True）。
         min_recent_turns: 最少保留几轮（默认 1，即至少保最后一轮 user → assistant）。
             即使最后一轮自身就超 ``max_tokens``，本函数也不会丢——上游应另行截

@@ -18,6 +18,7 @@ from src.client.llm.thinking_adapter import (
     DefaultThinkingAdapter,
     GeminiThinkingAdapter,
     GLMThinkingAdapter,
+    MiMoThinkingAdapter,
     OpenAIThinkingAdapter,
     QwenThinkingAdapter,
     get_thinking_adapter,
@@ -26,6 +27,7 @@ from src.client.llm.thinking_adapter import (
 
 
 def _build(model="litellm_proxy/qwen3.7-plus", reasoning_effort=_REASONING_UNSET, cfg_effort=None):
+    from unittest.mock import MagicMock, patch
     from src.client.llm.client import LLMClient, LLMClientConfig
 
     client = LLMClient(
@@ -34,10 +36,13 @@ def _build(model="litellm_proxy/qwen3.7-plus", reasoning_effort=_REASONING_UNSET
             default_reasoning_effort=cfg_effort,
         ),
     )
-    params = client._build_params(  # noqa: SLF001
-        [{"role": "user", "content": "hi"}],
-        reasoning_effort=reasoning_effort,
-    )
+    mock_auth = MagicMock()
+    mock_auth.get_token.return_value = "ml-mock-token"
+    with patch("src.client.llm.model_lake_auth.get_model_lake_auth", return_value=mock_auth):
+        params = client._build_params(  # noqa: SLF001
+            [{"role": "user", "content": "hi"}],
+            reasoning_effort=reasoning_effort,
+        )
     return params
 
 
@@ -50,10 +55,11 @@ def test_call_none_and_cfg_none_sends_nothing() -> None:
 
 def test_unset_falls_back_to_cfg_default() -> None:
     # 调用方未传 reasoning_effort（哨兵）→ 沿用 cfg.default_reasoning_effort
+    # qwen3.7 只支持开关，不再下发 thinking_budget / 强度档
     params = _build(model="litellm_proxy/qwen3.7-plus", cfg_effort="high")
-    assert params.get("reasoning_effort") == "high"
+    assert "reasoning_effort" not in params
     assert params.get("extra_body", {}).get("enable_thinking") is True
-    assert params.get("extra_body", {}).get("thinking_budget") == 8192
+    assert "thinking_budget" not in params.get("extra_body", {})
 
 
 def test_explicit_none_is_off_no_fallback() -> None:
@@ -65,8 +71,9 @@ def test_explicit_none_is_off_no_fallback() -> None:
 
 def test_call_overrides_cfg_default() -> None:
     params = _build(model="litellm_proxy/qwen3.7-plus", reasoning_effort="medium", cfg_effort="high")
-    assert params.get("reasoning_effort") == "medium"
-    assert params.get("extra_body", {}).get("thinking_budget") == 4096
+    assert "reasoning_effort" not in params
+    assert params.get("extra_body", {}).get("enable_thinking") is True
+    assert "thinking_budget" not in params.get("extra_body", {})
 
 
 def test_call_none_explicit_off() -> None:
@@ -76,10 +83,11 @@ def test_call_none_explicit_off() -> None:
 
 
 def test_call_native_max_passthrough() -> None:
-    # 厂商原生字符串（如 'max'）
+    # 开关模型收到任意非 off 值都只开思考，不下发强度
     params = _build(model="litellm_proxy/qwen3.7-plus", reasoning_effort="max", cfg_effort=None)
-    assert params.get("reasoning_effort") == "max"
-    assert params.get("extra_body", {}).get("thinking_budget") == 32768
+    assert "reasoning_effort" not in params
+    assert params.get("extra_body", {}).get("enable_thinking") is True
+    assert "thinking_budget" not in params.get("extra_body", {})
 
 
 # ---- 各厂商 Thinking Adapter 专项测试 ----
@@ -119,21 +127,22 @@ def test_qwen_adapter() -> None:
     adapter = get_thinking_adapter("litellm_proxy/qwen3.7-flash")
     assert isinstance(adapter, QwenThinkingAdapter)
 
-    # 1. Qwen 3.7 / 3.7 测试：通过 extra_body.thinking_budget 控制
+    # 1. Qwen 3.7：只开关思考，禁止 thinking_budget / reasoning_effort 档位
     # off
     res_off = adapter.adapt("qwen3.7-flash", "off")
     assert res_off["reasoning_effort"] == "none"
     assert res_off["extra_body"]["enable_thinking"] is False
+    assert "thinking_budget" not in res_off["extra_body"]
 
-    # low / medium / high
-    res_low = adapter.adapt("qwen3.7-flash", "low")
-    assert res_low["reasoning_effort"] == "low"
-    assert res_low["extra_body"]["enable_thinking"] is True
-    assert res_low["extra_body"]["thinking_budget"] == 2048
+    res_on = adapter.adapt("qwen3.7-flash", "medium")
+    assert "reasoning_effort" not in res_on
+    assert res_on["extra_body"]["enable_thinking"] is True
+    assert "thinking_budget" not in res_on["extra_body"]
 
-    res_high = adapter.adapt("qwen3.7-flash", "high")
-    assert res_high["reasoning_effort"] == "high"
-    assert res_high["extra_body"]["thinking_budget"] == 8192
+    res_enabled = adapter.adapt("qwen3.7-flash", "enabled")
+    assert "reasoning_effort" not in res_enabled
+    assert res_enabled["extra_body"]["enable_thinking"] is True
+    assert "thinking_budget" not in res_enabled["extra_body"]
 
     # 2. Qwen 3.8-Max 测试：通过 reasoning_effort (low/medium/xhigh) 控制，严禁下发 thinking_budget
     adapter_38 = get_thinking_adapter("litellm_proxy/qwen3.8-max")
@@ -245,6 +254,33 @@ def test_glm_adapter() -> None:
 
 
 
+
+def test_mimo_adapter() -> None:
+    adapter = get_thinking_adapter("litellm_proxy/mimo-v2.5")
+    assert isinstance(adapter, MiMoThinkingAdapter)
+
+    res_off = adapter.adapt("mimo-v2.5", "off")
+    assert res_off["reasoning_effort"] == "none"
+    assert res_off["extra_body"]["thinking"]["type"] == "disabled"
+
+    res_on = adapter.adapt("mimo-v2.5", "enabled")
+    assert "reasoning_effort" not in res_on
+    assert res_on["extra_body"]["thinking"]["type"] == "enabled"
+
+    adapter_pro = get_thinking_adapter("openai/mimo-v2.5-pro")
+    assert isinstance(adapter_pro, MiMoThinkingAdapter)
+
+
+def test_switch_only_thinking_map() -> None:
+    from src.client.llm.registry import ThinkingModelSpec, get_supported_thinking_levels, clamp_thinking_level
+
+    spec = ThinkingModelSpec(reasoning=True, supports_thinking_effort=False)
+    assert get_supported_thinking_levels(spec) == ["off", "medium"]
+    assert spec.resolve_reasoning_effort("off") == "none"
+    assert spec.resolve_reasoning_effort("medium") == "enabled"
+    assert clamp_thinking_level(spec, "high") == "medium"
+
+
 def test_anthropic_adapter() -> None:
     adapter = get_thinking_adapter("claude-3-7-sonnet-20250219")
     assert isinstance(adapter, AnthropicThinkingAdapter)
@@ -303,13 +339,51 @@ def test_merge_thinking_params() -> None:
 # ---- Registry 层：off 语义回归 ----
 
 
+
+def test_litellm_profile_classifies_switch_and_effort() -> None:
+    import json
+    from src.client.llm.registry import ThinkingModelSpec, get_supported_thinking_levels
+
+    path = Path(__file__).resolve().parents[3] / "config" / "profiles" / "litellm" / "thinking_models.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    effort = []
+    switch = []
+    for name, raw in data["models"].items():
+        spec = ThinkingModelSpec(
+            reasoning=bool(raw.get("reasoning", True)),
+            supports_thinking_effort=bool(raw.get("supports_thinking_effort", False)),
+            default=str(raw.get("default", "medium")),
+            thinking_level_map=raw.get("thinkingLevelMap") or {},
+        )
+        if spec.supports_thinking_effort:
+            effort.append(name)
+            assert len([lv for lv in get_supported_thinking_levels(spec) if lv != "off"]) > 1
+        else:
+            switch.append(name)
+            assert get_supported_thinking_levels(spec) == ["off", "medium"]
+    assert effort == [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.3",
+        "glm-5.2",
+        "qwen3.8-max",
+        "qwen3.8-max-preview",
+    ]
+    assert switch == [
+        "glm-5.1",
+        "qwen3.7-flash",
+        "qwen3.7-plus",
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
+    ]
+
 def test_registry_off_respects_map() -> None:
     from src.client.llm.registry import (
         ThinkingModelSpec, LLMModelInfo,
     )
 
     # 场景1: off:"none" → 透传 "none"（显式关思考，DeepSeek 等默认思考模型需要此值）
-    spec = ThinkingModelSpec(reasoning=True, thinking_level_map={
+    spec = ThinkingModelSpec(reasoning=True, supports_thinking_effort=True, thinking_level_map={
         "off": "none", "minimal": "minimal", "low": "low",
         "medium": "medium", "high": "high",
     })
@@ -322,7 +396,7 @@ def test_registry_off_respects_map() -> None:
     assert info.resolve_reasoning_effort("medium") == "medium"
 
     # 场景2: off 缺省 → None（不下发，让模型按默认；适用默认不思考的模型）
-    spec2 = ThinkingModelSpec(reasoning=True, thinking_level_map={
+    spec2 = ThinkingModelSpec(reasoning=True, supports_thinking_effort=True, thinking_level_map={
         "minimal": "minimal", "medium": "medium", "high": "high",
     })
     info2 = LLMModelInfo(
@@ -339,7 +413,7 @@ def test_registry_off_null_hides_off() -> None:
         ThinkingModelSpec, get_supported_thinking_levels, clamp_thinking_level,
     )
 
-    spec = ThinkingModelSpec(reasoning=True, thinking_level_map={
+    spec = ThinkingModelSpec(reasoning=True, supports_thinking_effort=True, thinking_level_map={
         "off": None, "minimal": "minimal", "low": "low",
         "medium": "medium", "high": "high", "xhigh": "max",
     })
@@ -355,9 +429,12 @@ def test_registry_empty_map_defaults_standard_levels() -> None:
         ThinkingModelSpec, get_supported_thinking_levels,
     )
 
-    spec = ThinkingModelSpec(reasoning=True, thinking_level_map={})
+    spec = ThinkingModelSpec(reasoning=True, supports_thinking_effort=True, thinking_level_map={})
     levels = get_supported_thinking_levels(spec)
     assert levels == ["off", "minimal", "low", "medium", "high"]
+
+    switch = ThinkingModelSpec(reasoning=True, supports_thinking_effort=False)
+    assert get_supported_thinking_levels(switch) == ["off", "medium"]
 
 
 if __name__ == "__main__":
@@ -370,10 +447,13 @@ if __name__ == "__main__":
     test_deepseek_adapter()
     test_qwen_adapter()
     test_glm_adapter()
+    test_mimo_adapter()
+    test_switch_only_thinking_map()
     test_anthropic_adapter()
     test_gemini_adapter()
     test_openai_adapter()
     test_merge_thinking_params()
+    test_litellm_profile_classifies_switch_and_effort()
     test_registry_off_respects_map()
     test_registry_off_null_hides_off()
     test_registry_empty_map_defaults_standard_levels()

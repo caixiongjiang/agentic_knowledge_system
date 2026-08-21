@@ -246,7 +246,7 @@ def test_rebuild_messages_from_history() -> bool:
         return False
 
     asst = msgs[2]
-    if asst["role"] != "assistant" or asst["content"] != "":
+    if asst["role"] != "assistant" or asst["content"] is not None:
         _fail(f"assistant role/content 异常：{asst}")
         return False
     tcs = asst.get("tool_calls")

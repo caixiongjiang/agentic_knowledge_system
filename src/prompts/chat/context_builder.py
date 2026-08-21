@@ -129,8 +129,9 @@ def rebuild_messages_from_history(history: Iterable[Any]) -> List[Dict[str, Any]
         if role in ("system", "user"):
             rebuilt.append({"role": role, "content": content})
         elif role == "assistant":
-            entry: Dict[str, Any] = {"role": "assistant", "content": content}
             tool_calls = getattr(msg, "tool_calls", None) or []
+            entry_content = content if (content or not tool_calls) else None
+            entry: Dict[str, Any] = {"role": "assistant", "content": entry_content}
             if tool_calls:
                 entry["tool_calls"] = [
                     {
@@ -138,8 +139,12 @@ def rebuild_messages_from_history(history: Iterable[Any]) -> List[Dict[str, Any]
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": json.dumps(
-                                tc.arguments, ensure_ascii=False, sort_keys=True,
+                            "arguments": (
+                                json.dumps(
+                                    tc.arguments, ensure_ascii=False, sort_keys=True,
+                                )
+                                if isinstance(tc.arguments, dict)
+                                else str(tc.arguments)
                             ),
                         },
                     }

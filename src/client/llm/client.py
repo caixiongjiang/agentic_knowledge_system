@@ -6,7 +6,7 @@
 @Author  : caixiongjiang
 @Date    : 2026/04/21
 @Function:
-    LiteLLM 统一客户端封装
+    LiteLLM 统一客户端封装，同时支持 LiteLLM Proxy 与 Model Lake（OpenAI 兼容网关）
 
     设计要点
     --------
@@ -15,28 +15,18 @@
        的入参，并把响应解析成本项目内部的 ``LLMResponse``。
     2. **统一一个 model 字符串**：完全采用 LiteLLM 的 ``"<provider>/<model>"`` 形式，
        例如 ``"deepseek/deepseek-chat"``、``"openai/gpt-4o-mini"``、
-       ``"openai/<proxy_virtual_name>"``（指向 LiteLLM Proxy）。
-    3. **支持 LiteLLM Proxy**：用户自托管 proxy 时，统一通过 ``api_base`` /
-       ``api_key`` 注入；这两个参数可由组件配置直接指定，也可由
-       ``LITELLM_PROXY_URL`` / ``LITELLM_PROXY_KEY`` 环境变量兜底。
+       ``"litellm_proxy/<virtual_name>"``（指向 LiteLLM Proxy），或 ``"openai/<model_lake_name>"``。
+    3. **多网关无缝切换（LiteLLM Proxy / Model Lake）**：
+       - LiteLLM Proxy 模式：裸名（如 ``deepseek-v4-flash``）自动归一化为 ``litellm_proxy/<name>``。
+       - Model Lake 模式（OpenAI 兼容）：自动将模型归一化为 ``openai/<name>``，调用指定 endpoint。
+       - 切换只需配置环境变量 ``MODEL_GATEWAY_TYPE``，无需多分支维护。
     4. **多模态原生支持**：``messages`` 里直接传 OpenAI 风格的 multi-content
        结构（``{"type":"text","text":...}`` / ``{"type":"image_url",...}``），
        LiteLLM 会负责按 provider 转换。
     5. **思考强度（pi 标准 7 档，统一经 LiteLLM 翻译）**：调用方传 ``reasoning_effort``
        字符串（pi 档位 ``off/minimal/low/medium/high/xhigh/max`` 经 registry 翻译后的厂商
-       原生值，如 ``"high"`` / ``"max"``），由 LiteLLM / Proxy 按 provider 转成
-       ``enable_thinking``、``thinking`` 等原生参数。
-       - **配置层 ``default_reasoning_effort``**：preset 在构造时由
-         ``LiteLLMRegistry.resolve_reasoning_effort`` 把 pi 档位翻译成厂商字符串；
-         ``None`` 表示默认不下发（上游自决）。
-       - **调用层 ``reasoning_effort``**：单次调用覆盖配置默认。语义：
-         未传（哨兵 ``_REASONING_UNSET``）→ 沿用 ``default_reasoning_effort``；
-         显式 ``None`` → **off，不下发**（与 pi 一致，避免部分厂商在
-         ``reasoning_effort="none"`` 时禁用工具调用）；传字符串即透传。
-       不在应用侧写 provider 分支；Proxy 建议开启 ``litellm_settings.drop_params: true``。
-       响应里若有 ``reasoning_content`` 会自动归入 ``LLMResponse.thinking``。
-    6. **观测**：用户运行的 LiteLLM Proxy 把日志写入 PostgreSQL，本地客户端
-       仅用 loguru 输出关键 metrics（延迟 / token / model），无需 LangSmith。
+       原生值，如 ``"high"`` / ``"max"``），由 LiteLLM / Proxy / ThinkingAdapter 转成原生参数。
+    6. **观测**：用户运行的模型网关把日志写入数据库/网关端，本地客户端仅用 loguru 输出关键 metrics。
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 from __future__ import annotations
@@ -93,11 +83,11 @@ class LLMClientConfig(BaseModel):
 
     model: str = Field(
         ...,
-        description="LiteLLM 模型字符串，形如 'deepseek/deepseek-chat'、'openai/gpt-4o-mini'",
+        description="LiteLLM 模型字符串，形如 'deepseek/deepseek-chat'、'openai/gpt-4o-mini'、'litellm_proxy/qwen3.7-flash'",
     )
     api_base: Optional[str] = Field(
         None,
-        description="覆盖 provider 默认 endpoint，自托管 LiteLLM Proxy 时填写",
+        description="覆盖 provider 默认 endpoint，模型网关（LiteLLM Proxy 或 Model Lake）时填写",
     )
     api_key: Optional[str] = Field(
         None,
@@ -192,8 +182,11 @@ class LLMClient:
         try:
             resp = litellm.completion(**params)
         except Exception as e:
-            logger.error(f"[LLM] {self.config.model} sync generate 失败: {e}")
-            raise
+            if self._retry_if_auth_failed(params, e):
+                resp = litellm.completion(**params)
+            else:
+                logger.error(f"[LLM] {self.config.model} sync generate 失败: {e}")
+                raise
         elapsed_ms = (time.perf_counter() - t0) * 1000
         parsed = parse_litellm_response(resp)
         self._log_metrics("sync", parsed, elapsed_ms)
@@ -229,8 +222,11 @@ class LLMClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"[LLM] {self.config.model} async generate 失败: {e}")
-            raise
+            if self._retry_if_auth_failed(params, e):
+                resp = await litellm.acompletion(**params)
+            else:
+                logger.error(f"[LLM] {self.config.model} async generate 失败: {e}")
+                raise
         elapsed_ms = (time.perf_counter() - t0) * 1000
         parsed = parse_litellm_response(resp)
         self._log_metrics("async", parsed, elapsed_ms)
@@ -264,7 +260,13 @@ class LLMClient:
         )
         params["stream"] = True
         params["stream_options"] = {"include_usage": True}
-        for chunk in litellm.completion(**params):
+        try:
+            stream = litellm.completion(**params)
+        except Exception as e:
+            if not self._retry_if_auth_failed(params, e):
+                raise
+            stream = litellm.completion(**params)
+        for chunk in stream:
             yield from _yield_stream_chunks(chunk)
 
     # ---- 流式（异步） ----
@@ -300,7 +302,12 @@ class LLMClient:
         )
         params["stream"] = True
         params["stream_options"] = {"include_usage": True}
-        resp = await litellm.acompletion(**params)
+        try:
+            resp = await litellm.acompletion(**params)
+        except Exception as e:
+            if not self._retry_if_auth_failed(params, e):
+                raise
+            resp = await litellm.acompletion(**params)
         async for chunk in resp:  # type: ignore[union-attr]
             for sc in _yield_stream_chunks(chunk):
                 yield sc
@@ -338,9 +345,19 @@ class LLMClient:
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         cfg = self.config
+        # 消息预处理：确保 assistant 带有 tool_calls 且无正文时 content 为 None（符合 OpenAI 标准协议，防止上游 Rust 网关反序列化报错）
+        sanitized_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                m_role = msg.get("role")
+                if m_role == "assistant" and msg.get("tool_calls"):
+                    if not msg.get("content"):
+                        msg = {**msg, "content": None}
+            sanitized_messages.append(msg)
+
         params: Dict[str, Any] = {
             "model": cfg.model,
-            "messages": messages,
+            "messages": sanitized_messages,
             "temperature": temperature if temperature is not None else cfg.temperature,
             "max_tokens": max_tokens if max_tokens is not None else cfg.max_tokens,
             "timeout": cfg.timeout,
@@ -350,6 +367,7 @@ class LLMClient:
             params["api_base"] = cfg.api_base
         if cfg.api_key:
             params["api_key"] = cfg.api_key
+        self._apply_model_lake_auth(params)
 
         if tools:
             params["tools"] = tools
@@ -367,6 +385,21 @@ class LLMClient:
 
         # 关闭自动过滤参数，允许自定义与思考强度参数完整透传至网关/上游
         params["drop_params"] = False
+
+        # 允许扩展参数（如思考强度等）透传至 OpenAI 兼容网关（如 Model Lake），防止被 LiteLLM 本地校验拦截
+        default_allowed = [
+            "reasoning_effort",
+            "thinking",
+            "enable_thinking",
+            "thinking_budget",
+            "thinking_config",
+        ]
+        if "allowed_openai_params" in params and isinstance(params["allowed_openai_params"], list):
+            params["allowed_openai_params"] = list(
+                dict.fromkeys(params["allowed_openai_params"] + default_allowed)
+            )
+        else:
+            params["allowed_openai_params"] = default_allowed
 
         # 思考强度参数适配（Thinking Adapter）：
         # 调用层 reasoning_effort 优先；显式 None = 不主动下发参数；
@@ -394,6 +427,28 @@ class LLMClient:
 
         return params
 
+    def _apply_model_lake_auth(self, params: Dict[str, Any], *, force_refresh: bool = False) -> None:
+        """Model Lake：每次请求注入最新 Bearer（静态 ml-/JWT 或换票后的 Service JWT）。"""
+        from src.client.llm.model_lake_auth import get_model_lake_auth, is_model_lake_gateway
+
+        if not is_model_lake_gateway(_get_default_gateway_type()):
+            return
+        params["api_key"] = get_model_lake_auth().get_token(force_refresh=force_refresh)
+
+    def _retry_if_auth_failed(self, params: Dict[str, Any], exc: BaseException) -> bool:
+        from src.client.llm.model_lake_auth import (
+            get_model_lake_auth,
+            is_model_lake_gateway,
+            looks_like_auth_failure,
+        )
+
+        if not is_model_lake_gateway(_get_default_gateway_type()) or not looks_like_auth_failure(exc):
+            return False
+        logger.warning(f"[LLM] Model Lake 鉴权失败，刷新凭证后重试一次: {exc}")
+        get_model_lake_auth().invalidate()
+        self._apply_model_lake_auth(params, force_refresh=True)
+        return True
+
     def _log_metrics(self, mode: str, resp: LLMResponse, elapsed_ms: float) -> None:
         usage = resp.usage
         logger.debug(
@@ -415,24 +470,74 @@ class LLMClient:
 
 
 def _proxy_defaults() -> Dict[str, Any]:
-    """从 ``ConfigManager`` + ``EnvManager`` 读取模型网关默认配置。
+    """从 ``ConfigManager`` + ``EnvManager`` 读取 LLM 大模型网关默认配置。
 
     优先级：
       1) 组件 / preset 显式 ``api_base`` / ``api_key``
-      2) ``ConfigManager.get_proxy_full_config(env_manager)``：
-         - ``api_base`` 取 ``.env: LITELLM_PROXY_URL`` 或 ``[proxy].api_base``
-         - ``api_key``  取 ``.env: LITELLM_PROXY_KEY``
-         - ``timeout`` / ``max_retries`` 取 ``[proxy]``
+      2) ``ConfigManager.get_llm_gateway_full_config(env_manager)``：
+         - ``gateway_type`` 取 ``.env: MODEL_GATEWAY_TYPE``（默认 litellm）
+         - ``api_base`` 取 ``.env: MODEL_LAKE_BASE / LITELLM_PROXY_URL``
+         - ``api_key``  取 ``.env: LITELLM_PROXY_KEY``（Model Lake 使用 Service JWT）
+         - ``timeout`` / ``max_retries`` 取 ``.env: MODEL_GATEWAY_TIMEOUT / MODEL_GATEWAY_MAX_RETRIES``
     单例失败时降级为返回空字典，避免阻断单元测试 / 离线场景。
     """
     try:
         from src.utils.config_manager import get_config_manager
         from src.utils.env_manager import get_env_manager
 
-        return get_config_manager().get_proxy_full_config(get_env_manager())
+        return get_config_manager().get_llm_gateway_full_config(get_env_manager())
     except Exception as e:  # pragma: no cover - 配置缺失时不阻断
         logger.debug(f"读取模型网关默认配置失败，使用空默认值: {e}")
         return {}
+
+
+_llm_gateway_defaults = _proxy_defaults
+
+
+def _get_default_gateway_type() -> str:
+    proxy = _proxy_defaults()
+    return (proxy.get("gateway_type") or "litellm").strip().lower()
+
+
+_LITELLM_PROXY_PREFIX = "litellm_proxy/"
+_OPENAI_PREFIX = "openai/"
+
+
+def _ensure_gateway_routable(model: str, gateway_type: Optional[str] = None) -> str:
+    """对接 LiteLLM Proxy 或 Model Lake（OpenAI 兼容网关）的前缀归一化。
+
+    - 当 gateway_type 为 'litellm'（默认）时：
+      - 裸名（如 'deepseek-v4-flash'）补上 'litellm_proxy/' 前缀，告诉 LiteLLM SDK 走透传分支。
+      - 已有 'litellm_proxy/' 或其他已知 provider 前缀保持不变。
+    - 当 gateway_type 为 'model_lake' / 'openai' / 'openai_compatible' 时：
+      - 任何模型（无论是裸名 'deepseek-v4-flash' 还是带有 'litellm_proxy/' 前缀的预设），
+        统一归一化为 'openai/<bare_model>'，告诉 LiteLLM SDK 调用 OpenAI 兼容网关。
+      - 已是 'openai/xxx' 的保持不变。
+    """
+    if not model:
+        return model
+
+    if not gateway_type:
+        gateway_type = _get_default_gateway_type()
+
+    gw = (gateway_type or "litellm").lower().strip()
+
+    if gw in ("model_lake", "openai", "openai_compatible"):
+        clean_model = model.strip()
+        if clean_model.startswith(_LITELLM_PROXY_PREFIX):
+            clean_model = clean_model[len(_LITELLM_PROXY_PREFIX):]
+        if not clean_model.startswith(_OPENAI_PREFIX):
+            return f"{_OPENAI_PREFIX}{clean_model}"
+        return clean_model
+    else:
+        if "/" in model:
+            return model
+        return f"{_LITELLM_PROXY_PREFIX}{model}"
+
+
+def _ensure_proxy_routable(model: str) -> str:
+    """向后兼容接口，自动根据当前生效的网关类型归一化路由前缀。"""
+    return _ensure_gateway_routable(model)
 
 
 def create_llm_client(
@@ -450,14 +555,14 @@ def create_llm_client(
     """显式参数构造；通常由 ``ComponentConfigManager`` 调用。
 
     ``api_base`` / ``api_key`` / ``timeout`` / ``max_retries`` 未显式提供时，
-    自动回落到 ``[proxy]`` + ``.env`` 的模型网关默认值。
+    自动回落到 ``.env`` 的模型网关默认值。
     """
     proxy = _proxy_defaults()
-    routable_model = _ensure_proxy_routable(model)
+    gw_type = proxy.get("gateway_type", "litellm")
+    routable_model = _ensure_gateway_routable(model, gw_type)
     if routable_model != model:
         logger.debug(
-            f"create_llm_client: '{model}' → '{routable_model}' "
-            f"(自动补 litellm_proxy/ 前缀，避免裸名被 LiteLLM SDK 当成 provider 推断失败)"
+            f"create_llm_client: '{model}' → '{routable_model}' (gateway={gw_type})"
         )
     cfg = LLMClientConfig(
         model=routable_model,
@@ -473,34 +578,6 @@ def create_llm_client(
     return LLMClient(cfg)
 
 
-_LITELLM_PROXY_PREFIX = "litellm_proxy/"
-
-
-def _ensure_proxy_routable(model: str) -> str:
-    """对接 LiteLLM Proxy 的兜底归一化。
-
-    现象：用户的 LiteLLM Proxy 给模型配置的 ``model_name`` 多数是裸 alias（如
-    ``deepseek-v4-flash``），``/v1/models`` 直接返回这种裸字符串。前端把它当
-    ``model`` 参数透传到后端，``litellm.acompletion(model="deepseek-v4-flash",
-    api_base=<proxy>)`` 时 LiteLLM SDK 自己推不出 provider，抛
-    ``BadRequestError: LLM Provider NOT provided``。
-
-    解决方法：任何"看起来不像带 provider 的 id"（即不含 ``/``）都强制加上
-    ``litellm_proxy/`` 前缀，告诉 SDK 走"透传到 api_base 指向的 LiteLLM Proxy"
-    分支。已带 ``provider/`` 前缀的（``openai/gpt-4o`` 等）保持不动——它们走
-    SDK 内置的 provider adapter，符合预期。
-
-    这层归一化是**防御式的**：``LiteLLMRegistry`` 已经在生成模型清单时做了
-    一遍前缀归一；这里再做一次主要是覆盖"会话已经把裸名落库"的旧数据，让
-    它们也能正确路由。
-    """
-    if not model:
-        return model
-    if "/" in model:
-        return model
-    return _LITELLM_PROXY_PREFIX + model
-
-
 def create_llm_client_from_model(
     *,
     model: str,
@@ -508,8 +585,8 @@ def create_llm_client_from_model(
 ) -> LLMClient:
     """按"具体模型字符串 + 采样模板 preset"组装 LLMClient
 
-    使用场景：用户在前端从 ``/api/chat/models`` 选了一个 LiteLLM 模型字符串
-    （如 ``openai/gpt-4o-mini`` 或 ``litellm_proxy/deepseek-v4-flash``），后端
+    使用场景：用户在前端从 ``/api/chat/models`` 选了一个模型字符串
+    （如 ``openai/deepseek-v4-flash`` 或 ``litellm_proxy/deepseek-v4-flash``），后端
     不再走 preset 的 ``model`` 字段，但仍希望复用 preset 里调好的
     ``temperature / max_tokens / extra_params`` 这些采样
     参数——这就是 ``chat_template_preset`` 的用途。
@@ -518,29 +595,27 @@ def create_llm_client_from_model(
     ``astream(reasoning_effort=...)`` 逐轮传入，不在此 preset 模板里固化。
 
     优先级：
-        - ``model`` ← 入参（覆盖 preset.model）；裸名会自动加 ``litellm_proxy/``
-          前缀以确保 LiteLLM SDK 能正确路由
+        - ``model`` ← 入参（覆盖 preset.model）；自动根据当前网关类型归一化前缀
         - 其他字段 ← preset；preset 缺失 / 字段未设 → 走默认值
 
-    ``api_base`` / ``api_key`` 始终走 ``[proxy]`` + ``.env``，与
-    ``create_llm_client_from_preset`` 一致。
+    ``api_base`` / ``api_key`` 始终走模型网关配置，与 ``create_llm_client_from_preset`` 一致。
     """
     from src.utils.config_manager import get_config_manager
 
     cm = get_config_manager()
     p = cm.get_llm_preset(chat_template_preset) or {}
-    # template preset 找不到也不阻塞：用纯默认值即可
     if not p:
         logger.warning(
             f"chat_template_preset '{chat_template_preset}' 未配置，"
             f"使用默认采样参数",
         )
 
-    routable_model = _ensure_proxy_routable(model)
+    proxy = _proxy_defaults()
+    gw_type = proxy.get("gateway_type", "litellm")
+    routable_model = _ensure_gateway_routable(model, gw_type)
     if routable_model != model:
         logger.debug(
-            f"create_llm_client_from_model: '{model}' → '{routable_model}' "
-            f"(自动补 litellm_proxy/ 前缀)"
+            f"create_llm_client_from_model: '{model}' → '{routable_model}' (gateway={gw_type})"
         )
 
     return create_llm_client(
@@ -573,7 +648,7 @@ def create_llm_client_from_preset(preset_name: str) -> LLMClient:
     由 ``LiteLLMRegistry.resolve_reasoning_effort`` 翻译成厂商原生 reasoning_effort
     字符串后作为该客户端的默认思考强度；模型不支持思考或档位不合法时降级为 None。
 
-    ``api_base`` / ``api_key`` 默认走 LiteLLM Proxy（``.env`` + ``[proxy]``）；
+    ``api_base`` / ``api_key`` 默认走模型网关配置；
     单个 preset 也可在自身字段中强制覆盖。
     """
     from src.utils.config_manager import get_config_manager
@@ -585,12 +660,20 @@ def create_llm_client_from_preset(preset_name: str) -> LLMClient:
         available = ", ".join(sorted(presets.keys())) or "(empty)"
         raise ValueError(f"未知 LLM preset '{preset_name}'，可用: {available}")
 
-    raw_model = p["model"]
-    routable_model = _ensure_proxy_routable(raw_model)
+    raw_model = p.get("model")
+    if not raw_model:
+        from src.utils.config_profile import resolve_config_profile
+        raise ValueError(
+            f"LLM preset '{preset_name}' 未绑定 model，"
+            f"请在 config/profiles/{resolve_config_profile()}/models.toml 的 [presets] 中配置"
+        )
+    proxy = _proxy_defaults()
+    gw_type = proxy.get("gateway_type", "litellm")
+    routable_model = _ensure_gateway_routable(raw_model, gw_type)
     if routable_model != raw_model:
         logger.debug(
             f"create_llm_client_from_preset[{preset_name}]: "
-            f"'{raw_model}' → '{routable_model}' (自动补 litellm_proxy/ 前缀)"
+            f"'{raw_model}' → '{routable_model}' (gateway={gw_type})"
         )
 
     # pi 档位 → 厂商原生 reasoning_effort 字符串（模型不支持思考时返回 None）

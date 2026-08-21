@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 """对话上下文预算与压缩（Cursor 式第二版）
 
-- ``ModelContextCatalog`` ── 按模型解析 max_context / max_output / tokenizer
+- ``ModelContextCatalog`` ── 按模型解析 max_context / max_output
 - ``ContextBudgeter`` ── 完整请求 token 计量与超窗决策
 - ``HierarchicalSummarizer`` ── map-reduce 分层摘要（手动/自动统一）
 - ``truncate_tool_output`` ── 单条工具结果硬顶截断

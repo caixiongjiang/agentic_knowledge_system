@@ -1,10 +1,8 @@
 {
   "_doc": [
-    "组件 LLM 配置说明（LiteLLM 时代）：",
-    "1) 推荐使用 'llm_preset' 复用 config/config.toml [llm.presets.*] 里的预设；",
-    "2) 也可以在 'llm' 内联完整配置：仅需 'model'（LiteLLM 'provider/model' 字符串），",
-    "   可选 api_base / api_key / temperature / max_tokens / timeout / thinking_level / extra_params；",
-    "3) 'llm' 与 'llm_preset' 同时存在时，以 'llm' 字段为准（见 ComponentConfigManager.get_llm_client_for_component）。"
+    "组件 LLM 只写 llm_preset（fast / quality / reasoning / long_context / pro / multimodal / test）。",
+    "model / temperature / max_tokens / timeout / thinking_level 全部来自当前档案 models.toml 的 [presets.<role>]。",
+    "不要在本文件写 llm 内联块，也不要写死 model id。"
   ],
   "file_parser": {
     "enabled": true,
@@ -17,12 +15,7 @@
     "split_method": "structure_first",
     "chunk_size": 1000,
     "chunk_overlap": 200,
-    "separators": [
-      "\n",
-      "。",
-      "，",
-      " "
-    ],
+    "separators": ["\n\n", "\n", "。", "！", "？", ";", "；", " ", ""],
     "enable_text_clean": true,
     "comment": "文本切分组件（TextSplitter）"
   },
@@ -52,12 +45,6 @@
   "text_analyzer": {
     "enabled": true,
     "llm_preset": "fast",
-    "llm": {
-      "model": "litellm_proxy/deepseek-v4-flash",
-      "temperature": 0.3,
-      "max_tokens": 8192,
-      "thinking_level": "low"
-    },
     "max_concurrency": 4,
     "max_retries": 2,
     "chunk_batch_size": 6,
@@ -66,13 +53,7 @@
   "route_planner": {
     "enabled": true,
     "llm_preset": "reasoning",
-    "llm": {
-      "model": "litellm_proxy/deepseek-v4-flash",
-      "temperature": 0.3,
-      "max_tokens": 65536,
-      "thinking_level": "medium"
-    },
-    "comment": "LLM₁ 路由规划器（推理型；llm 字段优先于 llm_preset）。model 必须是 LiteLLM Proxy 上真实可路由的模型，推荐显式 ``litellm_proxy/<alias>`` 走透传分支"
+    "comment": "LLM₁ 路由规划器。模型与采样参数走当前档案的 reasoning 角色"
   },
   "mysql_writer": {
     "_doc": "batch_size / flush_interval 已迁移到 config.toml [kafka.batch]，此处保留仅为历史兼容，不再被启动脚本读取",

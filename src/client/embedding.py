@@ -45,7 +45,7 @@ class EmbeddingClient:
     设计要点
     --------
     - 模型字符串从 ``[embedding.presets.<name>]`` 取，形如 ``"openai/qwen3-embedding-0.6b"``，
-      由 LiteLLM 路由到自托管 Proxy（``api_base`` / ``api_key`` 走 ``[proxy]`` + ``.env``）。
+      由 LiteLLM 路由到自托管 Proxy（``api_base`` / ``api_key`` 走 ``.env``）。
     - 客户端只做批分 + 并发限流 + 维度校验；HTTP 重试 / 连接池由 LiteLLM 接管。
     - ``with`` / ``async with`` 接口保留为 no-op（LiteLLM 内部维护连接池），
       调用方代码无需感知。

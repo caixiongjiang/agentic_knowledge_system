@@ -13,7 +13,7 @@
     - ``create_llm_client``：关键字入参 ``model="provider/model"``。
     - ``create_llm_client_from_preset``：从 ``config/config.toml``
       → ``[llm.presets.<name>]`` 读取配置；``api_base`` / ``api_key`` 默认
-      回落到 ``[proxy]`` + ``LITELLM_PROXY_URL`` / ``LITELLM_PROXY_KEY``。
+      回落到 ``.env`` 的 ``MODEL_GATEWAY_*`` / ``LITELLM_PROXY_*``。
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 from src.client.llm.client import (
@@ -34,6 +34,7 @@ from src.client.llm.thinking_adapter import (
     DefaultThinkingAdapter,
     DeepSeekThinkingAdapter,
     GLMThinkingAdapter,
+    MiMoThinkingAdapter,
     QwenThinkingAdapter,
     AnthropicThinkingAdapter,
     GeminiThinkingAdapter,
@@ -64,6 +65,7 @@ __all__ = [
     "DefaultThinkingAdapter",
     "DeepSeekThinkingAdapter",
     "GLMThinkingAdapter",
+    "MiMoThinkingAdapter",
     "QwenThinkingAdapter",
     "AnthropicThinkingAdapter",
     "GeminiThinkingAdapter",

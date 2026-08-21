@@ -85,14 +85,15 @@ class HierarchicalSummarizer:
         target = int(target_tokens or self._summary_target)
         msgs = list(messages or [])
         if not msgs and not (old_summary or "").strip():
-            return SummarizeResult("", 0, 0, 0, "tokenizer", False)
+            return SummarizeResult("", 0, 0, 0, "heuristic", False)
 
         transcript_turns = self._split_turns(msgs)
         # 估算输入 token（粗略：整段 transcript）
         full_text = self._turns_to_text(transcript_turns)
         if old_summary:
             full_text = f"[之前的对话摘要]\n{old_summary}\n\n{full_text}"
-        input_tokens, counting = self._estimate_text_tokens(full_text)
+        input_tokens = self._estimate_text_tokens(full_text)
+        counting = "heuristic"
 
         # 小输入：直接 reduce（或单次摘要）
         if input_tokens <= self._chunk_budget or len(transcript_turns) <= 1:
@@ -102,9 +103,7 @@ class HierarchicalSummarizer:
                 target_tokens=target,
                 direct_transcript=full_text if input_tokens <= self._chunk_budget else None,
             )
-            summary_tokens, c2 = self._estimate_text_tokens(summary)
-            if c2 == "heuristic":
-                counting = "heuristic"
+            summary_tokens = self._estimate_text_tokens(summary)
             return SummarizeResult(
                 summary_text=summary,
                 input_tokens=input_tokens,
@@ -134,9 +133,7 @@ class HierarchicalSummarizer:
 
         # 若块摘要加总仍超预算，递归一层
         mapped_text = "\n\n".join(f"[块摘要{i+1}]\n{m}" for i, m in enumerate(mapped))
-        mapped_tokens, c3 = self._estimate_text_tokens(mapped_text)
-        if c3 == "heuristic":
-            counting = "heuristic"
+        mapped_tokens = self._estimate_text_tokens(mapped_text)
         if mapped_tokens > self._chunk_budget and len(mapped) > 1:
             # 把块摘要再当"伪轮"递归
             pseudo = [
@@ -151,7 +148,7 @@ class HierarchicalSummarizer:
                 input_tokens=input_tokens,
                 summary_tokens=inner.summary_tokens,
                 chunk_count=len(chunks),
-                counting=counting if counting == "heuristic" else inner.counting,
+                counting="heuristic",
                 merged_old_summary=bool(old_summary),
             )
 
@@ -160,9 +157,7 @@ class HierarchicalSummarizer:
             old_summary=old_summary,
             target_tokens=target,
         )
-        summary_tokens, c4 = self._estimate_text_tokens(summary)
-        if c4 == "heuristic":
-            counting = "heuristic"
+        summary_tokens = self._estimate_text_tokens(summary)
         return SummarizeResult(
             summary_text=summary,
             input_tokens=input_tokens,
@@ -210,7 +205,7 @@ class HierarchicalSummarizer:
         max_tokens = max(256, min(2000, target_tokens))
         return (await self._generate(messages, max_tokens) or "").strip()
 
-    def _estimate_text_tokens(self, text: str) -> tuple[int, str]:
+    def _estimate_text_tokens(self, text: str) -> int:
         from src.service.chat.context.budgeter import _count_text_tokens
 
         return _count_text_tokens(

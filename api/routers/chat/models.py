@@ -16,11 +16,10 @@
 
     设计取舍
     --------
-    - **不直接代理 LiteLLM Proxy 的 /v1/models**：经过 ``LiteLLMRegistry``
-      做白名单 enrich，仅返回 ``id / label / provider``，不暴露 proxy 内部的
-      能力字段、定价、alias 等。
-    - **路径下不暴露 preset / default 字段**：preset 是后台 RAG 抽取 / 起标题
-      / 摘要等组件的真相源，不是 chat 前端的事。
+    - **不直接代理网关 /v1/models**：经 ``LiteLLMRegistry`` 按档案 ``visible``
+      白名单裁剪，仅返回 ``id / label / provider`` 等前端字段。
+    - **路径下不暴露 preset / default 字段**：``[presets]`` 是抽取 pipeline /
+      检索组件 / 工具的真相源，不是 chat 前端的事。
     - **鉴权**：与其他 chat 路由一致，依赖 ``X-User-Id`` 头。模型清单本身不含
       用户态数据；加鉴权只是与同 prefix 路由保持一致风格。
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
@@ -51,11 +50,9 @@ async def list_chat_models(
     ),
     user_id: str = Depends(get_current_user_id),
 ) -> ApiResponse[ChatModelListResponse]:
-    """返回当前 LiteLLM Proxy 路由的全部 chat 模型，按 provider/label 排序。
+    """返回当前档案 ``visible`` 白名单与网关库存的交集。
 
-    前端"模型选择器"用此接口异步加载下拉。proxy 不可达时自动降级为离线兜底
-    （由 ``[llm.presets.*]`` 的 model 字符串去重生成最小可用列表），保证
-    UI 不会出现"清单为空"。
+    网关不可达且没有上次成功缓存时返回空列表，不编造兜底模型。
     """
     registry = get_litellm_registry()
     items = registry.list_models(force_refresh=bool(refresh))

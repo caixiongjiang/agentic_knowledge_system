@@ -19,6 +19,18 @@ from dotenv import load_dotenv
 from loguru import logger
 
 
+def normalize_model_lake_api_base(raw: str) -> str:
+    """把 ``MODEL_LAKE_BASE``（host）或已含前缀的 URL 归一成 ``{host}/model-lake/v1``。"""
+    base = (raw or "").strip().rstrip("/")
+    if not base:
+        return base
+    if base.endswith("/model-lake/v1"):
+        return base
+    if base.endswith("/model-lake"):
+        return f"{base}/v1"
+    return f"{base}/model-lake/v1"
+
+
 class EnvManager:
     """环境变量管理器"""
     
@@ -344,18 +356,125 @@ class EnvManager:
         """
         return self.get("KAFKA_TOPIC_PREFIX", "")
 
-    # ==================== 模型网关（LiteLLM Proxy 统一接入 LLM/Embedding/Reranker） ====================
+    # ==================== 模型网关（LiteLLM Proxy / Model Lake 统一接入） ====================
     #
-    # 所有 LLM / Embedding / Reranker 的真实密钥与 Endpoint 都收敛到
-    # 自托管 LiteLLM Proxy。不再为单个 provider 暴露独立 API Key getter——
-    # 这些密钥应配置在 Proxy 服务端，由 Proxy 端写入 PostgreSQL 做计费 / 审计。
+    # 支持自托管 LiteLLM Proxy 以及公司自研 Model Lake（OpenAI 兼容网关）。
     #
-    # 本端只需要两个变量即可访问 Proxy：
-    #   - LITELLM_PROXY_URL  : 自托管 Proxy 的 base URL
-    #   - LITELLM_PROXY_KEY  : 调用方 token（虚拟 key）
+    # 环境变量配置：
+    # 1. 统一大模型网关控制：
+    #    - MODEL_GATEWAY_TYPE: 网关类型（"litellm" 或 "model_lake" / "openai" / "openai_compatible"，默认 "litellm"）
+    #    - MODEL_GATEWAY_TIMEOUT: 客户端默认超时秒数（默认 60）
+    #    - MODEL_GATEWAY_MAX_RETRIES: 客户端默认重试次数（默认 2）
     #
-    # 业务侧通常不直接用这俩 getter；``ConfigManager.get_proxy_full_config``
-    # 会把 config.toml 的 [proxy] 与 .env 合并后吐出最终配置。
+    # 2. Model Lake 动态换票凭证：
+    #    - MODEL_LAKE_BASE   : Model Lake 服务根地址（自动补全 /model-lake/v1）
+    #    - AUTH_BASE         : Auth 认证服务根地址（POST {AUTH_BASE}/auth/client/token 换取 Service JWT）
+    #    - AUTH_CLIENT_ID    : 客户端 ID
+    #    - AUTH_CLIENT_SECRET: 客户端 Secret
+    #
+    # 3. LiteLLM Proxy 网关（Embedding / Reranker 专用网关，以及未配置 Model Lake 时的 LLM 网关）：
+    #    - LITELLM_PROXY_URL : LiteLLM Proxy base URL
+    #    - LITELLM_PROXY_KEY : LiteLLM Proxy virtual key
+
+    def get_model_gateway_type(self) -> str:
+        """获取大模型网关类型（litellm / model_lake / openai / openai_compatible），默认 litellm"""
+        raw = self.get("MODEL_GATEWAY_TYPE") or "litellm"
+        return raw.strip().lower()
+
+    def get_config_profile(self) -> str:
+        """配置档案：跟随网关类型。"""
+        from src.utils.config_profile import resolve_config_profile
+        return resolve_config_profile()
+
+    def get_model_gateway_url(self) -> Optional[str]:
+        """获取大模型网关 base URL。
+
+        - model_lake (及 openai/openai_compatible): 取 MODEL_LAKE_BASE 并规范化（自动补 /model-lake/v1）
+        - litellm: 取 LITELLM_PROXY_URL
+        """
+        raw_type = self.get_model_gateway_type()
+        if raw_type in ("model_lake", "openai", "openai_compatible"):
+            ml_base = self.get("MODEL_LAKE_BASE")
+            if ml_base and ml_base.strip():
+                return normalize_model_lake_api_base(ml_base)
+            return None
+        return self.get("LITELLM_PROXY_URL")
+
+    def get_model_gateway_key(self) -> Optional[str]:
+        """获取大模型网关 API Key。
+
+        - model_lake 走 Auth 动态换取 Service JWT（由 ModelLakeAuthProvider 注入），静态 Key 返回 None
+        - litellm 返回 LITELLM_PROXY_KEY
+        """
+        raw_type = self.get_model_gateway_type()
+        if raw_type in ("model_lake", "openai", "openai_compatible"):
+            return None
+        return self.get("LITELLM_PROXY_KEY")
+
+    def get_model_gateway_timeout(self, default: float = 60.0) -> float:
+        """客户端默认超时（秒）：``MODEL_GATEWAY_TIMEOUT``。"""
+        raw = self.get("MODEL_GATEWAY_TIMEOUT")
+        if raw is None or not str(raw).strip():
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                f"环境变量 MODEL_GATEWAY_TIMEOUT 无法转换为数字: {raw}，使用默认值 {default}"
+            )
+            return default
+
+    def get_model_gateway_max_retries(self, default: int = 2) -> int:
+        """客户端默认重试次数：``MODEL_GATEWAY_MAX_RETRIES``。"""
+        raw = self.get("MODEL_GATEWAY_MAX_RETRIES")
+        if raw is None or not str(raw).strip():
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                f"环境变量 MODEL_GATEWAY_MAX_RETRIES 无法转换为整数: {raw}，使用默认值 {default}"
+            )
+            return default
+
+    def get_auth_base(self) -> Optional[str]:
+        """Auth 服务根地址（不含 ``/auth/client/token``）。"""
+        raw = self.get("AUTH_BASE")
+        return raw.strip().rstrip("/") if raw and raw.strip() else None
+
+    def get_auth_client_id(self) -> Optional[str]:
+        raw = self.get("AUTH_CLIENT_ID")
+        return raw.strip() if raw and raw.strip() else None
+
+    def get_auth_client_secret(self) -> Optional[str]:
+        raw = self.get("AUTH_CLIENT_SECRET")
+        return raw.strip() if raw and raw.strip() else None
+
+    def get_auth_client_token_url(self) -> Optional[str]:
+        """Service JWT 换票地址：``{AUTH_BASE}/auth/client/token``。"""
+        base = self.get_auth_base()
+        if not base:
+            return None
+        return f"{base}/auth/client/token"
+
+    def has_auth_client_credentials(self) -> bool:
+        return bool(self.get_auth_client_token_url() and self.get_auth_client_id() and self.get_auth_client_secret())
+
+    def get_embedding_gateway_url(self) -> Optional[str]:
+        """获取 Embedding 模型网关 URL（走 LiteLLM Proxy）"""
+        return self.get("LITELLM_PROXY_URL")
+
+    def get_embedding_gateway_key(self) -> Optional[str]:
+        """获取 Embedding 模型网关 Key（走 LiteLLM Proxy）"""
+        return self.get("LITELLM_PROXY_KEY")
+
+    def get_reranker_gateway_url(self) -> Optional[str]:
+        """获取 Reranker 模型网关 URL（走 LiteLLM Proxy）"""
+        return self.get("LITELLM_PROXY_URL")
+
+    def get_reranker_gateway_key(self) -> Optional[str]:
+        """获取 Reranker 模型网关 Key（走 LiteLLM Proxy）"""
+        return self.get("LITELLM_PROXY_KEY")
 
     def get_litellm_proxy_url(self) -> Optional[str]:
         """获取自托管 LiteLLM Proxy base URL（如 ``http://litellm:4000``）"""

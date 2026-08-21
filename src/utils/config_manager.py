@@ -58,6 +58,20 @@ class ConfigManager:
             logger.info(f"已加载配置文件: {config_path}")
         except Exception as e:
             raise ValueError(f"配置文件加载失败: {e}")
+        self._apply_profile_models()
+
+    def _apply_profile_models(self) -> None:
+        """用档案 ``[presets.*]`` 整表替换 ``[llm.presets]``（模型 + 采样参数）。"""
+        from src.utils.config_profile import load_profile_presets, resolve_config_profile
+
+        profile = resolve_config_profile()
+        presets = load_profile_presets(profile)
+        if not presets:
+            logger.debug(f"配置档案 {profile} 未提供 [presets]")
+            return
+        llm = self._config.setdefault("llm", {})
+        llm["presets"] = presets
+        logger.info(f"已应用配置档案 {profile} 的 {len(presets)} 个 LLM 角色")
     
     def reload(self) -> None:
         """重新加载配置文件"""
@@ -210,41 +224,99 @@ class ConfigManager:
         """获取Kafka配置"""
         return self._kafka_section(self._env_manager)
     
-    # ==================== 模型网关（LiteLLM Proxy） ====================
-    # 同时被 LLM / Embedding / Reranker 复用
+    # ==================== 模型网关（LiteLLM Proxy / Model Lake） ====================
+    # 支持 LiteLLM Proxy 与 OpenAI 兼容的 Model Lake 网关
 
     def get_proxy_config(self) -> Dict[str, Any]:
-        """获取 [proxy] 配置节（不含敏感字段）"""
+        """兼容旧调用：``[proxy]`` 已移除，网关身份与超时只读环境变量。"""
         return self.get_section("proxy")
 
-    def get_proxy_full_config(self, env_manager: EnvManager) -> Dict[str, Any]:
+    def get_llm_gateway_full_config(self, env_manager: Optional[EnvManager] = None) -> Dict[str, Any]:
         """
-        获取完整模型网关配置（合并 [proxy] + .env 中的 LITELLM_PROXY_*）
+        获取完整 LLM 大模型网关配置。
 
-        优先级：环境变量 > config.toml；空字符串视为未设置。
+        ``gateway_type`` / ``api_base`` / ``api_key`` / ``default_timeout`` /
+        ``default_max_retries`` 只读环境变量。
 
         Returns:
-            ``{api_base, api_key, default_timeout, default_max_retries}``，
+            ``{gateway_type, api_base, api_key, default_timeout, default_max_retries}``，
             缺失字段为 None / 默认值。
         """
-        proxy_cfg = self.get_proxy_config()
+        if env_manager is None:
+            from src.utils.env_manager import get_env_manager
+            env_manager = get_env_manager()
 
-        env_url = env_manager.get_litellm_proxy_url()
-        env_key = env_manager.get_litellm_proxy_key()
+        gateway_type = env_manager.get_model_gateway_type()
 
-        api_base = env_url or proxy_cfg.get("api_base") or None
+        env_url = env_manager.get_model_gateway_url()
+        env_key = env_manager.get_model_gateway_key()
+
+        api_base = env_url or None
         if api_base == "":
             api_base = None
-        api_key = env_key or None  # api_key 仅来自 .env（敏感）
+        api_key = env_key or None
+
+        return {
+            "gateway_type": gateway_type,
+            "api_base": api_base,
+            "api_key": api_key,
+            "default_timeout": env_manager.get_model_gateway_timeout(60),
+            "default_max_retries": env_manager.get_model_gateway_max_retries(2),
+        }
+
+    def get_proxy_full_config(self, env_manager: Optional[EnvManager] = None) -> Dict[str, Any]:
+        """
+        获取完整模型网关配置（默认返回 LLM 模型网关配置，向后兼容）
+        """
+        return self.get_llm_gateway_full_config(env_manager)
+
+    def get_embedding_gateway_full_config(self, env_manager: Optional[EnvManager] = None) -> Dict[str, Any]:
+        """
+        获取完整 Embedding 模型网关配置（使用 LiteLLM 网关）
+        """
+        if env_manager is None:
+            from src.utils.env_manager import get_env_manager
+            env_manager = get_env_manager()
+
+        env_url = env_manager.get_embedding_gateway_url()
+        env_key = env_manager.get_embedding_gateway_key()
+
+        api_base = env_url or None
+        if api_base == "":
+            api_base = None
+        api_key = env_key or None
 
         return {
             "api_base": api_base,
             "api_key": api_key,
-            "default_timeout": proxy_cfg.get("default_timeout", 60),
-            "default_max_retries": proxy_cfg.get("default_max_retries", 2),
+            "default_timeout": env_manager.get_model_gateway_timeout(60),
+            "default_max_retries": env_manager.get_model_gateway_max_retries(2),
         }
 
-    # ==================== LLM 配置获取（LiteLLM 统一接入） ====================
+    def get_reranker_gateway_full_config(self, env_manager: Optional[EnvManager] = None) -> Dict[str, Any]:
+        """
+        获取完整 Reranker 模型网关配置（使用 LiteLLM 网关）
+        """
+        if env_manager is None:
+            from src.utils.env_manager import get_env_manager
+            env_manager = get_env_manager()
+
+        env_url = env_manager.get_reranker_gateway_url()
+        env_key = env_manager.get_reranker_gateway_key()
+
+        api_base = env_url or None
+        if api_base == "":
+            api_base = None
+        api_key = env_key or None
+
+        return {
+            "api_base": api_base,
+            "api_key": api_key,
+            "default_timeout": env_manager.get_model_gateway_timeout(30),
+            "default_max_retries": env_manager.get_model_gateway_max_retries(2),
+        }
+
+    # ==================== LLM 配置获取 ====================
 
     def get_llm_config(self) -> Dict[str, Any]:
         """获取整个 [llm] 配置节"""
@@ -375,7 +447,6 @@ class ConfigManager:
             "storage": ["type"],
             "minio": [],
             "kafka": [],  # 业务参数均在子节，bootstrap_servers / group_id_prefix 由 env 提供
-            "proxy": ["default_timeout"],
             "llm": ["presets"],
             "embedding": ["default_preset", "dimension", "presets"],
             "sparse_embedding": ["model_name"],  # api_base 由 env 提供
@@ -519,7 +590,7 @@ class ConfigManager:
         preset_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        组装完整 Embedding 配置：``[embedding]`` 业务约束 + 选定 preset + ``[proxy]`` 兜底
+        组装完整 Embedding 配置：``[embedding]`` 业务约束 + 选定 preset + 环境变量网关兜底
 
         Args:
             env_manager: 用于读取 ``LITELLM_PROXY_*``
@@ -546,7 +617,7 @@ class ConfigManager:
         }
         merged.update(preset)
 
-        proxy = self.get_proxy_full_config(env_manager)
+        proxy = self.get_embedding_gateway_full_config(env_manager)
         if not merged.get("api_base"):
             merged["api_base"] = proxy.get("api_base")
         if not merged.get("api_key"):
@@ -572,7 +643,7 @@ class ConfigManager:
         preset_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        组装完整 Reranker 配置：``[reranker]`` 业务约束 + 选定 preset + ``[proxy]`` 兜底
+        组装完整 Reranker 配置：``[reranker]`` 业务约束 + 选定 preset + 环境变量网关兜底
         """
         section = self.get_reranker_config()
         chosen = preset_name or section.get("default_preset")
@@ -590,7 +661,7 @@ class ConfigManager:
         }
         merged.update(preset)
 
-        proxy = self.get_proxy_full_config(env_manager)
+        proxy = self.get_reranker_gateway_full_config(env_manager)
         if not merged.get("api_base"):
             merged["api_base"] = proxy.get("api_base")
         if not merged.get("api_key"):

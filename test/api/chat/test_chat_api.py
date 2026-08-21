@@ -734,7 +734,8 @@ def test_rest_list_chat_models() -> bool:
         for m in models:
             assert set(m.keys()) == {
                 "id", "label", "provider",
-                "supports_thinking", "supports_multimodal", "max_context",
+                "supports_thinking", "thinking_levels", "default_thinking_level",
+                "supports_multimodal", "max_context",
             }, m
         _ok("/api/chat/models 字段裁剪 OK，仅返回 id/label/provider/capabilities/max_context")
 
@@ -763,18 +764,18 @@ def test_rest_list_chat_models() -> bool:
     )
     ids = [it.id for it in items]
     labels = [it.label for it in items]
-    assert "litellm_proxy/openai/gpt-4o-mini" in ids, ids
+    assert "litellm_proxy/gpt-4o-mini" in ids, ids
     assert "litellm_proxy/deepseek-v4-flash" in ids, ids
     # 已带 litellm_proxy/ 前缀的不会被双重前缀
     assert "litellm_proxy/glm-5.1" in ids, ids
     assert "litellm_proxy/litellm_proxy/glm-5.1" not in ids
-    assert "openai/text-embedding-3-large" not in [it.id.replace("litellm_proxy/", "") for it in items]
-    assert "cohere/qwen3-reranker-0.6b" not in [it.id.replace("litellm_proxy/", "") for it in items]
+    assert "litellm_proxy/text-embedding-3-large" in ids
+    assert "litellm_proxy/qwen3-reranker-0.6b" in ids
     # label 是去前缀后的最后一段，前端展示更友好
     assert "deepseek-v4-flash" in labels
     assert "gpt-4o-mini" in labels
     assert "glm-5.1" in labels
-    _ok("启发式过滤 embedding / rerank OK")
+    _ok("解析不再按 embedding / rerank 启发式丢弃")
     _ok("裸 alias / 已带 provider 前缀的 id 都被归一为 litellm_proxy/<inner>")
 
 
@@ -800,7 +801,7 @@ def test_rest_list_chat_models() -> bool:
     assert by_id["litellm_proxy/deepseek-v4-flash"].max_context == 1000000
     assert by_id["litellm_proxy/glm-5.1"].max_context == 128000
     assert by_id["litellm_proxy/small-32k"].max_context == 32768
-    assert by_id["litellm_proxy/openai/gpt-4o-mini"].max_context is None
+    assert by_id["litellm_proxy/gpt-4o-mini"].max_context is None
     _ok("max_context: 本地声明优先，未声明回落 proxy /v1/model/info OK")
 
     # 小于统一上限的模型不再被剔除（它们由 catalog 按自身窗口计量）
@@ -814,8 +815,11 @@ def test_rest_list_chat_models() -> bool:
         info_map={"x/foo": {"mode": "chat"}, "x/bar": {"mode": "image_generation"}},
     )
     ids = [it.id for it in items]
-    assert ids == ["litellm_proxy/x/foo"], ids
-    _ok("LiteLLM model_info.mode 过滤 OK")
+    assert "litellm_proxy/foo" in ids
+    assert "litellm_proxy/bar" in ids
+    visible = LiteLLMRegistry._filter_visible_models(items, ["foo"])
+    assert [it.id for it in visible] == ["litellm_proxy/foo"]
+    _ok("mode 不再过滤；visible 白名单决定前端清单")
 
     return True
 

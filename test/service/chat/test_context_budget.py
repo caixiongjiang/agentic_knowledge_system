@@ -16,8 +16,7 @@ from src.service.chat.context.catalog import ModelContextCatalog
 
 
 ROOT = Path(__file__).resolve().parents[3]
-LONG_CTX = ROOT / "config" / "long_context_models.json"
-TOK_MAP = ROOT / "config" / "tokenizer_map.json"
+LONG_CTX = ROOT / "config" / "profiles" / "litellm" / "long_context_models.json"
 
 
 def test_catalog_parses_object_and_int_formats(tmp_path: Path) -> None:
@@ -28,9 +27,7 @@ def test_catalog_parses_object_and_int_formats(tmp_path: Path) -> None:
             "b": {"max_context": 262144, "max_output": 4096},
         }
     }), encoding="utf-8")
-    tok = tmp_path / "tok.json"
-    tok.write_text(json.dumps({"map": {"b": "openai/gpt-4o"}}), encoding="utf-8")
-    cat = ModelContextCatalog(long_context_path=cfg, tokenizer_map_path=tok)
+    cat = ModelContextCatalog(long_context_path=cfg)
     sa = cat.resolve("litellm_proxy/a")
     assert sa.max_context == 128000
     assert sa.source == "config"
@@ -41,10 +38,9 @@ def test_catalog_parses_object_and_int_formats(tmp_path: Path) -> None:
     assert sb.max_context == 200_000
     assert sb.capped is True
     assert sb.max_output == 4096
-    assert sb.tokenizer_model == "openai/gpt-4o"
     # cap=0 关闭封顶时按模型声明值
     uncapped = ModelContextCatalog(
-        long_context_path=cfg, tokenizer_map_path=tok, max_context_cap=0,
+        long_context_path=cfg, max_context_cap=0,
     ).resolve("litellm_proxy/b")
     assert uncapped.max_context == 262144
     assert uncapped.capped is False
@@ -53,15 +49,13 @@ def test_catalog_parses_object_and_int_formats(tmp_path: Path) -> None:
 def test_catalog_loads_project_config() -> None:
     cat = ModelContextCatalog(
         long_context_path=LONG_CTX,
-        tokenizer_map_path=TOK_MAP,
     )
     spec = cat.resolve("litellm_proxy/deepseek-v4-flash")
     assert spec.max_context >= 200_000
-    assert spec.tokenizer_model is not None
 
 
 def test_budgeter_breakdown_sums_to_used() -> None:
-    cat = ModelContextCatalog(long_context_path=LONG_CTX, tokenizer_map_path=TOK_MAP)
+    cat = ModelContextCatalog(long_context_path=LONG_CTX)
     budgeter = ContextBudgeter(catalog=cat, threshold_ratio=0.8)
     report = budgeter.evaluate(ContextBudgetInput(
         model="litellm_proxy/deepseek-v4-flash",
@@ -91,7 +85,7 @@ class _Msg:
 
 
 def test_skills_split_out_of_system_prompt() -> None:
-    cat = ModelContextCatalog(long_context_path=LONG_CTX, tokenizer_map_path=TOK_MAP)
+    cat = ModelContextCatalog(long_context_path=LONG_CTX)
     budgeter = ContextBudgeter(catalog=cat, threshold_ratio=0.9)
     skills = "## 可用技能\n" + ("- skill-alpha: 用于测试的技能条目\n" * 40)
     base = dict(
@@ -115,7 +109,7 @@ def test_skills_split_out_of_system_prompt() -> None:
 
 
 def test_summary_split_out_of_history() -> None:
-    cat = ModelContextCatalog(long_context_path=LONG_CTX, tokenizer_map_path=TOK_MAP)
+    cat = ModelContextCatalog(long_context_path=LONG_CTX)
     budgeter = ContextBudgeter(catalog=cat, threshold_ratio=0.9)
     report = budgeter.evaluate(ContextBudgetInput(
         model="litellm_proxy/deepseek-v4-flash",
@@ -134,7 +128,7 @@ def test_summary_split_out_of_history() -> None:
 
 
 def test_will_compact_at_tracks_soft_limit() -> None:
-    cat = ModelContextCatalog(long_context_path=LONG_CTX, tokenizer_map_path=TOK_MAP)
+    cat = ModelContextCatalog(long_context_path=LONG_CTX)
     budgeter = ContextBudgeter(catalog=cat, threshold_ratio=0.9)
     report = budgeter.evaluate(ContextBudgetInput(
         model="litellm_proxy/deepseek-v4-flash",
@@ -148,7 +142,7 @@ def test_will_compact_at_tracks_soft_limit() -> None:
 
 
 def test_truncate_tool_output_keeps_head_tail() -> None:
-    cat = ModelContextCatalog(long_context_path=LONG_CTX, tokenizer_map_path=TOK_MAP)
+    cat = ModelContextCatalog(long_context_path=LONG_CTX)
     text = ("HEAD-" * 2000) + ("TAIL-" * 2000)
     out = truncate_tool_output(
         text,
@@ -175,10 +169,8 @@ def _tiny_catalog(tmp_path: Path) -> ModelContextCatalog:
     cfg.write_text(json.dumps({
         "models": {"tiny": {"max_context": 4000, "max_output": 1000}}
     }), encoding="utf-8")
-    tok = tmp_path / "tok.json"
-    tok.write_text(json.dumps({"map": {"tiny": "gpt-4o"}}), encoding="utf-8")
     return ModelContextCatalog(
-        long_context_path=cfg, tokenizer_map_path=tok, max_context_cap=0,
+        long_context_path=cfg, max_context_cap=0,
     )
 
 
@@ -236,7 +228,9 @@ def test_shrink_is_noop_when_under_budget(tmp_path: Path) -> None:
 
 def test_shrink_trims_oldest_tool_output_first(tmp_path: Path) -> None:
     budgeter = ContextBudgeter(catalog=_tiny_catalog(tmp_path), threshold_ratio=0.9)
-    messages = _loop_messages(400)
+    # 启发式估算（英文字符/4 × 1.2 安全系数）比旧 tokenizer 高约 20%，
+    # 这里取 300 词使"只收紧最旧一条、最新一轮保持全文"在启发式口径下仍成立。
+    messages = _loop_messages(300)
     newest_before = messages[5]["content"]
     outcome = budgeter.shrink_messages_to_fit(
         messages, model="tiny", reserved_output_tokens=1000, floor_tokens=100,
@@ -275,10 +269,8 @@ def test_shrink_elides_when_floor_not_enough(tmp_path: Path) -> None:
 def _cap_catalog(tmp_path: Path, models: dict, cap: int) -> ModelContextCatalog:
     cfg = tmp_path / "long.json"
     cfg.write_text(json.dumps({"models": models}), encoding="utf-8")
-    tok = tmp_path / "tok.json"
-    tok.write_text(json.dumps({"map": {}}), encoding="utf-8")
     return ModelContextCatalog(
-        long_context_path=cfg, tokenizer_map_path=tok, max_context_cap=cap,
+        long_context_path=cfg, max_context_cap=cap,
     )
 
 

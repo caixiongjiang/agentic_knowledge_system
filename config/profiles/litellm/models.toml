@@ -1,0 +1,73 @@
+# LiteLLM 档案
+# 写 Proxy 上的真实模型 id（不含 litellm_proxy/ 调用前缀）
+# [presets.<role>] 是抽取 pipeline / 检索组件 / 工具用的角色：模型 + 采样参数
+# [visible].models 是前端对话主模型白名单，不要和 presets 混用
+
+# 性价比优先；用于起标题 / 摘要压缩 / 检索结果 LLM 验证等短轻调用
+[presets.fast]
+model = "qwen3.7-flash"
+temperature = 0.3
+max_tokens = 65536
+timeout = 60
+thinking_level = "off"
+
+[presets.quality]
+model = "deepseek-v4-pro"
+temperature = 0.5
+max_tokens = 65536
+timeout = 120
+thinking_level = "high"
+
+# 推理优先；用于 RoutePlanner 等需要复杂推理的内部调用
+# glm-5.1 只支持思考开关，thinking_level 只写 off / medium
+[presets.reasoning]
+model = "glm-5.1"
+temperature = 0.5
+max_tokens = 65536
+timeout = 120
+thinking_level = "medium"
+
+[presets.long_context]
+model = "deepseek-v4-flash"
+temperature = 0.5
+max_tokens = 65536
+timeout = 90
+thinking_level = "low"
+
+[presets.pro]
+model = "glm-5.2"
+temperature = 0.5
+max_tokens = 65536
+timeout = 150
+thinking_level = "max"
+
+# 读图路径专用；业务只在显式启用多模态时引用
+[presets.multimodal]
+model = "qwen3.7-flash"
+temperature = 0.7
+max_tokens = 65536
+timeout = 90
+thinking_level = "medium"
+
+# qwen3.7-flash 只支持思考开关，thinking_level 只写 off / medium
+[presets.test]
+model = "qwen3.7-flash"
+temperature = 0.3
+max_tokens = 65536
+timeout = 60
+thinking_level = "off"
+
+[visible]
+models = [
+  "deepseek-v4-flash",
+  # "deepseek-v4-pro",
+  "glm-5.1",
+  "glm-5.2",
+  # "glm-5.3",
+  "qwen3.7-flash",
+  "qwen3.7-plus",
+  # "qwen3.8-max",
+  # "qwen3.8-max-preview"
+  "mimo-v2.5",
+  "mimo-v2.5-pro"
+]

@@ -4,6 +4,8 @@
 
 计量对象：system + history + user(+mentions/skills) + tools schema + reserved_output。
 超 soft_limit 时由调用方触发压缩 / 截断 tool 输出；硬超窗抛 ``ContextOverflowError``。
+
+token 估算统一走 ``_heuristic_count``（中英文字符比经验值），不再依赖任何 tokenizer。
 """
 from __future__ import annotations
 
@@ -17,7 +19,6 @@ from src.prompts.chat.context_builder import rebuild_messages_from_history
 from src.prompts.chat.history_compressor import (
     _heuristic_count,
     _serialize_message_for_count,
-    count_message_tokens,
 )
 from src.service.chat.context.catalog import (
     ModelContextCatalog,
@@ -53,10 +54,9 @@ class ContextBudgetReport:
     reserved_output: int
     ratio: float
     over_soft_limit: bool
-    counting: str  # "tokenizer" | "heuristic"
+    counting: str  # 始终 "heuristic"（已移除 tokenizer，统一走字符估算）
     breakdown: Dict[str, int]
     model: str = ""
-    tokenizer_model: Optional[str] = None
     will_compact_at: int = 0
     """触发自动压缩的绝对 token 数（``soft_limit × threshold_ratio``）。"""
 
@@ -71,7 +71,6 @@ class ContextBudgetReport:
             "counting": self.counting,
             "breakdown": dict(self.breakdown),
             "model": self.model,
-            "tokenizer_model": self.tokenizer_model,
             "will_compact_at": self.will_compact_at,
         }
 
@@ -110,7 +109,7 @@ def truncate_tool_output(
     if not text or max_tokens <= 0:
         return text or ""
     catalog = catalog or get_model_context_catalog()
-    used, _ = _count_text_tokens(
+    used = _count_text_tokens(
         text, model=model, catalog=catalog, safety_factor=heuristic_safety_factor,
     )
     if used <= max_tokens:
@@ -119,13 +118,13 @@ def truncate_tool_output(
     # 按字符比例粗切：token≈char/ratio，留余量
     # 先按 used/max 比例缩字符
     keep_chars = max(64, int(len(text) * (max_tokens / max(used, 1)) * 0.95))
-    head_chars = max(32, int(keep_chars * head_ratio))
-    tail_chars = max(32, keep_chars - head_chars)
-    if head_chars + tail_chars >= len(text):
+    head_char = max(32, int(keep_chars * head_ratio))
+    tail_chars = max(32, keep_chars - head_char)
+    if head_char + tail_chars >= len(text):
         return text
-    omitted = len(text) - head_chars - tail_chars
+    omitted = len(text) - head_char - tail_chars
     return (
-        f"{text[:head_chars]}\n"
+        f"{text[:head_char]}\n"
         f"...[tool output truncated: omitted ~{omitted} chars]...\n"
         f"{text[-tail_chars:]}"
     )
@@ -137,21 +136,11 @@ def _count_text_tokens(
     model: str,
     catalog: ModelContextCatalog,
     safety_factor: float,
-) -> tuple[int, str]:
+) -> int:
+    """统一走中英文字符比经验估算（``_heuristic_count``），乘安全系数。"""
     if not text:
-        return 0, "tokenizer"
-    tok_model = catalog.resolve_tokenizer_model(model)
-    messages = [{"role": "user", "content": text}]
-    if tok_model:
-        try:
-            import litellm
-
-            n = int(litellm.token_counter(model=tok_model, messages=messages))
-            return n, "tokenizer"
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"token_counter(text) failed: {e}")
-    n = int(_heuristic_count(text) * max(1.0, safety_factor))
-    return n, "heuristic"
+        return 0
+    return int(_heuristic_count(text) * max(1.0, safety_factor))
 
 
 class ContextBudgeter:
@@ -198,9 +187,6 @@ class ContextBudgeter:
         reserved = min(reserved, spec.max_output, spec.max_context // 4 or reserved)
         soft_limit = max(1, spec.max_context - reserved)
 
-        tok_model = spec.tokenizer_model
-        counting = "tokenizer" if tok_model else "heuristic"
-
         breakdown: Dict[str, int] = {
             "system": 0,
             "skills": 0,
@@ -213,19 +199,15 @@ class ContextBudgeter:
 
         # system（技能索引嵌在其中，下一步拆出并扣除）
         if inp.system_prompt:
-            n, c = self._count_messages(
+            breakdown["system"] = self._count_messages(
                 [{"role": "system", "content": inp.system_prompt}],
                 model=inp.model,
-                tok_model=tok_model,
             )
-            breakdown["system"] = n
-            if c == "heuristic":
-                counting = "heuristic"
 
         # skills：技能索引由 SkillRegistry.build_index() 生成后拼进 system_prompt。
         # 单列一项便于观测，并从 system 扣除，保证分项加和恒等于 used。
         if inp.skills_block.strip():
-            n, c = _count_text_tokens(
+            n = _count_text_tokens(
                 inp.skills_block,
                 model=inp.model,
                 catalog=self._catalog,
@@ -234,8 +216,6 @@ class ContextBudgeter:
             n = min(n, breakdown["system"])
             breakdown["skills"] = n
             breakdown["system"] -= n
-            if c == "heuristic":
-                counting = "heuristic"
 
         # history：拆成 summary（持久化上下文摘要）与 history（原始对话）
         if inp.history:
@@ -251,28 +231,20 @@ class ContextBudgeter:
             for key, msgs in groups:
                 if not msgs:
                     continue
-                n, c = self._count_messages(msgs, model=inp.model, tok_model=tok_model)
-                breakdown[key] = n
-                if c == "heuristic":
-                    counting = "heuristic"
+                breakdown[key] = self._count_messages(msgs, model=inp.model)
 
         # user：调用方传入的是**给 LLM 的 user 副本**，已含 @ 引用块与显式技能块
         if inp.user_message:
-            n, c = self._count_messages(
+            breakdown["user"] = self._count_messages(
                 [{"role": "user", "content": inp.user_message}],
                 model=inp.model,
-                tok_model=tok_model,
             )
-            breakdown["user"] = n
-            if c == "heuristic":
-                counting = "heuristic"
 
         # tools schema
         if inp.tools_schema:
-            n, c = self._count_tools(list(inp.tools_schema), model=inp.model, tok_model=tok_model)
-            breakdown["tools_schema"] = n
-            if c == "heuristic":
-                counting = "heuristic"
+            breakdown["tools_schema"] = self._count_tools(
+                list(inp.tools_schema), model=inp.model
+            )
 
         used = sum(
             breakdown[k]
@@ -289,10 +261,9 @@ class ContextBudgeter:
             reserved_output=reserved,
             ratio=ratio,
             over_soft_limit=used > soft_limit * self._threshold_ratio,
-            counting=counting,
+            counting="heuristic",
             breakdown=breakdown,
             model=inp.model,
-            tokenizer_model=tok_model,
             will_compact_at=int(soft_limit * self._threshold_ratio),
         )
 
@@ -325,9 +296,6 @@ class ContextBudgeter:
         reserved = min(reserved, spec.max_output, spec.max_context // 4 or reserved)
         soft_limit = max(1, spec.max_context - reserved)
 
-        tok_model = spec.tokenizer_model
-        counting = "tokenizer" if tok_model else "heuristic"
-
         breakdown: Dict[str, int] = {
             "system": 0,
             "skills": 0,
@@ -345,18 +313,12 @@ class ContextBudgeter:
         for key, msgs in groups:
             if not msgs:
                 continue
-            n, c = self._count_messages(list(msgs), model=model, tok_model=tok_model)
-            breakdown[key] = n
-            if c == "heuristic":
-                counting = "heuristic"
+            breakdown[key] = self._count_messages(list(msgs), model=model)
 
         if tools_schema:
-            n, c = self._count_tools(
-                list(tools_schema), model=model, tok_model=tok_model,
+            breakdown["tools_schema"] = self._count_tools(
+                list(tools_schema), model=model,
             )
-            breakdown["tools_schema"] = n
-            if c == "heuristic":
-                counting = "heuristic"
 
         used = breakdown["system"] + breakdown["history"] + breakdown["tools_schema"]
         ratio = used / spec.max_context if spec.max_context > 0 else 1.0
@@ -367,10 +329,9 @@ class ContextBudgeter:
             reserved_output=reserved,
             ratio=ratio,
             over_soft_limit=used > soft_limit * self._threshold_ratio,
-            counting=counting,
+            counting="heuristic",
             breakdown=breakdown,
             model=model,
-            tokenizer_model=tok_model,
             will_compact_at=int(soft_limit * self._threshold_ratio),
         )
 
@@ -418,13 +379,12 @@ class ContextBudgeter:
         floor = max(0, int(floor_tokens))
 
         def _count(text: str) -> int:
-            n, _ = _count_text_tokens(
+            return _count_text_tokens(
                 text,
                 model=model,
                 catalog=self._catalog,
                 safety_factor=self._heuristic_safety_factor,
             )
-            return n
 
         # 一级：旧工具结果收紧到 floor
         if floor > 0:
@@ -493,41 +453,24 @@ class ContextBudgeter:
         messages: List[Dict[str, Any]],
         *,
         model: str,
-        tok_model: Optional[str],
-    ) -> tuple[int, str]:
+    ) -> int:
         if not messages:
-            return 0, "tokenizer"
-        if tok_model:
-            try:
-                n = count_message_tokens(messages, model=tok_model)
-                return int(n), "tokenizer"
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"count_message_tokens failed: {e}")
+            return 0
         total = 0
         for m in messages:
             total += _heuristic_count(_serialize_message_for_count(m))
-        return int(total * max(1.0, self._heuristic_safety_factor)), "heuristic"
+        return int(total * max(1.0, self._heuristic_safety_factor))
 
     def _count_tools(
         self,
         tools: List[Dict[str, Any]],
         *,
         model: str,
-        tok_model: Optional[str],
-    ) -> tuple[int, str]:
+    ) -> int:
         if not tools:
-            return 0, "tokenizer"
-        # 用一条 dummy message + tools 让 litellm 计入 schema
-        dummy = [{"role": "user", "content": ""}]
-        if tok_model:
-            try:
-                with_tools = count_message_tokens(dummy, model=tok_model, tools=tools)
-                without = count_message_tokens(dummy, model=tok_model)
-                return max(0, int(with_tools) - int(without)), "tokenizer"
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"count tools failed: {e}")
+            return 0
         raw = json.dumps(tools, ensure_ascii=False)
-        return int(_heuristic_count(raw) * max(1.0, self._heuristic_safety_factor)), "heuristic"
+        return int(_heuristic_count(raw) * max(1.0, self._heuristic_safety_factor))
 
 
 __all__ = [

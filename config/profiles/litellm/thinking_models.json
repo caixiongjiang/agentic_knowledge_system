@@ -1,0 +1,115 @@
+{
+  "_comment": "思考白名单。模型名与 LiteLLM /v1/models 裸 id 一致（不含 litellm_proxy/）。",
+  "_schema": {
+    "reasoning": "是否支持思考链。条目出现且为 true 即支持思考。",
+    "supports_thinking_effort": "是否支持思考强度。true 才读 default / thinkingLevelMap；false 或不填只当开关，不用填档位。",
+    "default": "仅强度模型：前端默认档位。",
+    "thinkingLevelMap": "仅强度模型：off/minimal/low/medium/high/xhigh/max → 厂商值；null 表示该档不支持。"
+  },
+  "models": {
+    "deepseek-v4-flash": {
+      "reasoning": true,
+      "supports_thinking_effort": true,
+      "default": "high",
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "deepseek-v4-pro": {
+      "reasoning": true,
+      "supports_thinking_effort": true,
+      "default": "high",
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "glm-5.3": {
+      "reasoning": true,
+      "supports_thinking_effort": true,
+      "default": "high",
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "glm-5.2": {
+      "reasoning": true,
+      "supports_thinking_effort": true,
+      "default": "high",
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "glm-5.1": {
+      "reasoning": true,
+      "supports_thinking_effort": false
+    },
+    "qwen3.8-max": {
+      "reasoning": true,
+      "supports_thinking_effort": true,
+      "default": "xhigh",
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": null,
+        "xhigh": "xhigh",
+        "max": null
+      }
+    },
+    "qwen3.8-max-preview": {
+      "reasoning": true,
+      "supports_thinking_effort": true,
+      "default": "xhigh",
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": null,
+        "xhigh": "xhigh",
+        "max": null
+      }
+    },
+    "qwen3.7-flash": {
+      "reasoning": true,
+      "supports_thinking_effort": false
+    },
+    "qwen3.7-plus": {
+      "reasoning": true,
+      "supports_thinking_effort": false
+    },
+    "mimo-v2.5": {
+      "reasoning": true,
+      "supports_thinking_effort": false
+    },
+    "mimo-v2.5-pro": {
+      "reasoning": true,
+      "supports_thinking_effort": false
+    }
+  }
+}

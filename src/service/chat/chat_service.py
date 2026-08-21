@@ -2320,8 +2320,11 @@ def _assistant_message(resp: LLMResponse) -> Dict[str, Any]:
       ``"The reasoning_content in the thinking mode must be passed back to
       the API."`` 报 400。这里只要 ``resp.thinking`` 非空就附带 ``reasoning_content``
       字段；其他厂商（OpenAI / Anthropic / Qwen 等）会忽略未知字段，不影响兼容性。
+    - 当包含 tool_calls 且无主文本内容时，content 设为 None（JSON null），
+      符合 OpenAI 标准协议并避免上游网关反序列化报 `missing field text`。
     """
-    msg: Dict[str, Any] = {"role": "assistant", "content": resp.content or ""}
+    content = resp.content if (resp.content or not resp.tool_calls) else None
+    msg: Dict[str, Any] = {"role": "assistant", "content": content}
     if resp.thinking and resp.thinking.reasoning:
         msg["reasoning_content"] = resp.thinking.reasoning
     if resp.tool_calls:
@@ -2333,7 +2336,11 @@ def _assistant_message(resp: LLMResponse) -> Dict[str, Any]:
                 "type": "function",
                 "function": {
                     "name": tc.name,
-                    "arguments": _json.dumps(tc.arguments, ensure_ascii=False),
+                    "arguments": (
+                        _json.dumps(tc.arguments, ensure_ascii=False)
+                        if isinstance(tc.arguments, dict)
+                        else str(tc.arguments)
+                    ),
                 },
             }
             for tc in resp.tool_calls
