@@ -510,6 +510,23 @@ class EnvManager:
         """获取日志级别（dev 默认 DEBUG / prod 默认 INFO；可被 LOG_LEVEL 覆盖）。"""
         default = "INFO" if self.get_app_env() == "production" else "DEBUG"
         return self.get("LOG_LEVEL", default).upper()
+
+    def get_cors_allowed_origins(self) -> list[str]:
+        """获取允许跨域访问的前端来源列表。未设置或为空时回退到默认本地开发来源。"""
+        raw = self.get("CORS_ALLOWED_ORIGINS")
+        default_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:4000",
+            "http://127.0.0.1:4000",
+            "http://localhost:4001",
+            "http://127.0.0.1:4001",
+            "http://192.168.201.14:4001",
+        ]
+        if not raw or not raw.strip():
+            return default_origins
+        origins = [item.strip() for item in raw.split(",") if item.strip()]
+        return origins if origins else default_origins
     
     def get_app_secret_key(self) -> str:
         """获取应用密钥"""

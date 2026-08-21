@@ -36,11 +36,8 @@ from src.db.redis.connection.factory import RedisManagerFactory
 
 def _get_allowed_origins() -> list[str]:
     """读取允许跨域访问的前端来源地址"""
-    raw_origins = os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:4001,http://127.0.0.1:4001,http://192.168.201.14:4001",
-    )
-    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    from src.utils.env_manager import get_env_manager
+    return get_env_manager().get_cors_allowed_origins()
 
 
 def _init_milvus() -> None:
