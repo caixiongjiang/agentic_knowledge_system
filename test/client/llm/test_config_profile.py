@@ -83,6 +83,35 @@ class TestConfigProfile(unittest.TestCase):
             self.assertIn("ali-qwen3-7-flash", specs)
             self.assertNotIn("qwen3.7-flash", specs)
 
+    def test_model_lake_thinking_lookup_accepts_channel_route(self):
+        """Model Lake 档案用 channel/model 写 DeepSeek 时，SDK id 也必须能查到声明。"""
+        with patch.dict(os.environ, {"MODEL_GATEWAY_TYPE": "model_lake"}, clear=False):
+            reg = LiteLLMRegistry()
+            official = "openai/deepseek-official/deepseek-v4-flash"
+            ali = "openai/alibaba-dashscope/ali-deepseek-v4-flash"
+            qwen = "openai/alibaba-dashscope/ali-qwen3-7-flash"
+
+            self.assertEqual(reg.resolve_reasoning_effort(official, "high"), "high")
+            self.assertEqual(reg.clamp_thinking_level(official, "high"), "high")
+            self.assertIsNotNone(reg.peek_thinking_spec(official))
+
+            self.assertEqual(reg.resolve_reasoning_effort(ali, "high"), "high")
+            self.assertEqual(reg.clamp_thinking_level(ali, "high"), "high")
+
+            # 只写最后一段的 Qwen 条目仍按裸名命中
+            self.assertEqual(reg.resolve_reasoning_effort(qwen, "medium"), "enabled")
+            self.assertEqual(reg.clamp_thinking_level(qwen, "high"), "medium")
+
+    def test_thinking_miss_passthrough_keeps_user_level(self):
+        """档案对不上时不能把用户打开的思考档位钳成 off / None。"""
+        with patch.dict(os.environ, {"MODEL_GATEWAY_TYPE": "model_lake"}, clear=False):
+            reg = LiteLLMRegistry()
+            unknown = "openai/unknown-channel/deepseek-v4-flash-unknown"
+            self.assertEqual(reg.clamp_thinking_level(unknown, "high"), "high")
+            self.assertEqual(reg.resolve_reasoning_effort(unknown, "high"), "high")
+            self.assertEqual(reg.clamp_thinking_level(unknown, "off"), "off")
+            self.assertIsNone(reg.resolve_reasoning_effort(unknown, "off"))
+
     def test_visible_whitelist_is_separate_from_presets(self):
         presets = load_profile_preset_models("model_lake")
         visible = load_profile_visible_models("model_lake")

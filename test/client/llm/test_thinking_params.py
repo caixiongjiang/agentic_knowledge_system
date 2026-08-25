@@ -121,6 +121,45 @@ def test_deepseek_adapter() -> None:
     res_max = adapter.adapt("deepseek-v4-flash", "max")
     assert res_max["reasoning_effort"] == "max"
     assert res_max["extra_body"]["thinking"]["type"] == "enabled"
+    assert "enable_thinking" not in res_max["extra_body"]
+
+
+def test_deepseek_dashscope_sends_enable_thinking() -> None:
+    adapter = get_thinking_adapter(
+        "openai/alibaba-dashscope/ali-deepseek-v4-flash"
+    )
+    assert isinstance(adapter, DeepSeekThinkingAdapter)
+
+    res_on = adapter.adapt(
+        "openai/alibaba-dashscope/ali-deepseek-v4-flash", "high"
+    )
+    assert res_on["reasoning_effort"] == "high"
+    assert res_on["extra_body"]["thinking"]["type"] == "enabled"
+    assert res_on["extra_body"]["enable_thinking"] is True
+
+    res_off = adapter.adapt(
+        "openai/alibaba-dashscope/ali-deepseek-v4-flash", "off"
+    )
+    assert res_off["extra_body"]["thinking"]["type"] == "disabled"
+    assert res_off["extra_body"]["enable_thinking"] is False
+
+
+def test_model_lake_build_params_emits_thinking() -> None:
+    official = _build(
+        model="openai/deepseek-official/deepseek-v4-flash",
+        reasoning_effort="high",
+    )
+    assert official["reasoning_effort"] == "high"
+    assert official["extra_body"]["thinking"]["type"] == "enabled"
+    assert "enable_thinking" not in official["extra_body"]
+
+    ali = _build(
+        model="openai/alibaba-dashscope/ali-deepseek-v4-flash",
+        reasoning_effort="high",
+    )
+    assert ali["reasoning_effort"] == "high"
+    assert ali["extra_body"]["thinking"]["type"] == "enabled"
+    assert ali["extra_body"]["enable_thinking"] is True
 
 
 def test_qwen_adapter() -> None:
@@ -445,6 +484,8 @@ if __name__ == "__main__":
     test_call_none_explicit_off()
     test_call_native_max_passthrough()
     test_deepseek_adapter()
+    test_deepseek_dashscope_sends_enable_thinking()
+    test_model_lake_build_params_emits_thinking()
     test_qwen_adapter()
     test_glm_adapter()
     test_mimo_adapter()

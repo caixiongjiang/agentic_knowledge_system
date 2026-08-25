@@ -1315,19 +1315,27 @@ class ChatService:
         tool_msg_ids: List[str] = []
 
         tools_schema = kit.schemas() if kit else None
-        # 思考强度：把 ctx.thinking_level（pi 标准档位，已按模型钳位）翻译成
-        # 厂商原生 reasoning_effort 字符串（如 'high' / 厂商原生 'max'）。off 及
-        # 「模型不支持思考」均返回 None（不下发该参数，让模型按默认不思考；与 pi 一致，
-        # 避免部分厂商在 reasoning_effort='none' 时禁用工具调用）。Provider 差异由 LiteLLM
-        # 翻译，应用侧不再发 extra_body.thinking。
+        # 思考强度：把 ctx.thinking_level 译成 reasoning_effort，再交给
+        # LLMClient / ThinkingAdapter 生成 extra_body.thinking（及 DashScope
+        # enable_thinking）。LiteLLM openai/ 路径（Model Lake）不会替我们翻译
+        # DeepSeek / Qwen 思考字段；off 仍返回 None，避免 reasoning_effort='none'
+        # 禁用工具。档案 miss 时 resolve 会透传用户档位，不能再把开关丢掉。
         try:
             from src.client.llm.registry import get_litellm_registry
             reasoning_effort = get_litellm_registry().resolve_reasoning_effort(
                 client.model, ctx.thinking_level,
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"解析 reasoning_effort 失败，不下发: {e}")
-            reasoning_effort = None
+            raw_level = (ctx.thinking_level or "").strip()
+            if raw_level.lower() in ("", "off", "none"):
+                logger.debug(f"解析 reasoning_effort 失败，不下发: {e}")
+                reasoning_effort = None
+            else:
+                logger.warning(
+                    f"解析 reasoning_effort 失败，按用户档位透传: "
+                    f"model={client.model} level={raw_level!r} err={e}"
+                )
+                reasoning_effort = raw_level
 
         llm_start = time.perf_counter()
         try:

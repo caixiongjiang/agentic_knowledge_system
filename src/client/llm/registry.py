@@ -339,44 +339,57 @@ class LiteLLMRegistry:
         """从配置里查模型的思考强度声明（不依赖网关缓存，不触发拉取）。
 
         供 ``ChatService`` 在调用 LLM 前把用户选的 ``thinking_level`` 翻译成
-        ``reasoning_effort`` 字符串。``bare_name`` 为裸名（不含 ``litellm_proxy/`` / ``openai/``
-        前缀）；找不到返回 ``None``（模型不支持思考）。
+        ``reasoning_effort`` 字符串。入参可以是最后一段裸名、``channel/model``
+        路由，或带 ``litellm_proxy/`` / ``openai/`` 前缀的 SDK id；找不到返回
+        ``None``（模型不支持思考）。
         """
-        target = (bare_name or "").strip()
-        if not target:
-            return None
-        return self._thinking_models.get(target)
+        return self._lookup_thinking_spec(self._thinking_models, bare_name)
 
     def resolve_reasoning_effort(
         self, model: str, thinking_level: str
     ) -> Optional[str]:
         """把 pi 标准档位翻译成要下发给 LiteLLM 的 ``reasoning_effort`` 字符串。
 
-        入参 ``model`` 可以是裸名或带 ``litellm_proxy/`` / ``openai/`` 前缀的 SDK id。流程：
-        1. 取裸名查 ``ThinkingModelSpec``；不存在或不支持思考 → 返回 ``None``；
-        2. 用 ``clamp_thinking_level`` 把 ``thinking_level`` 归位到该模型支持的档位；
-        3. 按档位映射得到 ``reasoning_effort`` 字符串（``off`` → ``None``，不下发）。
+        入参 ``model`` 可以是裸名、``channel/model`` 路由，或带 ``litellm_proxy/``
+        / ``openai/`` 前缀的 SDK id。流程：
+        1. 按多种命名形态查 ``ThinkingModelSpec``；
+        2. 命中则 ``clamp`` 后映射为厂商 ``reasoning_effort``；
+        3. 未命中时：用户档位为 off → ``None``（不下发，避免部分厂商
+           ``reasoning_effort='none'`` 禁用工具）；用户打开了思考 → 原样透传，
+           交给 ``ThinkingAdapter`` 按模型名生成参数。Model Lake 的
+           ``openai/channel/model`` 若档案键对不上，不能把开关/强度静默丢掉。
 
-        返回 ``None`` 表示"不下发 ``reasoning_effort``"（模型不支持思考，或档位为 off）。
+        返回 ``None`` 表示"不下发 ``reasoning_effort``"（档位为 off，或模型
+        未声明思考且用户也未打开）。
         """
-        bare = self._bare_model_name(model or "")
-        spec = self._thinking_models.get(bare)
+        spec = self._lookup_thinking_spec(self._thinking_models, model)
         if spec is None or not spec.reasoning:
-            return None
+            raw = (thinking_level or "").strip()
+            if raw.lower() in ("", "off", "none"):
+                return None
+            logger.warning(
+                "[LiteLLMRegistry] 思考声明未命中，按用户档位透传给 ThinkingAdapter: "
+                f"model={model!r} level={raw!r}"
+            )
+            return raw
         clamped = clamp_thinking_level(spec, thinking_level)
-        # 统一走 spec.resolve_reasoning_effort（off 不再特判 None）
         return spec.resolve_reasoning_effort(clamped)
 
     def clamp_thinking_level(self, model: str, thinking_level: str) -> str:
         """把请求档位归位到该模型实际支持的最近 pi 档位（返回标准档位名，非 effort 字符串）。
 
-        模型不支持思考时返回 ``"off"``。供 ``ChatService`` 在构造 ``ChatTurnContext``
-        时把用户 / session 的 ``thinking_level`` 钳位成可持久化、可下发的合法值。
+        档案未命中时不再强制 ``"off"``：用户打开的档位原样保留，避免 Model Lake
+        路由 id 对不上声明键时，前端开关/强度被后端静默关掉。
         """
-        bare = self._bare_model_name(model or "")
-        spec = self._thinking_models.get(bare)
+        spec = self._lookup_thinking_spec(self._thinking_models, model)
         if spec is None or not spec.reasoning:
-            return "off"
+            raw = (thinking_level or "").strip() or "off"
+            if raw.lower() not in ("off", "none"):
+                logger.warning(
+                    "[LiteLLMRegistry] 思考声明未命中，保留用户档位: "
+                    f"model={model!r} level={raw!r}"
+                )
+            return "off" if raw.lower() == "none" else raw
         return clamp_thinking_level(spec, thinking_level)
 
     def invalidate(self) -> None:
@@ -626,7 +639,7 @@ class LiteLLMRegistry:
                 mid, gateway_type=gateway_type
             )
             bare = LiteLLMRegistry._bare_model_name(mid)
-            spec = thinking_specs.get(bare) or thinking_specs.get(mid)
+            spec = LiteLLMRegistry._lookup_thinking_spec(thinking_specs, mid)
             if spec is not None:
                 tlevels = get_supported_thinking_levels(spec)
                 tdefault = spec.default if spec.default in tlevels else (
@@ -667,6 +680,29 @@ class LiteLLMRegistry:
             if name.startswith(prefix):
                 name = name[len(prefix):]
         return name
+
+    @staticmethod
+    def _lookup_thinking_spec(
+        thinking_specs: Dict[str, ThinkingModelSpec],
+        model: str,
+    ) -> Optional[ThinkingModelSpec]:
+        """按多种命名形态查思考声明，与档案里两种写法兼容。
+
+        Model Lake 档案常写 ``channel/model``（如 ``deepseek-official/deepseek-v4-flash``），
+        也有只写最后一段的（如 ``ali-qwen3-7-flash``）。调用侧则可能传入
+        ``openai/<channel>/<model>``、``channel/model`` 或最后一段裸名。
+        只查 ``_bare_model_name`` 会让 DeepSeek / GLM / MiMo 这类 channel 键全部 miss，
+        前端仍显示支持思考，实际请求却被钳成 off。
+        """
+        raw = (model or "").strip()
+        if not raw:
+            return None
+        routed = LiteLLMRegistry._strip_gateway_prefix(raw)
+        bare = LiteLLMRegistry._bare_model_name(raw)
+        for key in (raw, routed, bare):
+            if key and key in thinking_specs:
+                return thinking_specs[key]
+        return None
 
     @staticmethod
     def _filter_visible_models(

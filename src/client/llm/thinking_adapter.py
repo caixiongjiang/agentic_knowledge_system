@@ -153,12 +153,11 @@ class DeepSeekThinkingAdapter(BaseThinkingAdapter):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         level = self._normalize_level(level_or_effort)
+        extra_body = self._deepseek_extra_body(model, enabled=level != "off")
         if level == "off":
             return {
                 "reasoning_effort": "none",
-                "extra_body": {
-                    "thinking": {"type": "disabled"},
-                },
+                "extra_body": extra_body,
             }
 
         # 官方映射表：low -> low; medium/high/xhigh -> high; max -> max; minimal -> low
@@ -174,10 +173,24 @@ class DeepSeekThinkingAdapter(BaseThinkingAdapter):
 
         return {
             "reasoning_effort": effort,
-            "extra_body": {
-                "thinking": {"type": "enabled"},
-            },
+            "extra_body": extra_body,
         }
+
+    @staticmethod
+    def _is_dashscope_route(model: str) -> bool:
+        name = (model or "").lower()
+        return any(tok in name for tok in ("ali-", "alibaba", "dashscope"))
+
+    @classmethod
+    def _deepseek_extra_body(cls, model: str, *, enabled: bool) -> Dict[str, Any]:
+        extra: Dict[str, Any] = {
+            "thinking": {"type": "enabled" if enabled else "disabled"},
+        }
+        # 阿里云 DashScope 兼容口默认关思考，只认 enable_thinking；
+        # 仅发 thinking.type 时开关/强度在 Model Lake 上不会生效。
+        if cls._is_dashscope_route(model):
+            extra["enable_thinking"] = enabled
+        return extra
 
 
 
