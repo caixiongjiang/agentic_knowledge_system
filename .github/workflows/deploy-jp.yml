@@ -1,0 +1,37 @@
+name: Deploy AKS (JP)
+
+on:
+  push:
+    branches: [jp_model_lake_adapt]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-aks-jp
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy AKS to JP
+    runs-on: [self-hosted, jp]
+    steps:
+      - name: Deploy AKS JP
+        run: |
+          set -euo pipefail
+          cd "${{ secrets.JP_DEPLOY_PATH }}"
+
+          echo "========================================="
+          echo "Deploying AKS to JP (192.168.19.12)"
+          echo "========================================="
+
+          git fetch origin jp_model_lake_adapt
+          git checkout jp_model_lake_adapt
+          git pull origin jp_model_lake_adapt
+
+          test -f .env.jp || { echo "missing .env.jp on the JP server"; exit 1; }
+          test -f docker-compose.jp.yml || { echo "missing docker-compose.jp.yml"; exit 1; }
+
+          docker compose -f docker-compose.jp.yml up -d --build
+          docker image prune -f
+
+          echo "AKS JP deployed at $(date)"
+          echo "API: http://192.168.19.12:8000"

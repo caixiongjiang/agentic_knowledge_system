@@ -10,3 +10,5 @@ data/
 *.log
 .env
 .env.local
+.env.production
+.env.jp
