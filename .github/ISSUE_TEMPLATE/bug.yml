@@ -1,0 +1,97 @@
+name: Bug
+description: 解析、索引、检索、对话或溯源等后端异常
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量带上接口 / WebSocket 路径、状态码和日志。若已确认是前端或 skill_service 的问题，请改到对应仓库提。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 实际看到了什么
+      placeholder: 例如：上传 PDF 后索引进度卡在 parsing，worker 报 MinerU 超时
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期
+      description: 应该怎样
+      placeholder: 例如：解析完成后进入切分和建索引，文件状态变为 ready
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及能力
+      options:
+        - 文件上传 / 解析
+        - 索引 / Worker
+        - 检索 / 召回
+        - 知识库对话 / WebSocket
+        - bbox 溯源
+        - 知识库 / 文件夹 / 文件管理
+        - 技能调用
+        - 模型网关 / LiteLLM
+        - 其它
+    validations:
+      required: true
+
+  - type: input
+    id: endpoint
+    attributes:
+      label: 接口或通道
+      description: HTTP METHOD + path，或 WebSocket 事件名
+      placeholder: POST /api/v1/knowledge/files  或  WS chat
+
+  - type: input
+    id: status
+    attributes:
+      label: HTTP 状态码
+      placeholder: 500
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 响应摘要、API / worker 日志或截图
+      placeholder: |
+        响应：
+        日志：
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: 分支、部署环境、相关依赖
+      placeholder: 分支 main，本地 API :8000 + workers，MinerU / Milvus / MySQL
+
+  - type: dropdown
+    id: repo
+    attributes:
+      label: 初步判断仓库
+      options:
+        - agentic_knowledge_system（本仓库）
+        - AI-site
+        - skill_service
+        - 尚未确认
+      default: 0
+    validations:
+      required: true

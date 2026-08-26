@@ -1,0 +1,62 @@
+name: 功能需求
+description: 新增或增强知识库后端能力
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        说清要解决的问题和不做什么。若改动主要在前端或 skill_service，请改到对应仓库提。
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: 为什么需要这个能力
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 做完之后应该能怎样
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: 不做什么
+      description: 明确排除的范围，避免范围蔓延
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及能力
+      options:
+        - 文件上传 / 解析
+        - 索引 / Worker
+        - 检索 / 召回
+        - 知识库对话 / WebSocket
+        - bbox 溯源
+        - 知识库 / 文件夹 / 文件管理
+        - 技能调用
+        - 模型网关 / LiteLLM
+        - 其它
+    validations:
+      required: true
+
+  - type: dropdown
+    id: repo
+    attributes:
+      label: 涉及仓库
+      options:
+        - agentic_knowledge_system（本仓库）
+        - AI-site
+        - skill_service
+        - 多个仓库
+        - 尚未确认
+      default: 0
+    validations:
+      required: true
