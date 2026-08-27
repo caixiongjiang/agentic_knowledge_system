@@ -65,7 +65,7 @@ body:
     id: status
     attributes:
       label: HTTP 状态码
-      placeholder: 500
+      placeholder: "500"
 
   - type: textarea
     id: evidence
