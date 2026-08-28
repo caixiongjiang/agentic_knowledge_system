@@ -99,12 +99,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# expose_headers 必须列出 PDF.js 用来判断「能否 Range」的响应头。
+# 它们不是 CORS 默认可读头；www.hijarson.com 跨域拉 api.hijarson.com 时
+# 若读不到 Accept-Ranges，PDF.js 会整包下载 /raw，大文件预览转圈十几秒。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Accept-Ranges", "Content-Range", "Content-Length", "ETag"],
 )
 
 app.include_router(knowledge_router)
