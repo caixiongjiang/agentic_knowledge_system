@@ -149,12 +149,14 @@ async def handle(
 
     from src.retrieve.pipeline.types import RetrieveRequest
     from src.retrieve.types.query import MetadataFilter
+    from src.service.knowledge.tombstone import exclude_deleted
 
     filters = MetadataFilter(user_id=kit.user_id, chunk_type=chunk_type)
     if kit.knowledge_base_ids:
         filters.knowledge_base_id = kit.knowledge_base_ids[0]
     if kit.scope_document_ids:
         filters.document_ids = list(kit.scope_document_ids)
+    exclude_deleted(filters)
 
     request = RetrieveRequest(
         query_text=query_text,

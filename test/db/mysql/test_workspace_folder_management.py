@@ -714,24 +714,24 @@ def test_cascade_delete_folder(folder_ids: dict, file_ids: dict):
         
         print(f"  即将删除的文件数: {total_files}")
     
-    # 执行级联删除
+    # 执行级联删除（顺序与 DELETE /api/knowledge/folder/{id} 一致）
     with manager.get_session() as session:
-        # 步骤1: 软删除所有后代文件夹（含自身）
-        success = workspace_folder_repo.soft_delete_with_descendants(
-            session, TEST_USER_ID, tech_id, tech_path, updater=TEST_CREATOR
+        # 步骤1: 标记删除树内所有文件（生产环境这一步之后会投递 Kafka 清理任务）
+        subtree_ids = workspace_folder_repo.get_subtree_ids(
+            session, TEST_USER_ID, tech_id, tech_path
         )
-        if not success:
+        marked = workspace_file_system_repo.cascade_mark_deleted_by_folder_ids(
+            session, TEST_USER_ID, subtree_ids, updater=TEST_CREATOR
+        )
+        print(f"  ✓ 文件级联标记删除完成: {len(marked)} 个")
+
+        # 步骤2: 物理删除文件夹行（文件夹没有向量/对象存储数据，无需异步清理）
+        folder_count = workspace_folder_repo.hard_delete_by_ids(session, subtree_ids)
+        session.commit()
+        if folder_count == 0:
             print("  ✗ 文件夹级联删除失败")
             return False
-        print("  ✓ 文件夹级联软删除完成")
-    
-    with manager.get_session() as session:
-        # 步骤2: 软删除这些文件夹下的所有文件
-        for fid in affected_folder_ids:
-            workspace_file_system_repo.delete_by_folder_id(
-                session, TEST_USER_ID, fid, updater=TEST_CREATOR
-            )
-        print("  ✓ 文件级联软删除完成")
+        print(f"  ✓ 文件夹级联删除完成: {folder_count} 个")
     
     # 验证
     with manager.get_session() as session:

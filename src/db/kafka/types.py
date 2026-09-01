@@ -79,6 +79,7 @@ class ConsumerGroup:
     FILE_SUMMARY = "group-file-summary"
     KG_EXTRACTOR = "group-kg-extractor"
     TEXT_ANALYZER = "group-text-analyzer"
+    CLEANUP = "group-cleanup"
     
     # DB Writer Group（4 个 Writer 共享，各自消费不同 Topic）
     DB_WRITER = "group-db-writer"

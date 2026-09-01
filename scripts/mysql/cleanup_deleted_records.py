@@ -37,7 +37,6 @@ def preview_deleted_records() -> Dict[str, int]:
         "chunk_summary",
         "chunk_atomic_qa",
         "document_summary",
-        "workspace_file_system",
     ]
     
     stats = {}
@@ -82,8 +81,9 @@ def cleanup_deleted_records(confirm: bool = False) -> Dict[str, Any]:
         "chunk_summary",
         "chunk_atomic_qa",
         "document_summary",
-        # Business Layer
-        "workspace_file_system",
+        # ⚠️ 不要加 workspace_file_system / workspace_folder：
+        #    workspace_file_system 的 deleted=1 表示「已删除，关联数据待 CleanupWorker 清理」，
+        #    在这里物理删掉这些行，Milvus / MongoDB / MinIO 里的数据就没人认领了。
     ]
     
     print("\n" + "="*70)

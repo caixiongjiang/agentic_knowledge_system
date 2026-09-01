@@ -11,11 +11,12 @@
       PUT    /{file_id}/move     - 移动文件到指定文件夹
       POST   /batch-move         - 批量移动文件
       GET    /{file_id}/preview  - 获取文件预览URL（MinIO 预签名URL）
-      DELETE /{file_id}          - 软删除单个文件（移入回收站）
-      POST   /batch-delete       - 批量软删除文件
+      DELETE /{file_id}          - 删除单个文件（不可恢复）
+      POST   /batch-delete       - 批量删除文件（不可恢复）
 @Modify History:
     2026/03/17 - 从 folder.py 迁入文件软删除接口
     2026/03/18 - 文件移动逻辑抽取到 move_service，增加知识库一致性校验
+    2026/09/01 - 下线回收站，删除改为标记墓碑 + 投递 Kafka 清理任务
 
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
@@ -31,7 +32,11 @@ from pathlib import Path
 from typing import Optional
 
 from api.dependencies.auth import get_current_user_id, get_current_user_id_from_token
-from api.dependencies.database import get_db_session, get_storage_manager
+from api.dependencies.database import (
+    get_db_session,
+    get_kafka_producer,
+    get_storage_manager,
+)
 from api.schemas.common import ApiResponse
 from api.schemas.knowledge.file import (
     BatchFileDeleteRequest,
@@ -48,9 +53,11 @@ from api.schemas.knowledge.folder import FileInfo, FileListResponse
 from src.db.mysql.repositories.business.workspace_file_system_repo import (
     workspace_file_system_repo,
 )
+from src.db.kafka.producer import KafkaProducer
 from src.db.storage.factory import StorageFactory
 from src.db.storage.manager import StorageManager
 from src.db.storage.range_utils import is_range_satisfiable, parse_range_header
+from src.service.knowledge import tombstone
 from src.service.knowledge.delete_service import knowledge_delete_service
 from src.service.knowledge.move_service import knowledge_move_service
 
@@ -423,60 +430,76 @@ async def get_file_raw(
     )
 
 
-# ==================== 文件删除（软删除，移入回收站） ====================
+# ==================== 文件删除（不可恢复） ====================
 
 
 @router.delete(
     "/{file_id}",
     response_model=ApiResponse[FileDeleteResponse],
-    summary="软删除单个文件",
-    description="将文件移入回收站（标记为 deleted=1），不会删除关联的文档索引数据。",
+    summary="删除单个文件",
+    description=(
+        "删除文件，不可恢复。请求内只标记 deleted=1 并投递清理任务，O(1) 返回；"
+        "向量 / 文档 / 元数据 / 对象存储由 CleanupWorker 异步清理。"
+        "文件立即从列表和问答检索中消失。"
+    ),
 )
-async def soft_delete_file(
+async def delete_file(
     file_id: str,
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
+    producer: KafkaProducer = Depends(get_kafka_producer),
 ) -> ApiResponse[FileDeleteResponse]:
     try:
-        success = knowledge_delete_service.soft_delete_file(
+        ticket = knowledge_delete_service.mark_file_deleted(
             session, user_id, file_id
         )
+        if ticket is None:
+            session.rollback()
+            raise HTTPException(status_code=404, detail="文件不存在或已删除")
+        session.commit()
     except SQLAlchemyError as e:
-        logger.error(f"软删除文件失败: {e}")
-        raise HTTPException(status_code=500, detail="软删除失败")
+        session.rollback()
+        logger.error(f"删除文件失败: {e}")
+        raise HTTPException(status_code=500, detail="删除失败")
 
-    if not success:
-        raise HTTPException(status_code=404, detail="文件不存在或已删除")
+    tombstone.invalidate(user_id)
+    await knowledge_delete_service.publish_cleanup(producer, [ticket])
 
     return ApiResponse.success(
         data=FileDeleteResponse(file_id=file_id, success=True),
-        message="文件已移入回收站",
+        message="文件已删除",
     )
 
 
 @router.post(
     "/batch-delete",
     response_model=ApiResponse[BatchFileDeleteResponse],
-    summary="批量软删除文件",
-    description="将多个文件移入回收站（标记为 deleted=1）。",
+    summary="批量删除文件",
+    description="批量删除文件，不可恢复。语义与单个删除一致。",
 )
-async def batch_soft_delete_files(
+async def batch_delete_files(
     request: BatchFileDeleteRequest,
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
+    producer: KafkaProducer = Depends(get_kafka_producer),
 ) -> ApiResponse[BatchFileDeleteResponse]:
     try:
-        deleted_count = knowledge_delete_service.batch_soft_delete_files(
+        tickets = knowledge_delete_service.mark_files_deleted(
             session, user_id, request.file_ids
         )
+        session.commit()
     except SQLAlchemyError as e:
-        logger.error(f"批量软删除失败: {e}")
-        raise HTTPException(status_code=500, detail="批量软删除失败")
+        session.rollback()
+        logger.error(f"批量删除失败: {e}")
+        raise HTTPException(status_code=500, detail="批量删除失败")
+
+    tombstone.invalidate(user_id)
+    await knowledge_delete_service.publish_cleanup(producer, tickets)
 
     return ApiResponse.success(
         data=BatchFileDeleteResponse(
-            deleted_count=deleted_count,
+            deleted_count=len(tickets),
             total_requested=len(request.file_ids),
         ),
-        message=f"成功删除 {deleted_count}/{len(request.file_ids)} 个文件",
+        message=f"成功删除 {len(tickets)}/{len(request.file_ids)} 个文件",
     )

@@ -31,6 +31,7 @@ _FILTER_FIELDS = (
     "knowledge_base_id",
     "document_id",
     "document_ids",
+    "exclude_document_ids",
     "section_ids",
     "user_id",
 )
@@ -84,6 +85,12 @@ def resolve_chunk_ids_from_filters(
             if filters.document_ids:
                 q = q.filter(
                     ChunkSectionDocument.document_id.in_(list(filters.document_ids)),
+                )
+            if filters.exclude_document_ids:
+                q = q.filter(
+                    ChunkSectionDocument.document_id.notin_(
+                        list(filters.exclude_document_ids)
+                    ),
                 )
             if filters.section_ids:
                 q = q.filter(

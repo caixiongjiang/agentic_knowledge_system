@@ -39,6 +39,7 @@ from src.retrieve.pipeline.types import (
 )
 from src.retrieve.types.query import MetadataFilter
 from src.service.knowledge.retrieve_service import RetrieveService
+from src.service.knowledge.tombstone import exclude_deleted
 
 
 router = APIRouter(tags=["Retrieve"])
@@ -95,11 +96,11 @@ async def smart_retrieve(
 
         request = RetrieveRequest(
             query_text=body.query_text,
-            filters=MetadataFilter(
+            filters=exclude_deleted(MetadataFilter(
                 user_id=user_id,
                 knowledge_base_id=body.knowledge_base_id,
                 document_id=body.document_id,
-            ),
+            )),
             top_k=body.top_k,
             enable_rerank=body.enable_rerank,
             route_hints=body.route_hints,
@@ -145,11 +146,11 @@ async def custom_retrieve(
         response = await service.retrieve_custom(
             routes=routes,
             query_text=body.query_text,
-            filters=MetadataFilter(
+            filters=exclude_deleted(MetadataFilter(
                 user_id=user_id,
                 knowledge_base_id=body.knowledge_base_id,
                 document_id=body.document_id,
-            ),
+            )),
             top_k=body.top_k,
             enable_rerank=body.enable_rerank,
         )

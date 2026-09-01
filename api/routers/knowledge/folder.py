@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from api.dependencies.auth import get_current_user_id
-from api.dependencies.database import get_db_session
+from api.dependencies.database import get_db_session, get_kafka_producer
 from api.schemas.common import ApiResponse
 from api.schemas.knowledge.folder import (
     FileInfo,
@@ -54,6 +54,12 @@ from src.db.mysql.repositories.business.workspace_file_system_repo import (
 )
 from src.db.mysql.repositories.business.workspace_folder_repo import (
     workspace_folder_repo,
+)
+from src.db.kafka.producer import KafkaProducer
+from src.service.knowledge import tombstone
+from src.service.knowledge.delete_service import (
+    CleanupTicket,
+    knowledge_delete_service,
 )
 
 router = APIRouter(tags=["Folder"])
@@ -382,16 +388,17 @@ async def move_folder(
     response_model=ApiResponse[FolderDeleteResponse],
     summary="删除文件夹",
     description=(
-        "删除文件夹及其所有后代文件夹。"
-        "如果文件夹树内包含文件：移入回收站（可恢复），文件一并级联删除。"
-        "如果文件夹树内没有任何文件：直接永久删除空文件夹。"
-        "默认文件夹不允许删除。"
+        "删除文件夹及其所有后代文件夹，不可恢复。"
+        "文件夹行直接物理删除；树内的文件标记 deleted=1 并投递清理任务，"
+        "向量 / 文档 / 元数据 / 对象存储由 CleanupWorker 异步清理。"
+        "文件立即从列表和问答检索中消失。默认文件夹不允许删除。"
     ),
 )
 async def delete_folder(
     folder_id: str,
     user_id: str = Depends(get_current_user_id),
     session: Session = Depends(get_db_session),
+    producer: KafkaProducer = Depends(get_kafka_producer),
 ) -> ApiResponse[FolderDeleteResponse]:
     folder = session.query(WorkspaceFolder).filter(
         WorkspaceFolder.folder_id == folder_id,
@@ -403,77 +410,53 @@ async def delete_folder(
     if folder.is_default == 1:
         raise HTTPException(status_code=400, detail="默认文件夹不允许删除")
 
+    full_path = folder.full_path
+
     try:
-        descendant_rows = session.query(WorkspaceFolder.folder_id).filter(
-            WorkspaceFolder.user_id == user_id,
-            WorkspaceFolder.full_path.like(f"{folder.full_path}%"),
-            WorkspaceFolder.folder_id != folder_id,
-            WorkspaceFolder.deleted == 0,
-        ).all()
-        all_folder_ids = [folder_id] + [r[0] for r in descendant_rows]
+        # 先标记文件：文件夹行删掉之后就查不到树内还有哪些文件了
+        deleted_folder_ids = workspace_folder_repo.get_subtree_ids(
+            session, user_id=user_id, folder_id=folder_id, full_path_prefix=full_path
+        )
+        marked_files = workspace_file_system_repo.cascade_mark_deleted_by_folder_ids(
+            session,
+            user_id=user_id,
+            folder_ids=deleted_folder_ids,
+            updater=user_id,
+        )
+        cleanup_tickets = [
+            CleanupTicket(
+                user_id=user_id,
+                file_id=f.file_id,
+                document_id=f.document_id,
+                storage_path=f.storage_path,
+                knowledge_base_id=f.knowledge_base_id,
+            )
+            for f in marked_files
+        ]
 
-        file_count = session.query(WorkspaceFileSystem).filter(
-            WorkspaceFileSystem.user_id == user_id,
-            WorkspaceFileSystem.folder_id.in_(all_folder_ids),
-            WorkspaceFileSystem.deleted == 0,
-        ).count()
-
-        if file_count > 0:
-            deleted_folder_ids = (
-                workspace_folder_repo.soft_delete_with_descendants(
-                    session,
-                    user_id=user_id,
-                    folder_id=folder_id,
-                    full_path_prefix=folder.full_path,
-                    updater=user_id,
-                )
-            )
-            deleted_file_count = (
-                workspace_file_system_repo.cascade_soft_delete_by_folder_ids(
-                    session,
-                    user_id=user_id,
-                    folder_ids=deleted_folder_ids,
-                    updater=user_id,
-                )
-            )
-            session.commit()
-
-            logger.info(
-                f"文件夹移入回收站: user_id={user_id}, folder_id={folder_id}, "
-                f"path={folder.full_path}, folders={len(deleted_folder_ids)}, "
-                f"files={deleted_file_count}"
-            )
-            return ApiResponse.success(
-                data=FolderDeleteResponse(
-                    folder_id=folder_id,
-                    deleted_folder_count=len(deleted_folder_ids),
-                    deleted_file_count=deleted_file_count,
-                ),
-                message=(
-                    f"已移入回收站：{len(deleted_folder_ids)} 个文件夹，"
-                    f"{deleted_file_count} 个文件"
-                ),
-            )
-        else:
-            folder_count = session.query(WorkspaceFolder).filter(
-                WorkspaceFolder.folder_id.in_(all_folder_ids),
-            ).delete(synchronize_session='fetch')
-            session.commit()
-
-            logger.info(
-                f"永久删除空文件夹: user_id={user_id}, folder_id={folder_id}, "
-                f"path={folder.full_path}, count={folder_count}"
-            )
-            return ApiResponse.success(
-                data=FolderDeleteResponse(
-                    folder_id=folder_id,
-                    deleted_folder_count=folder_count,
-                    deleted_file_count=0,
-                ),
-                message=f"已删除 {folder_count} 个空文件夹",
-            )
-
+        workspace_folder_repo.hard_delete_by_ids(session, deleted_folder_ids)
+        session.commit()
     except SQLAlchemyError as e:
         session.rollback()
         logger.error(f"删除文件夹失败: {e}")
         raise HTTPException(status_code=500, detail="删除失败")
+
+    tombstone.invalidate(user_id)
+    await knowledge_delete_service.publish_cleanup(producer, cleanup_tickets)
+
+    logger.info(
+        f"删除文件夹: user_id={user_id}, folder_id={folder_id}, "
+        f"path={full_path}, folders={len(deleted_folder_ids)}, "
+        f"files={len(cleanup_tickets)}"
+    )
+    return ApiResponse.success(
+        data=FolderDeleteResponse(
+            folder_id=folder_id,
+            deleted_folder_count=len(deleted_folder_ids),
+            deleted_file_count=len(cleanup_tickets),
+        ),
+        message=(
+            f"已删除 {len(deleted_folder_ids)} 个文件夹，"
+            f"{len(cleanup_tickets)} 个文件"
+        ),
+    )

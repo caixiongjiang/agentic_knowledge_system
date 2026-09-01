@@ -234,8 +234,8 @@ async def update_knowledge_base(
     summary="删除知识库（级联删除子知识库）",
     description=(
         "物理删除知识库及其所有子知识库，同时清理其下的所有空文件夹。"
-        "前置条件：该知识库及所有子知识库下（包括回收站中）不存在任何文件。"
-        "如有文件，请先手动删除文件并清空回收站后重试。"
+        "前置条件：该知识库及所有子知识库下不存在任何文件（含正在清理中的）。"
+        "如有文件，请先删除所有文件后重试。"
     ),
 )
 async def delete_knowledge_base(
@@ -263,8 +263,8 @@ async def delete_knowledge_base(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"知识库树下仍有 {file_count} 个文件（含回收站），"
-                "请先删除所有文件并清空回收站后重试"
+                f"知识库树下仍有 {file_count} 个文件（含正在清理中的），"
+                "请先删除所有文件后重试"
             ),
         )
 
