@@ -38,6 +38,9 @@
     9. mysql_writer     - 元数据写入 (db_write.meta.start → MySQL)
     10. mongo_writer    - 文档写入 (db_write.mongo.start → MongoDB)
 
+    清理 Worker:
+    11. cleanup         - 删除清理 (knowledge_base.cleanup.start → 清空 Milvus/Mongo/MySQL/对象存储)
+
     注: image_understand 已从后台 pipeline 移除，图片理解改为 agent 需要时临时调用
         （见 src/service/chat/image_chunk_reader_service.py）。
     
@@ -78,6 +81,7 @@ from src.types.messages.db_write import (
     EmbeddingWriteMessage, GraphWriteMessage, MetaWriteMessage, MongoWriteMessage,
     MongoCollection, MySQLTable, MilvusCollection,
 )
+from src.types.messages.cleanup import CleanupMessage
 from src.utils.config_manager import get_config
 from src.utils.log_config import setup_logging_from_env
 
@@ -264,6 +268,19 @@ WORKER_CONFIGS: Dict[str, WorkerConfig] = {
         message_class=MongoWriteMessage,
         group_id=ConsumerGroup.DB_WRITER,
         description="文档写入 Writer (批量写入 MongoDB)"
+    ),
+
+    # ==================== 删除清理 Worker ====================
+
+    "cleanup": WorkerConfig(
+        name="cleanup",
+        class_name="CleanupWorker",
+        module_path="src.db.kafka.workers.cleanup_worker",
+        input_topic=KafkaTopics.CLEANUP_START,
+        output_topics=[],
+        message_class=CleanupMessage,
+        group_id=ConsumerGroup.CLEANUP,
+        description="删除清理 Worker (清理已删除文件的向量/文档/元数据/对象存储)"
     ),
 }
 
@@ -497,7 +514,18 @@ class WorkerManager:
         for name in worker_names:
             await self.start_worker(name)
             await asyncio.sleep(0.5)  # 间隔启动，避免资源竞争
-        
+
+        # 清理链路没有接 retry / DLQ，消费失败的消息 offset 照样提交，
+        # 兜底扫描就是它实际的重试机制，必须跟着 cleanup worker 一起起来
+        if "cleanup" in self.workers:
+            from src.service.knowledge import cleanup_sweeper
+
+            self.tasks["cleanup_sweeper"] = asyncio.create_task(
+                cleanup_sweeper.run_forever(self.producer),
+                name="worker_cleanup_sweeper",
+            )
+            logger.success("✓ 清理兜底扫描已启动")
+
         logger.info("=" * 80)
         logger.success(f"🎉 所有 Workers 已启动 ({len(self.workers)}/{len(worker_names)})")
         logger.info("=" * 80)
@@ -630,6 +658,7 @@ def print_worker_list():
     print("  启动所有 Pipeline Workers: uv run python scripts/start_all_workers.py --workers file_parser,text_splitter,section_summary,file_summary")
     print("  (后台并行: text_analyzer v1.1 已落地 / kg_extractor mock，在 --workers 列表追加即可接通)")
     print("  启动所有 DB Writers:     uv run python scripts/start_all_workers.py --workers embedding_milvus_writer,neo4j_writer,mysql_writer,mongo_writer")
+    print("  启动删除清理 Worker:      uv run python scripts/start_all_workers.py --workers cleanup")
     print("  启动指定 Workers:        uv run python scripts/start_all_workers.py --workers file_parser,text_splitter")
     print("  查看可用 Workers:        uv run python scripts/start_all_workers.py --list")
     print("=" * 80 + "\n")

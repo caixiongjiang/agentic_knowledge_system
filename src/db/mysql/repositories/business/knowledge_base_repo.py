@@ -97,34 +97,6 @@ class KnowledgeBaseRepository(BaseRepository[KnowledgeBase]):
             logger.error(f"查询子知识库失败: {e}")
             return []
 
-    def check_has_files(
-        self,
-        session: Session,
-        user_id: str,
-        knowledge_base_id: str,
-    ) -> int:
-        """
-        检查知识库下是否存在文件（包括活跃文件和回收站中的文件）。
-
-        deleted IN (0, 1, 2) 即所有未被永久删除的文件都算在内。
-
-        Returns:
-            文件数量
-        """
-        try:
-            return (
-                session.query(WorkspaceFileSystem)
-                .filter(
-                    WorkspaceFileSystem.user_id == user_id,
-                    WorkspaceFileSystem.knowledge_base_id == knowledge_base_id,
-                    WorkspaceFileSystem.deleted.in_([0, 1, 2]),
-                )
-                .count()
-            )
-        except SQLAlchemyError as e:
-            logger.error(f"检查知识库文件数量失败: {e}")
-            return -1
-
     def get_all_descendants(
         self,
         session: Session,
@@ -148,7 +120,11 @@ class KnowledgeBaseRepository(BaseRepository[KnowledgeBase]):
         user_id: str,
         kb_ids: List[str],
     ) -> int:
-        """检查一组知识库下的总文件数（含回收站）"""
+        """检查一组知识库下的总文件数
+
+        deleted=1 的待清理文件也算占用：此时向量等关联数据还没清干净，
+        先把知识库删掉会留下没人认领的孤儿数据。
+        """
         if not kb_ids:
             return 0
         try:
@@ -157,7 +133,7 @@ class KnowledgeBaseRepository(BaseRepository[KnowledgeBase]):
                 .filter(
                     WorkspaceFileSystem.user_id == user_id,
                     WorkspaceFileSystem.knowledge_base_id.in_(kb_ids),
-                    WorkspaceFileSystem.deleted.in_([0, 1, 2]),
+                    WorkspaceFileSystem.deleted.in_([0, 1]),
                 )
                 .count()
             )

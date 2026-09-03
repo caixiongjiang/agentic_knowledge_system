@@ -24,9 +24,9 @@ class KnowledgeBase(BaseModel):
     支持层级结构（通过 parent_knowledge_base_id 自关联）。
 
     删除规则：
-    - 只有知识库下（含回收站中）不存在任何文件时才允许删除
+    - 只有知识库下不存在任何文件时才允许删除（含正在异步清理中的文件）
     - 空文件夹不影响删除
-    - 删除为物理删除，不进回收站
+    - 删除为物理删除，不可恢复
     """
     __tablename__ = "knowledge_base"
 

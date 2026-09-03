@@ -40,17 +40,6 @@ from api.schemas.knowledge.knowledge_base import (
     KnowledgeBaseListResponse,
     KnowledgeBaseUpdateRequest,
 )
-from api.schemas.knowledge.trash import (
-    TrashEmptyResponse,
-    TrashFolderChildItem,
-    TrashFolderChildrenResponse,
-    TrashFolderFileItem,
-    TrashFolderFilesResponse,
-    TrashItem,
-    TrashItemType,
-    TrashListResponse,
-    TrashRestoreResponse,
-)
 
 __all__ = [
     "FileUploadResponse",
@@ -74,13 +63,4 @@ __all__ = [
     "KnowledgeBaseListResponse",
     "KnowledgeBaseUpdateRequest",
     "KnowledgeBaseDeleteResponse",
-    "TrashItem",
-    "TrashItemType",
-    "TrashListResponse",
-    "TrashRestoreResponse",
-    "TrashEmptyResponse",
-    "TrashFolderChildItem",
-    "TrashFolderChildrenResponse",
-    "TrashFolderFileItem",
-    "TrashFolderFilesResponse",
 ]

@@ -275,376 +275,55 @@ class WorkspaceFolderRepository(BaseRepository[WorkspaceFolder]):
             logger.error(f"查询后代文件夹失败: {e}")
             return []
     
-    def soft_delete_with_descendants(
+    def get_subtree_ids(
         self,
         session: Session,
         user_id: str,
         folder_id: str,
         full_path_prefix: str,
-        updater: str = "",
     ) -> List[str]:
         """
-        软删除文件夹及其所有后代文件夹。
-
-        目标文件夹标记 deleted=1（回收站可见），
-        后代文件夹标记 deleted=2（级联删除，回收站不可见）。
-        **不会 commit**，由调用方统一提交事务。
+        获取文件夹自身及其所有后代文件夹的 ID。
 
         Args:
             session: 数据库会话
             user_id: 用户ID
             folder_id: 文件夹ID
             full_path_prefix: 该文件夹的完整路径前缀
-            updater: 更新者
 
         Returns:
-            所有被删除的 folder_id 列表（含目标自身）
-
-        Raises:
-            SQLAlchemyError: 数据库操作失败
+            folder_id 列表（含目标自身）
         """
-        session.query(self.model).filter(
-            self.model.folder_id == folder_id,
-            self.model.user_id == user_id,
-            self.model.deleted == 0,
-        ).update({'deleted': 1, 'updater': updater}, synchronize_session='fetch')
-
         descendant_rows = session.query(self.model.folder_id).filter(
             self.model.user_id == user_id,
             self.model.full_path.like(f"{full_path_prefix}%"),
             self.model.folder_id != folder_id,
-            self.model.deleted == 0,
         ).all()
-        descendant_ids = [row[0] for row in descendant_rows]
+        return [folder_id] + [row[0] for row in descendant_rows]
 
-        if descendant_ids:
-            session.query(self.model).filter(
-                self.model.folder_id.in_(descendant_ids),
-            ).update(
-                {'deleted': 2, 'updater': updater},
-                synchronize_session='fetch',
-            )
-
-        all_ids = [folder_id] + descendant_ids
-        logger.debug(
-            f"软删除{len(all_ids)}个文件夹: "
-            f"folder_id={folder_id}, prefix={full_path_prefix}"
-        )
-        return all_ids
-
-    # ==================== 回收站相关 ====================
-
-    def get_deleted_folders(
+    def hard_delete_by_ids(
         self,
         session: Session,
-        user_id: str,
-        knowledge_base_id: Optional[str] = None,
-    ) -> List[WorkspaceFolder]:
+        folder_ids: List[str],
+    ) -> int:
         """
-        获取回收站中的文件夹（仅 deleted=1，即用户直接删除的顶层文件夹）
+        物理删除指定的文件夹行。
 
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            knowledge_base_id: 可选，按知识库筛选
-
-        Returns:
-            WorkspaceFolder 列表，按删除时间倒序
-        """
-        try:
-            query = session.query(self.model).filter(
-                self.model.user_id == user_id,
-                self.model.deleted == 1,
-            )
-            if knowledge_base_id:
-                query = query.filter(
-                    self.model.knowledge_base_id == knowledge_base_id
-                )
-            return query.order_by(self.model.update_time.desc()).all()
-        except SQLAlchemyError as e:
-            logger.error(f"查询回收站文件夹失败: {e}")
-            return []
-
-    def get_deleted_children(
-        self,
-        session: Session,
-        user_id: str,
-        parent_folder_id: str,
-    ) -> List[WorkspaceFolder]:
-        """
-        获取回收站中某文件夹的直接子文件夹（deleted=1 或 deleted=2）。
-        用于在回收站内浏览文件夹层级。
-
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            parent_folder_id: 父文件夹ID
-
-        Returns:
-            直接子文件夹列表
-        """
-        try:
-            return session.query(self.model).filter(
-                self.model.user_id == user_id,
-                self.model.parent_folder_id == parent_folder_id,
-                self.model.deleted.in_([1, 2]),
-            ).order_by(self.model.folder_name).all()
-        except SQLAlchemyError as e:
-            logger.error(f"查询回收站子文件夹失败: {e}")
-            return []
-
-    def restore_with_descendants(
-        self,
-        session: Session,
-        user_id: str,
-        folder_id: str,
-    ) -> List[str]:
-        """
-        恢复文件夹及其所有级联删除的后代。
-        如果原父文件夹已被删除或不存在，则移到根目录。
+        文件夹只是 MySQL 里的一行，没有向量 / 文档 / 对象存储数据，
+        所以不需要走异步清理，直接删掉即可。树内的文件由调用方单独标记删除并投递清理任务。
         **不会 commit**，由调用方统一提交事务。
 
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            folder_id: 文件夹ID（必须是 deleted=1 的）
-
         Returns:
-            所有被恢复的 folder_id 列表
-
-        Raises:
-            ValueError: 文件夹不存在
+            被删除的行数
         """
-        folder = session.query(self.model).filter(
-            self.model.folder_id == folder_id,
-            self.model.user_id == user_id,
-            self.model.deleted == 1,
-        ).first()
-        if not folder:
-            raise ValueError("回收站中未找到该文件夹")
-
-        old_path: str = folder.full_path
-        old_depth: int = folder.depth
-        need_relocate = False
-
-        if folder.parent_folder_id:
-            parent = session.query(self.model).filter(
-                self.model.folder_id == folder.parent_folder_id,
-                self.model.user_id == user_id,
-                self.model.deleted == 0,
-            ).first()
-            if not parent:
-                need_relocate = True
-                folder.parent_folder_id = None
-                folder.full_path = f"/{folder.folder_name}/"
-                folder.depth = 0
-
-        folder.deleted = 0
-
-        descendants = session.query(self.model).filter(
-            self.model.user_id == user_id,
-            self.model.full_path.like(f"{old_path}%"),
-            self.model.folder_id != folder_id,
-            self.model.deleted == 2,
-        ).all()
-
-        descendant_ids: List[str] = []
-        if need_relocate:
-            new_path = folder.full_path
-            depth_delta = folder.depth - old_depth
-            for d in descendants:
-                d.full_path = new_path + d.full_path[len(old_path):]
-                d.depth = d.depth + depth_delta
-                d.deleted = 0
-                descendant_ids.append(d.folder_id)
-        else:
-            for d in descendants:
-                d.deleted = 0
-                descendant_ids.append(d.folder_id)
-
-        all_ids = [folder_id] + descendant_ids
-        logger.info(f"恢复{len(all_ids)}个文件夹: folder_id={folder_id}")
-        return all_ids
-
-    def hard_delete_with_descendants(
-        self,
-        session: Session,
-        user_id: str,
-        folder_id: str,
-    ) -> tuple[List[str], int]:
-        """
-        永久删除文件夹及其后代（物理删除）。
-        **不会 commit**，由调用方统一提交事务。
-
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            folder_id: 文件夹ID（必须是 deleted=1 的）
-
-        Returns:
-            (被删除的 folder_id 列表, 删除数量)
-
-        Raises:
-            ValueError: 文件夹不存在
-        """
-        folder = session.query(self.model).filter(
-            self.model.folder_id == folder_id,
-            self.model.user_id == user_id,
-            self.model.deleted == 1,
-        ).first()
-        if not folder:
-            raise ValueError("回收站中未找到该文件夹")
-
-        all_rows = session.query(self.model.folder_id).filter(
-            self.model.user_id == user_id,
-            self.model.full_path.like(f"{folder.full_path}%"),
-            self.model.deleted.in_([1, 2]),
-        ).all()
-        all_ids = [row[0] for row in all_rows]
-
+        if not folder_ids:
+            return 0
         count = session.query(self.model).filter(
-            self.model.folder_id.in_(all_ids),
+            self.model.folder_id.in_(folder_ids),
         ).delete(synchronize_session='fetch')
+        logger.debug(f"物理删除{count}个文件夹")
+        return count
 
-        logger.info(f"永久删除{count}个文件夹: folder_id={folder_id}")
-        return all_ids, count
-
-    def hard_delete_all_trash(
-        self,
-        session: Session,
-        user_id: str,
-    ) -> tuple[List[str], int]:
-        """
-        清空回收站：永久删除用户所有已删除的文件夹。
-        **不会 commit**。
-
-        Returns:
-            (被删除的 folder_id 列表, 删除数量)
-        """
-        all_rows = session.query(self.model.folder_id).filter(
-            self.model.user_id == user_id,
-            self.model.deleted.in_([1, 2]),
-        ).all()
-        all_ids = [row[0] for row in all_rows]
-
-        count = 0
-        if all_ids:
-            count = session.query(self.model).filter(
-                self.model.folder_id.in_(all_ids),
-            ).delete(synchronize_session='fetch')
-
-        logger.info(f"清空回收站: user_id={user_id}, 删除{count}个文件夹")
-        return all_ids, count
-
-    def restore_folder_with_descendants(
-        self,
-        session: Session,
-        user_id: str,
-        folder_id: str,
-    ) -> List[str]:
-        """
-        从回收站恢复顶层文件夹（仅 deleted=1）及其所有后代文件夹。
-        如果父文件夹不存在或已被删除，则将该文件夹移到根目录。
-        **不会 commit**。
-
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            folder_id: 要恢复的文件夹ID（必须为 deleted=1 的顶层条目）
-
-        Returns:
-            被恢复的文件夹ID列表（含自身和后代）
-
-        Raises:
-            ValueError: 文件夹不存在或不是顶层删除条目
-        """
-        folder = session.query(self.model).filter(
-            self.model.folder_id == folder_id,
-            self.model.user_id == user_id,
-            self.model.deleted == 1,
-        ).first()
-        if not folder:
-            raise ValueError("回收站中未找到该文件夹（仅支持顶层条目）")
-
-        original_full_path = folder.full_path
-
-        descendants = session.query(self.model).filter(
-            self.model.user_id == user_id,
-            self.model.full_path.like(f"{original_full_path}%"),
-            self.model.folder_id != folder_id,
-            self.model.deleted.in_([1, 2]),
-        ).all()
-
-        if folder.parent_folder_id:
-            parent = session.query(self.model).filter(
-                self.model.folder_id == folder.parent_folder_id,
-                self.model.user_id == user_id,
-                self.model.deleted == 0,
-            ).first()
-            if not parent:
-                new_prefix = f"/{folder.folder_name}/"
-                folder.parent_folder_id = None
-                folder.full_path = new_prefix
-                folder.depth = 0
-                for d in descendants:
-                    d.full_path = d.full_path.replace(original_full_path, new_prefix, 1)
-                    d.depth = d.full_path.strip("/").count("/")
-
-        folder.deleted = 0
-        descendant_ids: List[str] = []
-        for d in descendants:
-            d.deleted = 0
-            descendant_ids.append(d.folder_id)
-
-        all_restored = [folder_id] + descendant_ids
-        logger.info(
-            f"恢复文件夹: folder_id={folder_id}, descendants={len(descendant_ids)}"
-        )
-        return all_restored
-
-    def hard_delete_subfolder(
-        self,
-        session: Session,
-        user_id: str,
-        folder_id: str,
-    ) -> tuple[List[str], int]:
-        """
-        永久删除回收站中的顶层文件夹及其所有后代（物理删除）。
-        仅支持 deleted=1 的顶层条目。
-        **不会 commit**。
-
-        Args:
-            session: 数据库会话
-            user_id: 用户ID
-            folder_id: 文件夹ID（必须为 deleted=1 的顶层条目）
-
-        Returns:
-            (被删除的 folder_id 列表, 删除数量)
-
-        Raises:
-            ValueError: 文件夹不存在或不是顶层删除条目
-        """
-        folder = session.query(self.model).filter(
-            self.model.folder_id == folder_id,
-            self.model.user_id == user_id,
-            self.model.deleted == 1,
-        ).first()
-        if not folder:
-            raise ValueError("回收站中未找到该文件夹（仅支持顶层条目）")
-
-        all_rows = session.query(self.model.folder_id).filter(
-            self.model.user_id == user_id,
-            self.model.full_path.like(f"{folder.full_path}%"),
-            self.model.deleted.in_([1, 2]),
-        ).all()
-        all_ids = [row[0] for row in all_rows]
-
-        count = session.query(self.model).filter(
-            self.model.folder_id.in_(all_ids),
-        ).delete(synchronize_session='fetch')
-
-        logger.info(f"永久删除子文件夹: folder_id={folder_id}, count={count}")
-        return all_ids, count
 
     def rename(
         self,

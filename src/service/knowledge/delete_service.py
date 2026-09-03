@@ -7,9 +7,10 @@
 @Date    : 2026/01/21 10:00
 @Function: 
     Knowledge 删除服务
-    提供删除相关的业务逻辑：软删除（标记删除）、硬删除（永久删除）、批量删除、删除验证、级联删除处理
+    删除拆成两段：受理（同步标记墓碑 + 投递清理任务）与清理（异步跨数据库级联删除）
 @Modify History:
     2026/03/09 - 实现完整删除服务：软删除、永久删除、跨数据库级联删除
+    2026/09/01 - 下线回收站，改为墓碑 + Kafka 异步清理
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 
@@ -49,6 +50,10 @@ from src.db.milvus.repositories.kg import SPORepository, TagRepository
 
 from src.db.storage.manager import StorageManager
 
+from src.db.kafka.producer import KafkaProducer
+from src.db.kafka.topics import KafkaTopics
+from src.types.messages.cleanup import CleanupMessage
+
 
 @dataclass
 class DeleteResult:
@@ -68,10 +73,32 @@ class DeleteResult:
         return len(self.errors) > 0
 
 
+@dataclass
+class CleanupTicket:
+    """一次删除受理产生的清理任务
+
+    标记删除时就把 worker 需要的字段全部带上，这样 worker 不必再查 MySQL，
+    墓碑行被清掉之后消息重投也仍然能定位到要清理的数据。
+    """
+    user_id: str
+    file_id: str
+    document_id: Optional[str] = None
+    storage_path: Optional[str] = None
+    knowledge_base_id: Optional[str] = None
+
+
 class KnowledgeDeleteService:
     """Knowledge 删除服务
 
-    提供文件级别的软删除和永久删除能力，永久删除时级联清理所有数据库中的关联数据。
+    删除分两段：
+    - **受理**（同步，O(1)）：MySQL 标记 deleted=1 写下墓碑，立即返回。
+      墓碑对用户不可见，检索侧按 document_id 排除，所以删除对问答是即时生效的。
+    - **清理**（异步，CleanupWorker）：按 document_id 级联清掉向量 / 文档 / 元数据 /
+      对象存储，最后物理删除墓碑行。
+
+    之所以不能把清理放进 HTTP 请求：一次清理要打 8 个 Milvus collection
+    （每个都 load + delete + flush）、4 个 Mongo 集合、9 张 MySQL 表和一次对象存储删除，
+    全程串行，而 API 只跑单个 uvicorn worker，会把整个事件循环占住。
 
     数据库覆盖范围：
     - MySQL: 元数据表（chunk_meta_info, section_document, element_meta_info 等）
@@ -80,13 +107,17 @@ class KnowledgeDeleteService:
     - Storage: 对象存储（原始文件、解析产物）
     """
 
-    def soft_delete_file(
+    # ==================== 受理（同步） ====================
+
+    def mark_file_deleted(
         self,
         session: Session,
         user_id: str,
         file_id: str,
-    ) -> bool:
-        """软删除单个文件（移入回收站）
+    ) -> Optional[CleanupTicket]:
+        """标记删除单个文件，返回待投递的清理任务
+
+        **不会 commit**，由调用方统一提交事务。
 
         Args:
             session: MySQL 数据库会话
@@ -94,64 +125,108 @@ class KnowledgeDeleteService:
             file_id: 文件ID
 
         Returns:
-            是否成功
+            CleanupTicket；文件不存在或已被标记时返回 None
         """
-        try:
-            success = workspace_file_system_repo.delete_by_user_and_file(
-                session, user_id, file_id, updater=user_id
-            )
-            if success:
-                logger.info(f"文件已移入回收站: user_id={user_id}, file_id={file_id}")
-            else:
-                logger.warning(f"文件不存在或已删除: user_id={user_id}, file_id={file_id}")
-            return success
-        except SQLAlchemyError as e:
-            session.rollback()
-            logger.error(f"软删除文件失败: {e}")
-            return False
+        file_obj = workspace_file_system_repo.get_by_user_and_file(
+            session, user_id, file_id
+        )
+        if not file_obj:
+            logger.warning(f"文件不存在或已删除: user_id={user_id}, file_id={file_id}")
+            return None
 
-    def batch_soft_delete_files(
+        file_obj.deleted = 1
+        file_obj.updater = user_id
+
+        return CleanupTicket(
+            user_id=user_id,
+            file_id=file_id,
+            document_id=file_obj.document_id,
+            storage_path=file_obj.storage_path,
+            knowledge_base_id=file_obj.knowledge_base_id,
+        )
+
+    def mark_files_deleted(
         self,
         session: Session,
         user_id: str,
         file_ids: List[str],
-    ) -> int:
-        """批量软删除文件（移入回收站）
+    ) -> List[CleanupTicket]:
+        """批量标记删除文件
 
-        Args:
-            session: MySQL 数据库会话
-            user_id: 用户ID
-            file_ids: 文件ID列表
+        **不会 commit**，由调用方统一提交事务。
 
         Returns:
-            成功删除的文件数量
+            成功标记的清理任务列表（不存在的文件被跳过）
         """
-        deleted_count = 0
+        tickets = []
         for file_id in file_ids:
-            if self.soft_delete_file(session, user_id, file_id):
-                deleted_count += 1
-        return deleted_count
+            ticket = self.mark_file_deleted(session, user_id, file_id)
+            if ticket:
+                tickets.append(ticket)
+        return tickets
 
-    async def permanent_delete_file(
+    @staticmethod
+    async def publish_cleanup(
+        producer: KafkaProducer,
+        tickets: List[CleanupTicket],
+    ) -> int:
+        """投递清理任务到 Kafka
+
+        投递失败不抛异常：墓碑已经落库，文件对用户和检索都已消失，
+        漏投只是让清理延后，由兜底扫描重新捡起来，不该让删除请求整体失败。
+
+        Returns:
+            成功投递的任务数
+        """
+        sent = 0
+        for ticket in tickets:
+            try:
+                await producer.send_and_flush(
+                    topic=KafkaTopics.CLEANUP_START,
+                    message=CleanupMessage(
+                        user_id=ticket.user_id,
+                        file_id=ticket.file_id,
+                        document_id=ticket.document_id,
+                        storage_path=ticket.storage_path,
+                        knowledge_base_id=ticket.knowledge_base_id,
+                    ),
+                )
+                sent += 1
+            except Exception as e:
+                logger.error(
+                    f"投递清理任务失败（墓碑已生效，等待兜底重投）: "
+                    f"file_id={ticket.file_id}, error={e}"
+                )
+        return sent
+
+    # ==================== 清理（异步 Worker 调用） ====================
+
+    async def purge_file(
         self,
         session: Session,
         user_id: str,
         file_id: str,
+        document_id: Optional[str] = None,
+        storage_path: Optional[str] = None,
         storage_manager: Optional[StorageManager] = None,
     ) -> DeleteResult:
-        """永久删除文件及其所有关联数据
+        """清理文件的所有关联数据并物理删除墓碑行
 
         流程：
-        1. 查询文件的 document_id
-        2. 检查是否有其他文件引用同一 document_id（内容去重）
-        3. 若无其他引用，级联删除该 document 在所有数据库中的数据
-        4. 删除对象存储中的文件
-        5. 硬删除文件记录
+        1. 检查是否有其他文件引用同一 document_id（内容去重）
+        2. 若无其他引用，级联删除该 document 在所有数据库中的数据
+        3. 删除对象存储中的文件
+        4. 物理删除文件记录
+
+        幂等：墓碑行可能已被上一次投递清理掉，此时 document_id / storage_path
+        由消息带入，仍然可以完成剩余清理。
 
         Args:
             session: MySQL 数据库会话
             user_id: 用户ID
             file_id: 文件ID
+            document_id: 文档ID，缺省时从墓碑行读取
+            storage_path: 对象存储路径，缺省时从墓碑行读取
             storage_manager: 对象存储管理器（可选）
 
         Returns:
@@ -159,24 +234,23 @@ class KnowledgeDeleteService:
         """
         result = DeleteResult()
 
-        file_obj = workspace_file_system_repo.get_by_user_and_file(session, user_id, file_id)
-        if not file_obj:
-            file_obj = session.query(
-                workspace_file_system_repo.model
-            ).filter(
-                workspace_file_system_repo.model.user_id == user_id,
-                workspace_file_system_repo.model.file_id == file_id,
-                workspace_file_system_repo.model.deleted.in_([1, 2]),
-            ).first()
+        file_obj = session.query(
+            workspace_file_system_repo.model
+        ).filter(
+            workspace_file_system_repo.model.user_id == user_id,
+            workspace_file_system_repo.model.file_id == file_id,
+        ).first()
 
-        if not file_obj:
-            result.errors.append(f"文件不存在: file_id={file_id}")
+        if file_obj:
+            document_id = document_id or file_obj.document_id
+            storage_path = storage_path or file_obj.storage_path
+        elif not document_id and not storage_path:
+            logger.debug(f"文件已清理完成，跳过: file_id={file_id}")
             return result
 
-        document_id = file_obj.document_id
-        storage_path = file_obj.storage_path
-
         if document_id:
+            # 引用计数只看存活文件：同内容的另一份也在待清理队列里时，
+            # 谁先跑到这里谁清，共享数据不会被漏掉。
             other_refs = workspace_file_system_repo.get_by_document_id(session, document_id)
             other_refs = [
                 f for f in other_refs
@@ -207,63 +281,31 @@ class KnowledgeDeleteService:
                 result.errors.append(error_msg)
                 logger.error(error_msg)
 
+        if result.errors:
+            # 有清理失败项时保留墓碑行：它既是检索排除的依据，也是兜底扫描重投的线索。
+            # 一旦提前删掉，残留的向量/对象就再也没人认领了。
+            logger.warning(
+                f"清理未全部完成，保留墓碑等待重投: file_id={file_id}, "
+                f"errors={result.errors}"
+            )
+            return result
+
         try:
-            count = session.query(workspace_file_system_repo.model).filter(
-                workspace_file_system_repo.model.user_id == user_id,
-                workspace_file_system_repo.model.file_id == file_id,
-            ).delete(synchronize_session='fetch')
-            if count > 0:
+            if workspace_file_system_repo.hard_delete_by_user_and_file(
+                session, user_id, file_id
+            ):
                 result.mysql_deleted += 1
         except SQLAlchemyError as e:
-            error_msg = f"硬删除文件记录失败: {e}"
+            error_msg = f"物理删除文件记录失败: {e}"
             result.errors.append(error_msg)
             logger.error(error_msg)
 
         logger.info(
-            f"永久删除文件完成: file_id={file_id}, "
+            f"清理文件完成: file_id={file_id}, "
             f"mysql={result.mysql_deleted}, mongodb={result.mongodb_deleted}, "
-            f"milvus={result.milvus_deleted}, storage={result.storage_deleted}, "
-            f"errors={len(result.errors)}"
+            f"milvus={result.milvus_deleted}, storage={result.storage_deleted}"
         )
         return result
-
-    async def batch_permanent_delete_files(
-        self,
-        session: Session,
-        user_id: str,
-        file_ids: List[str],
-        storage_manager: Optional[StorageManager] = None,
-    ) -> DeleteResult:
-        """批量永久删除文件及其关联数据
-
-        Args:
-            session: MySQL 数据库会话
-            user_id: 用户ID
-            file_ids: 文件ID列表
-            storage_manager: 对象存储管理器（可选）
-
-        Returns:
-            DeleteResult 汇总结果
-        """
-        total_result = DeleteResult()
-
-        for file_id in file_ids:
-            file_result = await self.permanent_delete_file(
-                session, user_id, file_id, storage_manager
-            )
-            total_result.mysql_deleted += file_result.mysql_deleted
-            total_result.mongodb_deleted += file_result.mongodb_deleted
-            total_result.milvus_deleted += file_result.milvus_deleted
-            total_result.storage_deleted += file_result.storage_deleted
-            total_result.errors.extend(file_result.errors)
-
-        logger.info(
-            f"批量永久删除完成: {len(file_ids)} 个文件, "
-            f"mysql={total_result.mysql_deleted}, mongodb={total_result.mongodb_deleted}, "
-            f"milvus={total_result.milvus_deleted}, storage={total_result.storage_deleted}, "
-            f"errors={len(total_result.errors)}"
-        )
-        return total_result
 
     async def _cascade_delete_document(
         self,

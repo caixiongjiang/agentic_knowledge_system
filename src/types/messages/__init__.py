@@ -16,6 +16,7 @@ from src.types.messages.extract import (
     SummaryEndMessage,
     GraphEndMessage,
 )
+from src.types.messages.cleanup import CleanupMessage
 from src.types.messages.db_write import (
     EmbeddingWriteMessage,
     GraphWriteMessage,
@@ -38,6 +39,8 @@ __all__ = [
     # 提取相关消息
     "SummaryEndMessage",
     "GraphEndMessage",
+    # 清理相关消息
+    "CleanupMessage",
     # 数据库写入消息
     "EmbeddingWriteMessage",
     "GraphWriteMessage",

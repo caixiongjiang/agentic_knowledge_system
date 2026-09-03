@@ -104,6 +104,8 @@ def _build_filters(
     document_id: Optional[str],
     chunk_type: Optional[str],
 ) -> MetadataFilter:
+    from src.service.knowledge.tombstone import exclude_deleted
+
     filters = MetadataFilter(user_id=kit.user_id, chunk_type=chunk_type)
     if kit.knowledge_base_ids:
         filters.knowledge_base_id = kit.knowledge_base_ids[0]
@@ -111,7 +113,8 @@ def _build_filters(
         filters.document_id = document_id.strip()
     elif kit.scope_document_ids:
         filters.document_ids = list(kit.scope_document_ids)
-    return filters
+    # grep 直接调 ExactMatch / BooleanSearch，不走 RetrieveService，得自己排除墓碑
+    return exclude_deleted(filters)
 
 
 def _resolve_mode(

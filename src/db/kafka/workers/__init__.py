@@ -12,6 +12,7 @@ from src.db.kafka.workers.text_splitter_worker import TextSplitterWorker
 from src.db.kafka.workers.file_summary_worker import FileSummaryWorker
 from src.db.kafka.workers.kg_extractor_worker import KGExtractorWorker
 from src.db.kafka.workers.text_analyzer_worker import TextAnalyzerWorker
+from src.db.kafka.workers.cleanup_worker import CleanupWorker
 
 __all__ = [
     "BaseWorker",
@@ -20,4 +21,5 @@ __all__ = [
     "FileSummaryWorker",
     "KGExtractorWorker",
     "TextAnalyzerWorker",
+    "CleanupWorker",
 ]

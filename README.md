@@ -46,7 +46,7 @@
 
 ```
                         ┌──────────────────────── FastAPI (main.py, :8000) ─────────────────────────┐
-                        │  /api/knowledge/*  (base/index/folder/file/chunk/trash/retrieve)            │
+                        │  /api/knowledge/*  (base/index/folder/file/chunk/retrieve)                  │
                         │  /api/chat/*       (sessions/models/ws)                                     │
                         └────────────────────────────────────────────────────────────────────────────┘
                                               │  上传 → Kafka(index.start)  │  检索/对话 → 同步 Pipeline
@@ -187,7 +187,7 @@ Server → { type: "token", ... } / { type: "tool_call", name: "drill_down", ...
 - **通用文件知识库**：[索引高性能架构](docs/通用文件和工作空间文件知识库/通用文件索引高性能架构设计.md) · [多路检索召回](docs/通用文件和工作空间文件知识库/通用文件多路检索召回设计.md) · [高级语义索引召回](docs/通用文件和工作空间文件知识库/通用文件高级语义索引召回设计.md) · [多数据源格式适配](docs/通用文件和工作空间文件知识库/通用文件多数据源格式适配设计.md) · [工作空间与 Agent 交互](docs/通用文件和工作空间文件知识库/工作空间与agent交互设计.md) · [召回 Skills 设计](docs/通用文件和工作空间文件知识库/Agentic知识库召回Skills设计.md)
 - **Memory 知识库**：[memory 与上下文工程](docs/memory知识库/memory与上下文工程设计.md) · [高性能架构](docs/memory知识库/memory索引高性能架构设计.md) · [高级语义检索召回](docs/memory知识库/memory高级语义检索召回设计.md) · [多消息类型适配](docs/memory知识库/memory多消息类型适配设计.md) · [memory 工具设计](docs/memory知识库/memory工具设计.md)
 - **特殊功能**：[知识库对话设计](docs/特殊功能设计/知识库对话设计.md) · [Skill 技能系统](docs/特殊功能设计/Skill技能系统设计方案.md) · [PDF 文件翻译](docs/特殊功能设计/pdf文件翻译设计.md)
-- **运维**：[回收站删除恢复逻辑](docs/API设计/回收站删除恢复逻辑.md) · [Scripts 目录](scripts/README.md) · [Splitter 模块](src/index/common_file_extract/splitter/README.md)
+- **运维**：[删除与异步清理设计](docs/API设计/删除与异步清理设计.md) · [Scripts 目录](scripts/README.md) · [Splitter 模块](src/index/common_file_extract/splitter/README.md)
 
 ---
 

@@ -19,6 +19,12 @@
 --   - 此操作不可逆，请谨慎执行
 --   - 建议先使用 SELECT 语句预览要删除的数据
 --   - 生产环境建议先备份数据库
+--
+--   ⚠️ 不要把 workspace_file_system / workspace_folder 加进来：
+--      workspace_file_system 的 deleted=1 表示「已删除，关联数据待 CleanupWorker 清理」，
+--      是一个以秒计的中间态。在这里物理删掉这些行，Milvus / MongoDB / MinIO 里的
+--      向量、分块和原始文件就再也没人认领了，兜底扫描也找不回来。
+--      这类清理请走删除接口，由 CleanupWorker 负责。
 -- 
 -- =====================================================
 
@@ -43,9 +49,7 @@ USE `default`;
 -- UNION ALL
 -- SELECT 'chunk_atomic_qa', COUNT(*) FROM chunk_atomic_qa WHERE deleted = 1
 -- UNION ALL
--- SELECT 'document_summary', COUNT(*) FROM document_summary WHERE deleted = 1
--- UNION ALL
--- SELECT 'workspace_file_system', COUNT(*) FROM workspace_file_system WHERE deleted = 1;
+-- SELECT 'document_summary', COUNT(*) FROM document_summary WHERE deleted = 1;
 
 -- =====================================================
 -- 2. 物理删除所有软删除的记录
@@ -62,8 +66,7 @@ DELETE FROM chunk_summary WHERE deleted = 1;
 DELETE FROM chunk_atomic_qa WHERE deleted = 1;
 DELETE FROM document_summary WHERE deleted = 1;
 
--- Business Layer: 业务数据表
-DELETE FROM workspace_file_system WHERE deleted = 1;
+-- Business Layer: workspace_file_system 不在此列，见文件头的警告
 
 -- =====================================================
 -- 3. 显示清理结果
@@ -85,6 +88,4 @@ SELECT 'chunk_summary', COUNT(*) FROM chunk_summary WHERE deleted = 1
 UNION ALL
 SELECT 'chunk_atomic_qa', COUNT(*) FROM chunk_atomic_qa WHERE deleted = 1
 UNION ALL
-SELECT 'document_summary', COUNT(*) FROM document_summary WHERE deleted = 1
-UNION ALL
-SELECT 'workspace_file_system', COUNT(*) FROM workspace_file_system WHERE deleted = 1;
+SELECT 'document_summary', COUNT(*) FROM document_summary WHERE deleted = 1;

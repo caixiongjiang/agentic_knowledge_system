@@ -79,6 +79,11 @@ class KafkaTopics:
     DB_WRITE_GRAPH = f"{_TP}db_write.graph.start"          # 图谱数据写入
     DB_WRITE_META = f"{_TP}db_write.meta.start"            # MySQL 元数据写入
     DB_WRITE_MONGO = f"{_TP}db_write.mongo.start"          # MongoDB 文档数据写入
+
+    # ==================== 删除清理 Topic ====================
+
+    CLEANUP_START = f"{_TP}knowledge_base.cleanup.start"   # 文件删除后的关联数据清理
+
     
     # ==================== DLQ 和重试 Topics ====================
     
@@ -118,6 +123,8 @@ class KafkaTopics:
             cls.DB_WRITE_GRAPH,
             cls.DB_WRITE_META,
             cls.DB_WRITE_MONGO,
+            # 删除清理
+            cls.CLEANUP_START,
         ]
     
     @classmethod
@@ -149,6 +156,7 @@ class KafkaTopics:
         graph_start_partitions = topics_config.get("graph_start_partitions", 16)
         meta_start_partitions = topics_config.get("meta_start_partitions", 32)
         mongo_start_partitions = topics_config.get("mongo_start_partitions", 32)
+        cleanup_start_partitions = topics_config.get("cleanup_start_partitions", 8)
         
         # 构建 Topic 配置字典
         topic_configs = {
@@ -238,6 +246,15 @@ class KafkaTopics:
             cls.DB_WRITE_MONGO: TopicConfig(
                 name=cls.DB_WRITE_MONGO,
                 num_partitions=mongo_start_partitions,
+                replication_factor=replication_factor,
+                retention_ms=retention_ms,
+                min_insync_replicas=min_insync_replicas,
+                cleanup_policy=cleanup_policy,
+            ),
+            # 删除清理 Topic
+            cls.CLEANUP_START: TopicConfig(
+                name=cls.CLEANUP_START,
+                num_partitions=cleanup_start_partitions,
                 replication_factor=replication_factor,
                 retention_ms=retention_ms,
                 min_insync_replicas=min_insync_replicas,
