@@ -763,6 +763,45 @@ async def test_first_turn_triggers_title() -> bool:
     return True
 
 
+async def test_thinking_span_timer() -> bool:
+    """思考墙钟：首个 thinking.delta 开表，content / tool_call 停表。"""
+    from src.chat.stream_buffer import StreamEventType
+
+    _hr("思考墙钟开停表")
+    started, ended = ChatService._update_thinking_span(
+        None, None, StreamEventType.CONTENT_DELTA,
+    )
+    if started is not None or ended is not None:
+        _fail("无 thinking 不应开表")
+        return False
+    started, ended = ChatService._update_thinking_span(
+        None, None, StreamEventType.THINKING_DELTA,
+    )
+    if started is None or ended is not None:
+        _fail("首个 thinking.delta 应开表")
+        return False
+    started2, ended2 = ChatService._update_thinking_span(
+        started, ended, StreamEventType.THINKING_DELTA,
+    )
+    if started2 != started or ended2 is not None:
+        _fail("后续 thinking.delta 不应改表")
+        return False
+    started3, ended3 = ChatService._update_thinking_span(
+        started2, ended2, StreamEventType.CONTENT_DELTA,
+    )
+    if ended3 is None or ended3 < 0:
+        _fail(f"content 应停表，实际 {ended3}")
+        return False
+    started4, ended4 = ChatService._update_thinking_span(
+        started3, ended3, StreamEventType.TOOL_CALL_STARTED,
+    )
+    if ended4 != ended3:
+        _fail("已停表后不应改写")
+        return False
+    _ok(f"思考计时：开表后 content 停表 {ended3:.1f}ms")
+    return True
+
+
 # ============================================================
 # 主入口
 # ============================================================
@@ -780,6 +819,7 @@ def main() -> int:
         ("session_not_found", test_session_not_found),
         ("retrieval_failure_resilient", test_retrieval_failure_resilient),
         ("first_turn_triggers_title", test_first_turn_triggers_title),
+        ("thinking_span_timer", test_thinking_span_timer),
     ]
     results: List[tuple] = []
     for name, fn in tests:

@@ -130,6 +130,7 @@ def _to_message_item(m: ChatMessage) -> ChatMessageItem:
         role=m.role,
         content=m.content or "",
         thinking=m.thinking,
+        thinking_ms=getattr(m, "thinking_ms", None),
         tool_calls=[
             ToolCallItem(
                 id=tc.id,

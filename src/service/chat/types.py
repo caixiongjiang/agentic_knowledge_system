@@ -119,7 +119,7 @@ class ChatEvent:
         - ``TOOL_CALL_COMPLETED``: ``{"id", "name", "args", "result_brief",
           "items_added", "time_ms", "execution_model"?}``
         - ``MESSAGE_DONE``: ``{"message_id", "role", "round", "finish_reason",
-          "tool_calls_count", "citations_count", "usage": {...}}``
+          "tool_calls_count", "citations_count", "thinking_ms"?, "usage": {...}}``
         - ``TOOL_ROUND_DONE``: ``{"round", "tool_calls": [...]}``
         - ``TURN_DONE``: ``{"rounds", "tool_calls_count", "time_ms",
           "user_message_id", "assistant_message_ids": [...]}``
