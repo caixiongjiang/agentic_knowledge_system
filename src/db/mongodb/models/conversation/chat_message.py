@@ -164,8 +164,9 @@ class ChatMessage(BaseDocument):
     role 与字段约定
     ---------------
     - ``role=user``      : 仅 ``content``（用户输入）
-    - ``role=assistant`` : ``content`` + 可选 ``thinking`` + 可选 ``tool_calls``
-                           + 可选 ``citations`` + 可选 ``usage`` + ``finish_reason``
+    - ``role=assistant`` : ``content`` + 可选 ``thinking`` + 可选 ``thinking_ms``
+                           + 可选 ``tool_calls`` + 可选 ``citations``
+                           + 可选 ``usage`` + ``finish_reason``
     - ``role=tool``      : ``content`` 为工具结果文本；
                            ``tool_call_id`` 必填，关联同会话内最近一条
                            assistant 消息中的某个 ``tool_calls[*].id``
@@ -214,6 +215,14 @@ class ChatMessage(BaseDocument):
     thinking: Optional[str] = Field(
         None,
         description="思考链（仅 assistant；deepseek-reasoner 等模型给出时填）",
+    )
+
+    thinking_ms: Optional[float] = Field(
+        None,
+        description=(
+            "本轮思考墙钟耗时（毫秒）。从首个 thinking.delta 计到 "
+            "content / tool_call 开始或本轮结束；无思考则为 None。"
+        ),
     )
 
     tool_calls: List[ToolCallRecord] = Field(

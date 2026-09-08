@@ -1508,7 +1508,9 @@ class ChatService:
                         result.error = msg
                         return
 
-            # 流式拉一轮
+            # 流式拉一轮；思考墙钟从首个 thinking.delta 计到 content/tool 开始
+            thinking_started_at: Optional[float] = None
+            thinking_ms: Optional[float] = None
             try:
                 stream = client.astream(
                     messages=messages,
@@ -1519,6 +1521,13 @@ class ChatService:
                 )
                 async for chunk in stream:
                     for sev in acc.feed(chunk):
+                        thinking_started_at, thinking_ms = (
+                            self._update_thinking_span(
+                                thinking_started_at,
+                                thinking_ms,
+                                sev.type,
+                            )
+                        )
                         ev = self._stream_event_to_chat_event(sev)
                         if ev is not None:
                             yield ev
@@ -1534,6 +1543,10 @@ class ChatService:
                 return
 
             resp = acc.finalize()
+            if thinking_started_at is not None and thinking_ms is None:
+                thinking_ms = max(
+                    0.0, (time.perf_counter() - thinking_started_at) * 1000,
+                )
             result.rounds += 1
 
             # 把本轮 assistant 拼回 messages（继续下一轮 / 收尾用）
@@ -1567,6 +1580,7 @@ class ChatService:
                     citations=all_citations_for_persist,
                     alias_map=alias_map,
                     kit=kit,
+                    thinking_ms=thinking_ms,
                 )
                 assistant_msg_ids.append(assistant_msg_id)
                 yield ChatEvent(
@@ -1580,6 +1594,7 @@ class ChatService:
                         "citations_count": len(citations_for_display),
                         "citations": [c.model_dump() for c in citations_for_display],
                         "has_thinking": bool(resp.thinking),
+                        "thinking_ms": thinking_ms,
                         "usage": {
                             "prompt_tokens": resp.usage.prompt_tokens,
                             "completion_tokens": resp.usage.completion_tokens,
@@ -1721,6 +1736,7 @@ class ChatService:
                 tool_results=tool_results,
                 alias_map=alias_map,
                 kit=kit,
+                thinking_ms=thinking_ms,
             )
             assistant_msg_ids.append(assistant_msg_id)
 
@@ -1735,6 +1751,7 @@ class ChatService:
                     "citations_count": len(citations_for_display),
                     "citations": [c.model_dump() for c in citations_for_display],
                     "has_thinking": bool(resp.thinking),
+                    "thinking_ms": thinking_ms,
                     "usage": {
                         "prompt_tokens": resp.usage.prompt_tokens,
                         "completion_tokens": resp.usage.completion_tokens,
@@ -1828,6 +1845,27 @@ class ChatService:
     # ============================================================
 
     @staticmethod
+    def _update_thinking_span(
+        started_at: Optional[float],
+        ended_ms: Optional[float],
+        sev_type: StreamEventType,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """首个 thinking.delta 开表，首个 content / tool_call 停表。"""
+        now = time.perf_counter()
+        if sev_type == StreamEventType.THINKING_DELTA and started_at is None:
+            return now, ended_ms
+        if (
+            started_at is not None
+            and ended_ms is None
+            and sev_type in (
+                StreamEventType.CONTENT_DELTA,
+                StreamEventType.TOOL_CALL_STARTED,
+            )
+        ):
+            return started_at, max(0.0, (now - started_at) * 1000)
+        return started_at, ended_ms
+
+    @staticmethod
     def _stream_event_to_chat_event(sev: StreamEvent) -> Optional[ChatEvent]:
         if sev.type == StreamEventType.CONTENT_DELTA:
             return ChatEvent(ChatEventType.CONTENT_DELTA, {"text": sev.text})
@@ -1864,8 +1902,9 @@ class ChatService:
         tool_results: Optional[List[Tuple[ToolCall, str, int, float]]] = None,
         alias_map: Optional[ChunkAliasMap] = None,
         kit: Optional[KnowledgeNavToolKit] = None,
+        thinking_ms: Optional[float] = None,
     ) -> None:
-        """落 assistant 消息到 MongoDB（thinking / tool_calls / citations / usage 全保留）
+        """落 assistant 消息到 MongoDB（thinking / thinking_ms / tool_calls / citations / usage）
 
         Args:
             tool_results: 本轮工具执行结果，``[(tc, content, items_added, time_ms), ...]``。
@@ -1874,8 +1913,10 @@ class ChatService:
                 None 表示 LLM 这轮没返工具调用。
             alias_map: 若提供，会把"本轮新分配的 alias delta"写入
                 ``metadata['alias_additions']``，便于下一 turn 重建累加。
-                同时把 tool_calls 入参里的 ``chunk_id`` alias 还原成真实 id 落库
-                （Mongo 里保存语义稳定的真实 id，前端历史回放就不必依赖 alias）。
+                同时把 tool_calls 入参里的 ``chunk_id`` / ``chunk_ids`` alias
+                还原成真实 id 落库（Mongo 里保存语义稳定的真实 id，前端历史
+                回放就不必依赖 alias）。
+            thinking_ms: 本轮思考墙钟耗时（毫秒）；无思考则为 None。
         """
         try:
             # tc.id → (result_brief, items_added, time_ms, execution_model)
@@ -1900,7 +1941,7 @@ class ChatService:
                 brief, items_added, tc_time_ms, execution_model = results_by_id.get(
                     tc.id, (None, 0, None, None),
                 )
-                # 落库前把入参里的 alias 还原回真实 id（仅 chunk_id 字段；
+                # 落库前把入参里的 alias 还原回真实 id（chunk_id / chunk_ids；
                 # section_id / document_id 本来就不走 alias）
                 args = dict(tc.arguments or {})
                 if alias_map is not None:
@@ -1909,6 +1950,20 @@ class ChatService:
                         real = alias_map.resolve_alias(raw)
                         if real:
                             args["chunk_id"] = real
+                    raw_list = args.get("chunk_ids")
+                    if isinstance(raw_list, list):
+                        unwrapped: List[Any] = []
+                        for value in raw_list:
+                            if (
+                                isinstance(value, str)
+                                and value
+                                and alias_map.is_alias(value)
+                            ):
+                                real = alias_map.resolve_alias(value)
+                                unwrapped.append(real if real else value)
+                            else:
+                                unwrapped.append(value)
+                        args["chunk_ids"] = unwrapped
                 extra_kwargs: Dict[str, Any] = {}
                 if kit and tc.name == "search_knowledge_base":
                     sr = kit._search_results.get(tc.id)
@@ -1952,6 +2007,7 @@ class ChatService:
                 role=ChatRole.ASSISTANT.value,
                 content=resp.content or "",
                 thinking=(resp.thinking.reasoning if resp.thinking else None),
+                thinking_ms=thinking_ms,
                 tool_calls=tool_call_records,
                 citations=citations,
                 usage=usage,

@@ -217,6 +217,7 @@ async def test_chat_messages_full_turn(session_id: str) -> Tuple[bool, List[str]
         role=ChatRole.ASSISTANT.value,
         content="好的，我来查询上海的天气情况。",
         thinking="用户问的是上海天气，我应该调用 get_weather 工具。",
+        thinking_ms=1840.0,
         tool_calls=[tool_call],
         usage=TokenUsageRecord(
             prompt_tokens=120,
@@ -292,6 +293,9 @@ async def test_chat_messages_full_turn(session_id: str) -> Tuple[bool, List[str]
         return False, created_ids
     if not a1.thinking:
         _fail("assistant1 thinking 丢失")
+        return False, created_ids
+    if a1.thinking_ms != 1840.0:
+        _fail(f"assistant1 thinking_ms 丢失: {a1.thinking_ms}")
         return False, created_ids
     if a1.usage is None or a1.usage.thinking_tokens != 22:
         _fail("assistant1 usage 反序列化失败")

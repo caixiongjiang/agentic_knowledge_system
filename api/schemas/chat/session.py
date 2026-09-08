@@ -245,6 +245,7 @@ class ChatMessageItem(BaseModel):
     role: str = Field(..., description="system / user / assistant / tool")
     content: str = ""
     thinking: Optional[str] = None
+    thinking_ms: Optional[float] = None
     tool_calls: List[ToolCallItem] = Field(default_factory=list)
     tool_call_id: Optional[str] = None
     citations: List[CitationItem] = Field(default_factory=list)

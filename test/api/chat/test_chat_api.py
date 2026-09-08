@@ -110,6 +110,7 @@ class _FakeChatMessage:
     role: str
     content: str = ""
     thinking: Optional[str] = None
+    thinking_ms: Optional[float] = None
     tool_calls: List[Any] = field(default_factory=list)
     tool_call_id: Optional[str] = None
     citations: List[Any] = field(default_factory=list)
