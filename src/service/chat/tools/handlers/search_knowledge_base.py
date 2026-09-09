@@ -163,6 +163,7 @@ async def handle(
         filters=filters,
         top_k=top_k,
         conversation_context=None,
+        enable_route_planner=getattr(kit, "enable_route_planner", False),
     )
 
     async def on_progress(stage: str) -> None:

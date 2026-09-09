@@ -120,7 +120,7 @@ class RetrieveService:
     ) -> RetrieveResponse:
         """智能检索（完整 Pipeline）
 
-        Phase 1: LLM₁ 路由规划
+        Phase 1: LLM₁ 路由规划（可选，默认禁用以提升响应速度）
         Phase 2-5: 多路并行召回 → 跨粒度对齐 → RRF 融合 → Rerank
 
         Args:
@@ -130,21 +130,28 @@ class RetrieveService:
         total_start = time.perf_counter()
         timings = PhaseTimings()
 
-        await self._emit_progress(on_progress, "planning")
-
-        # Phase 1: LLM₁ 路由规划
+        # Phase 1: LLM₁ 路由规划（仅在 enable_route_planner=True 时执行）
         t = time.perf_counter()
-        try:
-            planner = self._get_planner()
-            route_plan = await planner.plan(
-                query_text=request.query_text,
-                filters=request.filters,
-                top_k=request.top_k,
-                route_hints=request.route_hints,
-                conversation_context=request.conversation_context,
-            )
-        except Exception as e:
-            logger.warning(f"LLM₁ 路由规划失败，回退默认路由: {e}")
+        planner_model = None
+        if request.enable_route_planner:
+            await self._emit_progress(on_progress, "planning")
+            try:
+                planner = self._get_planner()
+                route_plan = await planner.plan(
+                    query_text=request.query_text,
+                    filters=request.filters,
+                    top_k=request.top_k,
+                    route_hints=request.route_hints,
+                    conversation_context=request.conversation_context,
+                )
+                try:
+                    planner_model = planner._llm_client.model
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning(f"LLM₁ 路由规划失败，回退默认路由: {e}")
+                route_plan = self._default_route_plan(request)
+        else:
             route_plan = self._default_route_plan(request)
 
         route_plan = self._apply_search_mode(route_plan, request.search_mode, request)
@@ -165,13 +172,6 @@ class RetrieveService:
         timings.rerank_ms = pipeline.timings.rerank_ms
 
         total_ms = (time.perf_counter() - total_start) * 1000
-
-        # 记录查询转化使用的 LLM₁ 模型名称
-        planner_model = None
-        try:
-            planner_model = planner._llm_client.model
-        except Exception:
-            pass
 
         items = pipeline.items[:request.top_k]
         return RetrieveResponse(
@@ -586,13 +586,14 @@ class RetrieveService:
 
     @staticmethod
     def _default_route_plan(request: RetrieveRequest) -> RoutePlan:
-        """LLM₁ 失败时的回退默认路由计划"""
+        """LLM₁ 失败或未启用时的默认 4 路混合检索路由计划"""
         recall_top_k = request.top_k * 3
         return RoutePlan(
             route_plan=[
                 RouteConfig(route="chunk_dense", top_k=recall_top_k),
                 RouteConfig(route="enhanced_chunk_dense", top_k=recall_top_k),
                 RouteConfig(route="bm25_sparse", top_k=recall_top_k),
+                RouteConfig(route="qa_dense", top_k=recall_top_k),
             ],
             rerank_top_n=min(recall_top_k * 2, 100),
         )

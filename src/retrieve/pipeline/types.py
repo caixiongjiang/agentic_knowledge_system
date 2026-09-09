@@ -186,6 +186,10 @@ class RetrieveRequest(BaseModel):
         default=None,
         description="精排后分数阈值, 低于此值的结果将被过滤 (None 表示不过滤)",
     )
+    enable_route_planner: bool = Field(
+        default=False,
+        description="是否启用 LLM₁ 动态路由规划（默认 False，直接使用 4 路混合检索）",
+    )
 
 
 class PhaseTimings(BaseModel):

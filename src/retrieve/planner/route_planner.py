@@ -187,7 +187,9 @@ class RoutePlanner:
             logger.warning("LLM₁ 未输出有效路由，回退默认")
             valid_routes = [
                 RouteConfig(route="chunk_dense", top_k=top_k * 3),
+                RouteConfig(route="enhanced_chunk_dense", top_k=top_k * 3),
                 RouteConfig(route="bm25_sparse", top_k=top_k * 3),
+                RouteConfig(route="qa_dense", top_k=top_k * 3),
             ]
 
         plan.route_plan = valid_routes

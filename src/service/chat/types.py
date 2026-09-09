@@ -208,6 +208,12 @@ class ChatRequest(BaseModel):
             "驱动的探索式对话）"
         ),
     )
+    enable_route_plan: Optional[bool] = Field(
+        None,
+        description=(
+            "是否启用智能路由规划（LLM₁）；None/False 表示走默认 4 路混合检索"
+        ),
+    )
     mentions: Optional[List[ChatMention]] = Field(
         None,
         description=(
@@ -270,6 +276,7 @@ class ChatTurnContext(BaseModel):
     system_prompt: str
     knowledge_base_ids: List[str] = Field(default_factory=list)
     skip_retrieval: bool = False
+    enable_route_plan: bool = False
 
     # ===== scope 抽象（v0.8.0 引入）=====
     scope_kind: str = Field(

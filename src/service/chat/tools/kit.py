@@ -42,6 +42,7 @@ class KnowledgeNavToolKit:
         scope_document_ids: Optional[List[str]] = None,
         scope_kind: str = "kb",
         scope_label: Optional[str] = None,
+        enable_route_planner: bool = False,
     ) -> None:
         self.supplemented = supplemented_items
         self.alias_map = alias_map
@@ -49,6 +50,7 @@ class KnowledgeNavToolKit:
         self.on_progress = on_progress
         self.user_id = user_id
         self.knowledge_base_ids = knowledge_base_ids or []
+        self.enable_route_planner = enable_route_planner
 
         self.scope_document_ids: Optional[List[str]] = (
             list(scope_document_ids) if scope_document_ids is not None else None

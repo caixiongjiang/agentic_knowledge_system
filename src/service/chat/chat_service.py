@@ -578,6 +578,11 @@ class ChatService:
             system_prompt=sys_prompt,
             knowledge_base_ids=list(session.knowledge_base_ids or []),
             skip_retrieval=request.skip_retrieval,
+            enable_route_plan=(
+                request.enable_route_plan
+                if request.enable_route_plan is not None
+                else bool(getattr(session, "enable_route_plan", False))
+            ),
             scope_kind=scope_kind,
             folder_id=effective_folder_id,
             folder_label=folder_label,
@@ -1309,6 +1314,7 @@ class ChatService:
             scope_document_ids=ctx.scope_document_ids,
             scope_kind=ctx.scope_kind,
             scope_label=ctx.folder_id,
+            enable_route_planner=ctx.enable_route_plan,
         )
 
         assistant_msg_ids: List[str] = []
