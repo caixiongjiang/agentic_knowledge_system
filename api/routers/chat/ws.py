@@ -171,6 +171,7 @@ async def _run_chat_turn(
         retrieve_top_k=payload.retrieve_top_k,
         custom_system_prompt=payload.custom_system_prompt,
         skip_retrieval=payload.skip_retrieval,
+        enable_route_plan=payload.enable_route_plan,
         # Cursor 式 @ 内联引用（软引用，可多个，文件/目录混选）
         mentions=payload.mentions,
         folder_id=payload.folder_id,

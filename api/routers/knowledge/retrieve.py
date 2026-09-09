@@ -103,6 +103,7 @@ async def smart_retrieve(
             )),
             top_k=body.top_k,
             enable_rerank=body.enable_rerank,
+            enable_route_planner=body.enable_route_planner,
             route_hints=body.route_hints,
         )
 

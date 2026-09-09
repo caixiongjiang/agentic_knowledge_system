@@ -99,6 +99,12 @@ class ChatRequestPayload(BaseModel):
         None, description="本轮临时覆盖 system_prompt",
     )
     skip_retrieval: bool = Field(False, description="是否跳过初始检索")
+    enable_route_plan: Optional[bool] = Field(
+        None,
+        description=(
+            "是否启用智能路由规划（LLM₁）；None/False 表示走默认 4 路混合检索"
+        ),
+    )
 
     mentions: Optional[List[ChatMention]] = Field(
         None,
