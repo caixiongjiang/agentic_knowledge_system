@@ -230,18 +230,16 @@ def _serialize_message_for_count(msg: Dict[str, Any]) -> str:
 def count_message_tokens(
     messages: Sequence[Dict[str, Any]],
     *,
-    model: str,
     tools: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> int:
     """估算 OpenAI/LiteLLM 协议 ``messages``（+ ``tools`` schema）的 token 总数。
 
     统一走 ``_heuristic_count`` 中英文字符比经验估算，不依赖任何 tokenizer，
-    保证不抛异常。``model`` 参数保留以兼容调用方签名，内部不再使用。
+    保证不抛异常。
 
     Args:
         messages: OpenAI/LiteLLM 协议 messages 列表（典型来自
             ``rebuild_messages_from_history`` 或 ``compose_chat_messages``）。
-        model: 模型 ID（保留参数兼容旧调用方，内部不再用于选 tokenizer）。
         tools: 可选——本轮要带给 LLM 的 tool schemas（OpenAI 格式）；
             tool schema 本身也吃 tokens，长会话场景必须计入。
 
@@ -262,7 +260,6 @@ def count_message_tokens(
 def estimate_history_tokens(
     history: Sequence[T],
     *,
-    model: str,
     tools: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> int:
     """以 ``history`` 为入参的便捷 token 估算：内部先 rebuild 再调用 ``count_message_tokens``。
@@ -272,7 +269,7 @@ def estimate_history_tokens(
     if not history:
         return 0
     msgs = rebuild_messages_from_history(history)
-    return count_message_tokens(msgs, model=model, tools=tools)
+    return count_message_tokens(msgs, tools=tools)
 
 
 # ============================================================
@@ -284,7 +281,6 @@ def apply_token_window(
     history: Sequence[T],
     *,
     max_tokens: int,
-    model: str,
     keep_system: bool = True,
     min_recent_turns: int = 1,
     tools: Optional[Sequence[Dict[str, Any]]] = None,
@@ -304,7 +300,6 @@ def apply_token_window(
         max_tokens: token 上限（含 system + history + tools schema）。
             通常由 ChatService 用"模型 context_length - 预留给 system_prompt
             - 预留给本轮 user - 预留给输出"算出。
-        model: 模型 ID（保留参数兼容旧调用方，内部不再用于选 tokenizer）。
         keep_system: 是否保留首条 system（默认 True）。
         min_recent_turns: 最少保留几轮（默认 1，即至少保最后一轮 user → assistant）。
             即使最后一轮自身就超 ``max_tokens``，本函数也不会丢——上游应另行截
@@ -349,7 +344,7 @@ def apply_token_window(
             candidate.append(system_msg)
         candidate.extend(history[start_idx:])
 
-        tokens = estimate_history_tokens(candidate, model=model, tools=tools)
+        tokens = estimate_history_tokens(candidate, tools=tools)
         if tokens <= max_tokens or turns_taken <= min_recent_turns:
             best_kept = candidate
             last_turn_pos -= 1

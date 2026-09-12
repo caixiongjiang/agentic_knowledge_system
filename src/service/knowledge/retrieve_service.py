@@ -292,7 +292,6 @@ class RetrieveService:
             pinned_qa = self._pick_pinned_qa(recall_results)
             if pinned_qa is not None:
                 recall_stats.qa_pinned = True
-                recall_stats.short_circuited = False
                 logger.debug(
                     f"QA 置顶: qa_id={pinned_qa.qa_id}, "
                     f"score={pinned_qa.score:.4f} ≥ "

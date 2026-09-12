@@ -354,7 +354,7 @@ class RollUp(BaseCapability):
         if include_content:
             doc_data = await self._document_data_repo.get_by_id(document_id)
             if doc_data:
-                item.summary = doc_data.summary_zh or doc_data.summary_en
+                item.summary = (doc_data.summary or {}).get("text") if doc_data.summary else None
                 if doc_data.metadata:
                     item.title = doc_data.metadata.get("title")
                     # 从 metadata 透传若存在的 source_type / file_name 等可读字段，

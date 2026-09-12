@@ -76,8 +76,10 @@ from src.db.mongodb.models.conversation.chat_message import (
 )
 from src.db.mongodb.repositories.conversation import chat_message_repo
 from src.service.chat.chunk_alias_map import (
-    ChunkAliasMap,
+    NavAliasMap,
     METADATA_ALIAS_ADDITIONS_KEY,
+    METADATA_SECTION_ALIAS_ADDITIONS_KEY,
+    METADATA_DOCUMENT_ALIAS_ADDITIONS_KEY,
     rebuild_alias_map_from_history,
 )
 from src.service.chat.chunk_enricher import ChunkMeta, TurnEnrichCache
@@ -87,7 +89,6 @@ from src.prompts.chat import (
     build_chat_system_prompt,
     compose_chat_messages,
     drop_assistant_tool_dangling,
-    estimate_history_tokens,
 )
 from src.service.chat.context import (
     ContextBudgetInput,
@@ -527,18 +528,14 @@ class ChatService:
             )
         )
 
-        # 思考强度档位优先级：request > session.thinking_level > 由 session.enable_thinking
-        # 降级（True→medium / False→off）> cfg.default_thinking_level。最后按
-        # effective_model 的 thinking_levels 钳位成可下发 / 可持久化的合法档位。
+        # 思考强度档位优先级：request > session.thinking_level > cfg.default_thinking_level。
+        # 最后按 effective_model 的 thinking_levels 钳位成可下发 / 可持久化的合法档位。
         if request.thinking_level is not None:
             _raw_thinking_level = request.thinking_level
         elif getattr(session, "thinking_level", None):
             _raw_thinking_level = session.thinking_level
         else:
-            _raw_thinking_level = (
-                "medium" if bool(getattr(session, "enable_thinking", False))
-                else self._cfg.default_thinking_level
-            )
+            _raw_thinking_level = self._cfg.default_thinking_level
         try:
             from src.client.llm.registry import get_litellm_registry
             _clamp_model = effective_model or ""
@@ -932,14 +929,18 @@ class ChatService:
         return block, resolved
 
     async def _build_references_block(
-        self, references: List[Dict[str, Any]],
+        self,
+        references: List[Dict[str, Any]],
+        *,
+        alias_map: Optional[NavAliasMap] = None,
     ) -> str:
         """把解析后的 @ 引用拼成注入 user prompt 的「引用资料」块（方案A + 方案C）。
 
         - **方案A（小文件全量注入）**：已索引的单文档文件，若全文在
           ``mention_inject_max_chars`` 且不超过本轮合计预算
           ``mention_inject_total_budget``，则直接把全文拼进上下文，模型无需再调工具。
-        - **方案C（大文件 / 目录 / 多文件超预算 → 仅提示）**：只给出 document_id，
+        - **方案C（大文件 / 目录 / 多文件超预算 → 仅提示）**：只给出 document_id
+          （经 ``alias_map`` 转为 ``dN`` 短引用），
           让模型按需用 skeleton / drill_down / read_chunks 等工具自取。
 
         软引用语义：不锁死 scope，问题超出引用范围时模型仍可更大范围检索。
@@ -964,6 +965,9 @@ class ChatService:
                     )
                     continue
                 doc_id = doc_ids[0]
+                doc_label = (
+                    alias_map.alias_for_document(doc_id) if alias_map else doc_id
+                )
                 # 方案A：尝试全量注入（单文件、已索引、正文在预算内）
                 loaded: Optional[Dict[str, Any]] = None
                 if remaining_budget > 0:
@@ -977,19 +981,24 @@ class ChatService:
                     text = loaded["text"]
                     remaining_budget -= len(text)
                     full_blocks.append(
-                        f"### 文件「{label}」（document_id = {doc_id}，已全量载入，"
+                        f"### 文件「{label}」（document_id = {doc_label}，已全量载入，"
                         f"共 {len(text)} 字）\n{text}"
                     )
                 else:
                     # 方案C：大文件 / 超预算 → 仅提示
                     hint_lines.append(
-                        f"- 文件「{label}」：document_id = {doc_id}"
+                        f"- 文件「{label}」：document_id = {doc_label}"
                         f"（已索引，正文较大未全量载入）"
                     )
             else:  # folder → 方案C
                 n = len(doc_ids)
                 if n:
-                    preview = ", ".join(doc_ids[:20])
+                    if alias_map:
+                        preview = ", ".join(
+                            alias_map.alias_for_document(d) for d in doc_ids[:20]
+                        )
+                    else:
+                        preview = ", ".join(doc_ids[:20])
                     more = " …" if n > 20 else ""
                     hint_lines.append(
                         f"- 目录「{label}」：含 {n} 篇文档"
@@ -1078,7 +1087,7 @@ class ChatService:
         # session 级 chunk_id ↔ alias 映射：从历史 assistant.metadata.alias_additions
         # 累加重建。本 turn 新分配的 alias 在 _persist_assistant 里写回。
         # 占位创建，下面加载历史后再 rebuild。
-        alias_map = ChunkAliasMap()
+        alias_map = NavAliasMap()
 
         # ---- 2) 持久化 user message ----
         user_msg_id = generate_message_id()
@@ -1108,7 +1117,6 @@ class ChatService:
                     user_id=ctx.user_id,
                     mode=ctx.mode,
                     thinking_level=ctx.thinking_level,
-                    enable_thinking=(ctx.thinking_level != "off"),
                     max_tool_rounds=ctx.max_tool_rounds,
                 )
             except Exception as e:  # noqa: BLE001
@@ -1134,7 +1142,6 @@ class ChatService:
                 and (getattr(session, "thinking_level", None) or "off") != ctx.thinking_level
             ):
                 updates_payload["thinking_level"] = ctx.thinking_level
-                updates_payload["enable_thinking"] = ctx.thinking_level != "off"
             if updates_payload:
                 self._session_service.update_session_settings(
                     session_id=ctx.session_id,
@@ -1174,11 +1181,13 @@ class ChatService:
         try:
             alias_map = rebuild_alias_map_from_history(history_full)
             logger.debug(
-                f"alias_map 重建完成：size={alias_map.size}, counter={alias_map.counter}"
+                f"alias_map 重建完成：chunk_size={alias_map.size}, "
+                f"section_size={alias_map.section_size}, "
+                f"document_size={alias_map.document_size}"
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"alias_map 重建失败（按空 map 继续）: {e}")
-            alias_map = ChunkAliasMap()
+            alias_map = NavAliasMap()
 
         turn_citations: Dict[str, Citation] = {}
         for m in history_full:
@@ -1207,7 +1216,7 @@ class ChatService:
         # 顺序：用户原文 → @ 引用资料块 → 显式技能块（/ 召唤，置于最末尾以强化 recency）。
         user_message_for_llm = (
             ctx.query
-            + await self._build_references_block(references)
+            + await self._build_references_block(references, alias_map=alias_map)
             + ctx.forced_skills_block
         )
 
@@ -1265,7 +1274,6 @@ class ChatService:
         history = apply_token_window(
             history,
             max_tokens=model_max_context or self._cfg.context_window_tokens,
-            model=client.model,
             keep_system=False,
         )
 
@@ -1443,7 +1451,7 @@ class ChatService:
         tool_msg_ids: List[str],
         result: ChatTurnResult,
         enrich_cache: TurnEnrichCache,
-        alias_map: ChunkAliasMap,
+        alias_map: NavAliasMap,
         tools_schema: Optional[List[Dict[str, Any]]],
         reasoning_effort: Optional[str],
         search_progress_queue: Optional[
@@ -1694,9 +1702,9 @@ class ChatService:
                 tool_results = truncated_results
 
             # enrich 检索工具的 chunks_brief（补充 file_name / section_title 等渲染元数据）
-            if kit and kit._search_results:
+            if kit and kit.search_results:
                 all_brief_chunks: List[ChunkItem] = []
-                for cb_list, _, _ in kit._search_results.values():
+                for cb_list, _, _ in kit.search_results.values():
                     for cb in cb_list:
                         all_brief_chunks.append(ChunkItem(
                             chunk_id=cb["chunk_id"],
@@ -1709,7 +1717,7 @@ class ChatService:
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"enrich search chunks 失败: {e}")
                 # 把 enrich 后的元数据写回 chunks_brief
-                for cb_list, _, _ in kit._search_results.values():
+                for cb_list, _, _ in kit.search_results.values():
                     for cb in cb_list:
                         meta = enrich_cache.get(cb["chunk_id"])
                         if meta:
@@ -1802,7 +1810,7 @@ class ChatService:
                 }
                 # 检索工具：附加 chunks 数据供前端渲染"查看"按钮
                 if kit and tc.name == "search_knowledge_base":
-                    search_result = kit._search_results.get(tc.id)
+                    search_result = kit.search_results.get(tc.id)
                     if search_result:
                         completed_event["retrieval_chunks"] = search_result[0]
                         completed_event["retrieval_params"] = search_result[1]
@@ -1906,7 +1914,7 @@ class ChatService:
         resp: LLMResponse,
         citations: List[Citation],
         tool_results: Optional[List[Tuple[ToolCall, str, int, float]]] = None,
-        alias_map: Optional[ChunkAliasMap] = None,
+        alias_map: Optional[NavAliasMap] = None,
         kit: Optional[KnowledgeNavToolKit] = None,
         thinking_ms: Optional[float] = None,
     ) -> None:
@@ -1947,15 +1955,17 @@ class ChatService:
                 brief, items_added, tc_time_ms, execution_model = results_by_id.get(
                     tc.id, (None, 0, None, None),
                 )
-                # 落库前把入参里的 alias 还原回真实 id（chunk_id / chunk_ids；
-                # section_id / document_id 本来就不走 alias）
+                # 落库前把入参里的 alias 还原回真实 id（chunk_id / chunk_ids /
+                # section_id / document_id / parent_section_id）
                 args = dict(tc.arguments or {})
                 if alias_map is not None:
+                    # chunk_id
                     raw = args.get("chunk_id")
                     if isinstance(raw, str) and alias_map.is_alias(raw):
                         real = alias_map.resolve_alias(raw)
                         if real:
                             args["chunk_id"] = real
+                    # chunk_ids
                     raw_list = args.get("chunk_ids")
                     if isinstance(raw_list, list):
                         unwrapped: List[Any] = []
@@ -1970,9 +1980,22 @@ class ChatService:
                             else:
                                 unwrapped.append(value)
                         args["chunk_ids"] = unwrapped
+                    # section_id / parent_section_id
+                    for key in ("section_id", "parent_section_id"):
+                        raw = args.get(key)
+                        if isinstance(raw, str) and alias_map.is_section_alias(raw):
+                            real = alias_map.resolve_section_alias(raw)
+                            if real:
+                                args[key] = real
+                    # document_id
+                    raw = args.get("document_id")
+                    if isinstance(raw, str) and alias_map.is_document_alias(raw):
+                        real = alias_map.resolve_document_alias(raw)
+                        if real:
+                            args["document_id"] = real
                 extra_kwargs: Dict[str, Any] = {}
                 if kit and tc.name == "search_knowledge_base":
-                    sr = kit._search_results.get(tc.id)
+                    sr = kit.search_results.get(tc.id)
                     if sr:
                         extra_kwargs["retrieval_chunks"] = sr[0]
                         extra_kwargs["retrieval_params"] = sr[1]
@@ -2005,6 +2028,12 @@ class ChatService:
                 delta = alias_map.consume_turn_delta()
                 if delta:
                     metadata[METADATA_ALIAS_ADDITIONS_KEY] = delta
+                section_delta = alias_map.consume_section_turn_delta()
+                if section_delta:
+                    metadata[METADATA_SECTION_ALIAS_ADDITIONS_KEY] = section_delta
+                document_delta = alias_map.consume_document_turn_delta()
+                if document_delta:
+                    metadata[METADATA_DOCUMENT_ALIAS_ADDITIONS_KEY] = document_delta
             await chat_message_repo.create(
                 creator=ctx.user_id,
                 _id=message_id,
@@ -2058,7 +2087,7 @@ class ChatService:
         seed_hits: List[ChunkItem],
         added_chunks: List[ChunkItem],
         enrich_cache: TurnEnrichCache,
-        alias_map: Optional[ChunkAliasMap] = None,
+        alias_map: Optional[NavAliasMap] = None,
         extra_citations: Optional[List[Citation]] = None,
     ) -> List[Citation]:
         """构造 assistant 落库 / message.done 用的 citations，并把渲染元数据 enrich。

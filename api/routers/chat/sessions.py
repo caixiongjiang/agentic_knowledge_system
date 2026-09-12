@@ -86,14 +86,7 @@ def _to_session_info(s: ChatSession) -> ChatSessionInfo:
         model_preset=s.model_preset,
         model=s.model,
         mode=getattr(s, "mode", None) or "agent",
-        thinking_level=(
-            getattr(s, "thinking_level", None)
-            or ("medium" if bool(getattr(s, "enable_thinking", False)) else "off")
-        ),
-        enable_thinking=(
-            bool(getattr(s, "enable_thinking", False))
-            or (getattr(s, "thinking_level", "off") not in (None, "off"))
-        ),
+        thinking_level=getattr(s, "thinking_level", None) or "off",
         enable_multimodal=bool(getattr(s, "enable_multimodal", False)),
         max_tool_rounds=int(s.max_tool_rounds),
         system_prompt=s.system_prompt,
@@ -114,10 +107,7 @@ def _to_session_list_item(s: ChatSession) -> ChatSessionListItem:
         model_preset=s.model_preset,
         model=s.model,
         mode=getattr(s, "mode", None) or "agent",
-        thinking_level=(
-            getattr(s, "thinking_level", None)
-            or ("medium" if bool(getattr(s, "enable_thinking", False)) else "off")
-        ),
+        thinking_level=getattr(s, "thinking_level", None) or "off",
         message_count=int(s.message_count or 0),
         last_message_at=s.last_message_at,
         create_time=s.create_time,

@@ -6,42 +6,51 @@
 @Author  : caixiongjiang
 @Date    : 2026/05/14
 @Function:
-    ChunkAliasMap ── chunk_id ↔ session 级短 alias 双向映射
+    NavAliasMap ── chunk_id / section_id / document_id ↔ session 级短 alias 双向映射
 
     背景与动机
     ----------
-    把真实 chunk_id（``chunk-<uuid>`` ≈ 42 字符）直接喂给 LLM 有三个问题：
+    把真实 chunk_id（``chunk-<uuid>`` ≈ 42 字符）、section_id（``section-<uuid>``）、
+    document_id（``document-<uuid>``）直接喂给 LLM 有三个问题：
 
     1. **Token 消耗**：一次回答里如果引用 20 个片段，光 id 就消耗 ~800 token；
+       section/document id 在工具结果中每行重复出现，浪费更严重；
     2. **数据安全**：内部主键随回答暴露给上游模型方（特别是非自部署模型）；
     3. **LLM 行为脆弱**：长 uuid 容易被某些模型（DeepSeek 在长上下文下尤其
        典型）截断成 8 位短 hash 输出，导致前端拿不到完整 id 进而无法渲染。
 
-    解决方案：给 LLM 看的内容里把 chunk_id 替换为短 alias ``c1 / c2 / c3 ...``
+    解决方案：给 LLM 看的内容里把三类 id 替换为短 alias：
+    - ``c1 / c2 / c3 ...``  → chunk_id
+    - ``s1 / s2 / s3 ...``  → section_id
+    - ``d1 / d2 / d3 ...``  → document_id
+
     （4 字节、可读、对 LLM 友好），后端维护双向映射；只有最终持久化到 Mongo /
     下发到前端 ``Citation.chunk_id`` 才用真实 id，前端渲染再做最后一跳查表。
 
     生命周期
     --------
-    - **session 级别**：同一 session 内同一 chunk 始终对应同一个 alias，
+    - **session 级别**：同一 session 内同一 id 始终对应同一个 alias，
       跨 turn 不会重新编号；这样 LLM 在第二 turn 引用第一 turn 出现过的
-      chunk 时，alias 仍能正常 unwrap。
+      id 时，alias 仍能正常 unwrap。
     - **增量持久化**：每条 assistant 消息只在 metadata 里写**本轮新分配**
-      的 ``alias_additions``；下次 load history 时把所有 assistant 消息的
-      delta 累加即可重建完整 map。
+      的 ``alias_additions`` / ``section_alias_additions`` / ``document_alias_additions``；
+      下次 load history 时把所有 assistant 消息的 delta 累加即可重建完整 map。
     - **无 race**：单 session 内的 chat turn 在 chat_service 里串行执行，
       AliasMap 不需要锁。
 
     边界
     ----
-    - 仅做 ``chunk_id`` 的 alias；``section_id`` / ``document_id`` 沿用真实
-      id（``drill_down`` / ``skeleton`` 工具入参需要，且这两个 id 暴露面
-      较窄）。
-    - alias 命名空间是 ``^c\\d+$``；任何非该模式的字符串都直接走"非 alias"
-      路径（既能容忍 LLM 偶尔输出真实 chunk-uuid，也方便单测）。
+    - alias 命名空间：
+      - chunk: ``^c\\d+$``
+      - section: ``^s\\d+$``
+      - document: ``^d\\d+$``
+      任何非该模式的字符串都直接走"非 alias"路径（既能容忍 LLM 偶尔输出真实
+      uuid，也方便单测）。
+    - 三类 alias 互不冲突，不会误解析。
 
 @Modify History:
     2026-05-14 - 首版（Phase B: chunk alias 节省 token & 防截断）
+    2026-09-12 - 扩展为 NavAliasMap，支持 section_id / document_id alias
 @Copyright：Copyright(c) 2024-2026. All Rights Reserved
 =================================================="""
 from __future__ import annotations
@@ -52,15 +61,19 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from loguru import logger
 
 
-# alias 格式：c + 十进制数字（c1, c2, c10, ...）
+# alias 格式：c/s/d + 十进制数字
 ALIAS_RE = re.compile(r"^c(\d+)$")
+SECTION_ALIAS_RE = re.compile(r"^s(\d+)$")
+DOCUMENT_ALIAS_RE = re.compile(r"^d(\d+)$")
 
 # 持久化到 ChatMessage.metadata 时使用的 key
 METADATA_ALIAS_ADDITIONS_KEY = "alias_additions"
+METADATA_SECTION_ALIAS_ADDITIONS_KEY = "section_alias_additions"
+METADATA_DOCUMENT_ALIAS_ADDITIONS_KEY = "document_alias_additions"
 
 
-class ChunkAliasMap:
-    """session 级 chunk_id ↔ alias 双向映射。
+class NavAliasMap:
+    """session 级 chunk_id / section_id / document_id ↔ alias 双向映射。
 
     线程模型
     --------
@@ -68,63 +81,133 @@ class ChunkAliasMap:
     """
 
     def __init__(self) -> None:
+        # chunk
         self._alias_to_chunk: Dict[str, str] = {}
         self._chunk_to_alias: Dict[str, str] = {}
-        # 已分配的最大序号；下次新分配从 _counter + 1 开始
-        self._counter: int = 0
-        # 本 turn 内新增的部分（用于 metadata delta 持久化）
-        self._delta_alias_to_chunk: Dict[str, str] = {}
+        self._chunk_counter: int = 0
+        self._delta_chunk_alias: Dict[str, str] = {}
 
-    # ==================== 分配 / 查询 ====================
+        # section
+        self._alias_to_section: Dict[str, str] = {}
+        self._section_to_alias: Dict[str, str] = {}
+        self._section_counter: int = 0
+        self._delta_section_alias: Dict[str, str] = {}
+
+        # document
+        self._alias_to_document: Dict[str, str] = {}
+        self._document_to_alias: Dict[str, str] = {}
+        self._document_counter: int = 0
+        self._delta_document_alias: Dict[str, str] = {}
+
+    # ==================== chunk alias ====================
 
     def alias_for(self, chunk_id: str) -> str:
-        """取或分配 alias；同一 chunk_id 永远映射到同一个 alias。"""
+        """取或分配 chunk alias；同一 chunk_id 永远映射到同一个 alias。"""
         if not chunk_id:
             return ""
         existing = self._chunk_to_alias.get(chunk_id)
         if existing is not None:
             return existing
-        self._counter += 1
-        alias = f"c{self._counter}"
+        self._chunk_counter += 1
+        alias = f"c{self._chunk_counter}"
         self._alias_to_chunk[alias] = chunk_id
         self._chunk_to_alias[chunk_id] = alias
-        self._delta_alias_to_chunk[alias] = chunk_id
+        self._delta_chunk_alias[alias] = chunk_id
         return alias
 
     def alias_for_many(self, chunk_ids: Iterable[str]) -> List[str]:
         return [self.alias_for(cid) for cid in chunk_ids]
 
     def resolve_alias(self, alias: str) -> Optional[str]:
-        """alias → 真实 chunk_id；未找到返回 None。"""
+        """chunk alias → 真实 chunk_id；未找到返回 None。"""
         return self._alias_to_chunk.get(alias)
 
     def alias_of(self, chunk_id: str) -> Optional[str]:
-        """chunk_id → alias；未分配过返回 None（不自动分配，与 alias_for 区分）。"""
+        """chunk_id → alias；未分配过返回 None（不自动分配）。"""
         return self._chunk_to_alias.get(chunk_id)
 
     def is_alias(self, s: str) -> bool:
-        """判断字符串是否符合 alias 命名模式（c\\d+）。"""
+        """判断字符串是否符合 chunk alias 命名模式（c\\d+）。"""
         return bool(s) and ALIAS_RE.match(s) is not None
+
+    # ==================== section alias ====================
+
+    def alias_for_section(self, section_id: str) -> str:
+        """取或分配 section alias；同一 section_id 永远映射到同一个 alias。"""
+        if not section_id:
+            return ""
+        existing = self._section_to_alias.get(section_id)
+        if existing is not None:
+            return existing
+        self._section_counter += 1
+        alias = f"s{self._section_counter}"
+        self._alias_to_section[alias] = section_id
+        self._section_to_alias[section_id] = alias
+        self._delta_section_alias[alias] = section_id
+        return alias
+
+    def resolve_section_alias(self, alias: str) -> Optional[str]:
+        """section alias → 真实 section_id；未找到返回 None。"""
+        return self._alias_to_section.get(alias)
+
+    def alias_of_section(self, section_id: str) -> Optional[str]:
+        """section_id → alias；未分配过返回 None（不自动分配）。"""
+        return self._section_to_alias.get(section_id)
+
+    def is_section_alias(self, s: str) -> bool:
+        """判断字符串是否符合 section alias 命名模式（s\\d+）。"""
+        return bool(s) and SECTION_ALIAS_RE.match(s) is not None
+
+    # ==================== document alias ====================
+
+    def alias_for_document(self, document_id: str) -> str:
+        """取或分配 document alias；同一 document_id 永远映射到同一个 alias。"""
+        if not document_id:
+            return ""
+        existing = self._document_to_alias.get(document_id)
+        if existing is not None:
+            return existing
+        self._document_counter += 1
+        alias = f"d{self._document_counter}"
+        self._alias_to_document[alias] = document_id
+        self._document_to_alias[document_id] = alias
+        self._delta_document_alias[alias] = document_id
+        return alias
+
+    def resolve_document_alias(self, alias: str) -> Optional[str]:
+        """document alias → 真实 document_id；未找到返回 None。"""
+        return self._alias_to_document.get(alias)
+
+    def alias_of_document(self, document_id: str) -> Optional[str]:
+        """document_id → alias；未分配过返回 None（不自动分配）。"""
+        return self._document_to_alias.get(document_id)
+
+    def is_document_alias(self, s: str) -> bool:
+        """判断字符串是否符合 document alias 命名模式（d\\d+）。"""
+        return bool(s) and DOCUMENT_ALIAS_RE.match(s) is not None
 
     # ==================== Delta 管理（持久化用） ====================
 
     def consume_turn_delta(self) -> Dict[str, str]:
-        """取出本 turn 内新分配的 alias→chunk 映射，并清空 delta 缓存。
+        """取出本 turn 内新分配的 chunk alias→chunk 映射，并清空 delta 缓存。"""
+        delta = dict(self._delta_chunk_alias)
+        self._delta_chunk_alias.clear()
+        return delta
 
-        ChatService 在 ``_persist_assistant`` 之后调用一次；返回值写入
-        ``ChatMessage.metadata['alias_additions']``。
-        """
-        delta = dict(self._delta_alias_to_chunk)
-        self._delta_alias_to_chunk.clear()
+    def consume_section_turn_delta(self) -> Dict[str, str]:
+        """取出本 turn 内新分配的 section alias→section 映射，并清空 delta 缓存。"""
+        delta = dict(self._delta_section_alias)
+        self._delta_section_alias.clear()
+        return delta
+
+    def consume_document_turn_delta(self) -> Dict[str, str]:
+        """取出本 turn 内新分配的 document alias→document 映射，并清空 delta 缓存。"""
+        delta = dict(self._delta_document_alias)
+        self._delta_document_alias.clear()
         return delta
 
     def absorb_persisted(self, additions: Dict[str, str]) -> None:
-        """从历史 assistant.metadata 重建时调用：吸收一段已持久化的 delta。
-
-        如果遇到 alias 编号已存在但 chunk_id 不一致的情况，记录 warning 并
-        以"先到为准"——这种场景理论不会发生（同 alias 必同 chunk），出现
-        说明持久化有冲突。
-        """
+        """从历史 assistant.metadata 重建 chunk alias。"""
         if not additions:
             return
         for alias, chunk_id in additions.items():
@@ -133,42 +216,95 @@ class ChunkAliasMap:
             m = ALIAS_RE.match(alias)
             if not m:
                 logger.warning(
-                    f"ChunkAliasMap.absorb_persisted: 跳过非法 alias={alias!r}"
+                    f"NavAliasMap.absorb_persisted: 跳过非法 chunk alias={alias!r}"
                 )
                 continue
             num = int(m.group(1))
             existing = self._alias_to_chunk.get(alias)
             if existing is not None and existing != chunk_id:
                 logger.warning(
-                    f"ChunkAliasMap.absorb_persisted: alias={alias} "
+                    f"NavAliasMap.absorb_persisted: chunk alias={alias} "
                     f"已映射到 {existing}, 忽略冲突的 chunk_id={chunk_id}"
                 )
                 continue
             if existing is None:
                 self._alias_to_chunk[alias] = chunk_id
                 self._chunk_to_alias.setdefault(chunk_id, alias)
-                if num > self._counter:
-                    self._counter = num
-        # 历史吸收不属于"本 turn delta"
-        # （absorb 完后调用方应紧接着开新 turn，delta 已被前面 consume 过）
+                if num > self._chunk_counter:
+                    self._chunk_counter = num
+
+    def absorb_section_persisted(self, additions: Dict[str, str]) -> None:
+        """从历史 assistant.metadata 重建 section alias。"""
+        if not additions:
+            return
+        for alias, section_id in additions.items():
+            if not alias or not section_id:
+                continue
+            m = SECTION_ALIAS_RE.match(alias)
+            if not m:
+                logger.warning(
+                    f"NavAliasMap.absorb_section_persisted: 跳过非法 section alias={alias!r}"
+                )
+                continue
+            num = int(m.group(1))
+            existing = self._alias_to_section.get(alias)
+            if existing is not None and existing != section_id:
+                logger.warning(
+                    f"NavAliasMap.absorb_section_persisted: section alias={alias} "
+                    f"已映射到 {existing}, 忽略冲突的 section_id={section_id}"
+                )
+                continue
+            if existing is None:
+                self._alias_to_section[alias] = section_id
+                self._section_to_alias.setdefault(section_id, alias)
+                if num > self._section_counter:
+                    self._section_counter = num
+
+    def absorb_document_persisted(self, additions: Dict[str, str]) -> None:
+        """从历史 assistant.metadata 重建 document alias。"""
+        if not additions:
+            return
+        for alias, document_id in additions.items():
+            if not alias or not document_id:
+                continue
+            m = DOCUMENT_ALIAS_RE.match(alias)
+            if not m:
+                logger.warning(
+                    f"NavAliasMap.absorb_document_persisted: 跳过非法 document alias={alias!r}"
+                )
+                continue
+            num = int(m.group(1))
+            existing = self._alias_to_document.get(alias)
+            if existing is not None and existing != document_id:
+                logger.warning(
+                    f"NavAliasMap.absorb_document_persisted: document alias={alias} "
+                    f"已映射到 {existing}, 忽略冲突的 document_id={document_id}"
+                )
+                continue
+            if existing is None:
+                self._alias_to_document[alias] = document_id
+                self._document_to_alias.setdefault(document_id, alias)
+                if num > self._document_counter:
+                    self._document_counter = num
 
     # ==================== 文本替换辅助 ====================
 
-    # 真实 chunk_id 的形态：chunk-<uuid>（小写 hex + 4 个连字符）。
-    # 同时兼容老消息里 LLM 输出过的截断短 hash（chunk-1ad9521d）—— 我们只识别
-    # 完整 chunk_id，截断的不替换（防止误伤）。
+    # 真实 id 的形态：{type}-<uuid>（小写 hex + 4 个连字符）。
     _FULL_CHUNK_ID_RE = re.compile(
         r"\bchunk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
         re.IGNORECASE,
     )
+    _FULL_SECTION_ID_RE = re.compile(
+        r"\bsection-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        re.IGNORECASE,
+    )
+    _FULL_DOCUMENT_ID_RE = re.compile(
+        r"\bdocument-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        re.IGNORECASE,
+    )
 
     def replace_chunk_ids_with_aliases(self, text: str) -> str:
-        """在自由文本里把所有完整 chunk_id 字面量替换为 alias。
-
-        典型用法：把 ``format_retrieved_chunks_for_context`` / ``format_chunks_for_llm``
-        渲染过的文本进一步压成 alias 形态。这里**不分配新 alias**——只对已
-        存在于 map 中的 chunk_id 做替换；遇到 map 里没有的 chunk_id 原样保留。
-        """
+        """在自由文本里把所有完整 chunk_id 字面量替换为 alias。"""
         if not text:
             return text
 
@@ -178,6 +314,37 @@ class ChunkAliasMap:
 
         return self._FULL_CHUNK_ID_RE.sub(_sub, text)
 
+    def replace_section_ids_with_aliases(self, text: str) -> str:
+        """在自由文本里把所有完整 section_id 字面量替换为 alias。"""
+        if not text:
+            return text
+
+        def _sub(m: "re.Match[str]") -> str:
+            sid = m.group(0)
+            return self._section_to_alias.get(sid, sid)
+
+        return self._FULL_SECTION_ID_RE.sub(_sub, text)
+
+    def replace_document_ids_with_aliases(self, text: str) -> str:
+        """在自由文本里把所有完整 document_id 字面量替换为 alias。"""
+        if not text:
+            return text
+
+        def _sub(m: "re.Match[str]") -> str:
+            did = m.group(0)
+            return self._document_to_alias.get(did, did)
+
+        return self._FULL_DOCUMENT_ID_RE.sub(_sub, text)
+
+    def replace_all_ids_with_aliases(self, text: str) -> str:
+        """在自由文本里把所有完整 chunk_id / section_id / document_id 替换为 alias。"""
+        if not text:
+            return text
+        text = self.replace_chunk_ids_with_aliases(text)
+        text = self.replace_section_ids_with_aliases(text)
+        text = self.replace_document_ids_with_aliases(text)
+        return text
+
     # ==================== 一些可观测属性 ====================
 
     @property
@@ -186,22 +353,47 @@ class ChunkAliasMap:
 
     @property
     def counter(self) -> int:
-        return self._counter
+        return self._chunk_counter
+
+    @property
+    def section_size(self) -> int:
+        return len(self._alias_to_section)
+
+    @property
+    def section_counter(self) -> int:
+        return self._section_counter
+
+    @property
+    def document_size(self) -> int:
+        return len(self._alias_to_document)
+
+    @property
+    def document_counter(self) -> int:
+        return self._document_counter
 
     def snapshot(self) -> Dict[str, str]:
-        """完整 alias→chunk_id 映射快照（拷贝；用于下发到前端 message.done）"""
+        """完整 chunk alias→chunk_id 映射快照（拷贝）"""
         return dict(self._alias_to_chunk)
+
+    def section_snapshot(self) -> Dict[str, str]:
+        """完整 section alias→section_id 映射快照（拷贝）"""
+        return dict(self._alias_to_section)
+
+    def document_snapshot(self) -> Dict[str, str]:
+        """完整 document alias→document_id 映射快照（拷贝）"""
+        return dict(self._alias_to_document)
 
 
 # ==================== 历史重建 ====================
 
 
-def rebuild_alias_map_from_history(history: Sequence[Any]) -> ChunkAliasMap:
-    """从历史消息序列重建 ChunkAliasMap。
+def rebuild_alias_map_from_history(history: Sequence[Any]) -> NavAliasMap:
+    """从历史消息序列重建 NavAliasMap。
 
-    遍历所有 assistant 消息，把 ``metadata['alias_additions']`` 累加吸收；
-    返回的 AliasMap 内部 ``_counter`` 等于已分配的最大序号，下次 ``alias_for``
-    会从 ``_counter + 1`` 起继续编号。
+    遍历所有 assistant 消息，把 ``metadata['alias_additions']`` /
+    ``metadata['section_alias_additions']`` / ``metadata['document_alias_additions']``
+    累加吸收；返回的 AliasMap 内部 counter 等于已分配的最大序号，下次分配
+    会从 counter + 1 起继续编号。
 
     Args:
         history: ``ChatMessage`` 列表（按 create_time 正序）。
@@ -209,22 +401,41 @@ def rebuild_alias_map_from_history(history: Sequence[Any]) -> ChunkAliasMap:
     Returns:
         重建好的 AliasMap；history 里没有 alias_additions 时返回空 map。
     """
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     for msg in history:
         if getattr(msg, "role", None) != "assistant":
             continue
         metadata = getattr(msg, "metadata", None) or {}
+
+        # chunk
         additions = metadata.get(METADATA_ALIAS_ADDITIONS_KEY) or {}
         if isinstance(additions, dict) and additions:
             am.absorb_persisted(additions)
+
+        # section
+        section_additions = metadata.get(METADATA_SECTION_ALIAS_ADDITIONS_KEY) or {}
+        if isinstance(section_additions, dict) and section_additions:
+            am.absorb_section_persisted(section_additions)
+
+        # document
+        document_additions = metadata.get(METADATA_DOCUMENT_ALIAS_ADDITIONS_KEY) or {}
+        if isinstance(document_additions, dict) and document_additions:
+            am.absorb_document_persisted(document_additions)
+
     # 吸收完后清掉 delta（这部分不属于"当前 turn 新增"）
-    am._delta_alias_to_chunk.clear()  # noqa: SLF001 (intentional within module)
+    am._delta_chunk_alias.clear()  # noqa: SLF001
+    am._delta_section_alias.clear()  # noqa: SLF001
+    am._delta_document_alias.clear()  # noqa: SLF001
     return am
 
 
 __all__ = [
-    "ChunkAliasMap",
+    "NavAliasMap",
     "rebuild_alias_map_from_history",
     "METADATA_ALIAS_ADDITIONS_KEY",
+    "METADATA_SECTION_ALIAS_ADDITIONS_KEY",
+    "METADATA_DOCUMENT_ALIAS_ADDITIONS_KEY",
     "ALIAS_RE",
+    "SECTION_ALIAS_RE",
+    "DOCUMENT_ALIAS_RE",
 ]

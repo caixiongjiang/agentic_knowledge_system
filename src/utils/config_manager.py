@@ -227,10 +227,6 @@ class ConfigManager:
     # ==================== 模型网关（LiteLLM Proxy / Model Lake） ====================
     # 支持 LiteLLM Proxy 与 OpenAI 兼容的 Model Lake 网关
 
-    def get_proxy_config(self) -> Dict[str, Any]:
-        """兼容旧调用：``[proxy]`` 已移除，网关身份与超时只读环境变量。"""
-        return self.get_section("proxy")
-
     def get_llm_gateway_full_config(self, env_manager: Optional[EnvManager] = None) -> Dict[str, Any]:
         """
         获取完整 LLM 大模型网关配置。

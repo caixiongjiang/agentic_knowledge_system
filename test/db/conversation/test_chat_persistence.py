@@ -113,7 +113,6 @@ async def test_chat_session_crud() -> Tuple[bool, str]:
             knowledge_base_ids=["kb_a", "kb_b"],
             model_preset="fast",
             agent_mode=True,
-            enable_thinking=False,
             max_tool_rounds=5,
             creator=TEST_USER_ID,
         )

@@ -12,7 +12,7 @@ from src.client.llm.types import ToolSchema
 from src.prompts.chat.retrieval_hints import SEMANTIC_RECALL_LITERAL_HINT
 from src.retrieve.pipeline.types import DirectAnswer
 from src.retrieve.types.result import ChunkItem
-from src.service.chat.chunk_alias_map import ChunkAliasMap
+from src.service.chat.chunk_alias_map import NavAliasMap
 from src.service.chat.tools.base import ToolDefinition
 from src.service.chat.tools.helpers import format_chunks_for_llm
 from src.service.chat.tools.runtime import get_current_tool_call_id
@@ -80,7 +80,7 @@ def format_pinned_search_for_llm(
     evidence: List[ChunkItem],
     items: List[ChunkItem],
     *,
-    alias_map: Optional[ChunkAliasMap] = None,
+    alias_map: Optional[NavAliasMap] = None,
 ) -> str:
     """置顶 QA + 依据原文 + 精排 Top-K，给 LLM 看。"""
     if pinned is None:

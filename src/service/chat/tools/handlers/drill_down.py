@@ -104,10 +104,14 @@ async def handle(
         for section in sections:
             title = section.title or "(无标题)"
             doc = section.document_id or "N/A"
+            if kit.alias_map and doc != "N/A":
+                doc = kit.alias_map.alias_for_document(doc)
             meta = section.metadata or {}
             level = meta.get("text_level")
             chunk_count = meta.get("chunk_count")
             parent = meta.get("parent_section_id")
+            if kit.alias_map and parent:
+                parent = kit.alias_map.alias_for_section(parent)
             tag_parts: List[str] = []
             if level is not None:
                 tag_parts.append(f"L{level}")
@@ -116,8 +120,13 @@ async def handle(
             if parent:
                 tag_parts.append(f"parent={parent}")
             tag = f" [{', '.join(tag_parts)}]" if tag_parts else ""
+            sec_label = (
+                kit.alias_map.alias_for_section(section.section_id)
+                if kit.alias_map and section.section_id
+                else section.section_id
+            )
             lines.append(
-                f"- section_id={section.section_id}, document_id={doc}{tag}\n  {title}",
+                f"- section_id={sec_label}, document_id={doc}{tag}\n  {title}",
             )
         kit.note_result_count(len(sections))
         logger.debug(

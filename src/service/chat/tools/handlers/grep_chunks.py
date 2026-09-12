@@ -241,7 +241,12 @@ async def handle(
 
     scope_note = ""
     if document_id:
-        scope_note = f"，document_id={document_id.strip()}"
+        doc_label = (
+            kit.alias_map.alias_for_document(document_id.strip())
+            if kit.alias_map
+            else document_id.strip()
+        )
+        scope_note = f"，document_id={doc_label}"
     elif kit.scope_kind == "folder":
         scope_note = f"，folder scope（{len(kit.scope_doc_id_set)} 篇文档）"
 
