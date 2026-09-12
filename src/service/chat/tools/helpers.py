@@ -9,9 +9,11 @@ from typing import Any, List, Optional, Tuple
 
 from src.prompts.chat.retrieval_hints import SEMANTIC_RECALL_LITERAL_HINT
 from src.retrieve.types.result import ChunkItem
-from src.service.chat.chunk_alias_map import ChunkAliasMap
+from src.service.chat.chunk_alias_map import NavAliasMap
 
 _ALIAS_PATTERN = re.compile(r"^c\d+$")
+_SECTION_ALIAS_PATTERN = re.compile(r"^s\d+$")
+_DOCUMENT_ALIAS_PATTERN = re.compile(r"^d\d+$")
 
 
 def looks_like_alias(value: str) -> bool:
@@ -19,11 +21,21 @@ def looks_like_alias(value: str) -> bool:
     return bool(value) and _ALIAS_PATTERN.match(value) is not None
 
 
+def looks_like_section_alias(value: str) -> bool:
+    """判断字符串是否符合 section alias 命名模式（``s\\d+``）。"""
+    return bool(value) and _SECTION_ALIAS_PATTERN.match(value) is not None
+
+
+def looks_like_document_alias(value: str) -> bool:
+    """判断字符串是否符合 document alias 命名模式（``d\\d+``）。"""
+    return bool(value) and _DOCUMENT_ALIAS_PATTERN.match(value) is not None
+
+
 def format_chunks_for_llm(
     chunks: List[ChunkItem],
     max_preview: int = 200,
     *,
-    alias_map: Optional[ChunkAliasMap] = None,
+    alias_map: Optional[NavAliasMap] = None,
     append_semantic_literal_hint: bool = False,
 ) -> str:
     """把 ChunkItem 列表渲染为给 LLM 看的预览文本。"""
@@ -39,8 +51,16 @@ def format_chunks_for_llm(
         full_text = chunk.text or ""
         is_truncated = len(full_text) > max_preview
         text = full_text[:max_preview]
-        doc = chunk.document_id or "N/A"
-        sec = chunk.section_id or "N/A"
+        doc = (
+            alias_map.alias_for_document(chunk.document_id)
+            if alias_map and chunk.document_id
+            else chunk.document_id or "N/A"
+        )
+        sec = (
+            alias_map.alias_for_section(chunk.section_id)
+            if alias_map and chunk.section_id
+            else chunk.section_id or "N/A"
+        )
         cid_label = (
             alias_map.alias_for(chunk.chunk_id)
             if alias_map and chunk.chunk_id
@@ -86,7 +106,7 @@ def format_chunks_for_llm(
     return "\n".join(lines)
 
 
-def skeleton_outline_to_text(outline_tree: list) -> str:
+def skeleton_outline_to_text(outline_tree: list, alias_map: Optional[NavAliasMap] = None) -> str:
     """SkeletonNode 列表转可读目录树文本。
 
     每个节点展示：section_id / 层级 / 标题 / 片段数 / 摘要预览（若有）。
@@ -98,6 +118,8 @@ def skeleton_outline_to_text(outline_tree: list) -> str:
     def _walk(node: Any, depth: int = 0) -> None:
         indent = "  " * depth
         section_id = getattr(node, "section_id", "")
+        if alias_map and section_id:
+            section_id = alias_map.alias_for_section(section_id)
         title = getattr(node, "title", "") or "(无标题)"
         chunk_count = getattr(node, "chunk_count", 0)
         level = getattr(node, "level", None)
@@ -154,7 +176,7 @@ def dedupe_preserve_order(chunk_ids: List[str]) -> List[str]:
 def resolve_chunk_id_list(
     chunk_ids: List[str],
     *,
-    alias_map: Optional[ChunkAliasMap],
+    alias_map: Optional[NavAliasMap],
     use_alias: bool,
     tool_name: str,
 ) -> Tuple[List[str], List[str], Optional[str]]:
@@ -235,7 +257,7 @@ def format_grep_chunks_for_llm(
     query: str,
     mode: str,
     context_chars: int = 80,
-    alias_map: Optional[ChunkAliasMap] = None,
+    alias_map: Optional[NavAliasMap] = None,
 ) -> str:
     """把 grep 命中结果渲染为带 snippet 的 LLM 文本（alias 模式）。"""
     if not chunks:
@@ -260,8 +282,16 @@ def format_grep_chunks_for_llm(
             mode,
             context_chars=context_chars,
         )
-        doc = chunk.document_id or "N/A"
-        sec = chunk.section_id or "N/A"
+        doc = (
+            alias_map.alias_for_document(chunk.document_id)
+            if alias_map and chunk.document_id
+            else chunk.document_id or "N/A"
+        )
+        sec = (
+            alias_map.alias_for_section(chunk.section_id)
+            if alias_map and chunk.section_id
+            else chunk.section_id or "N/A"
+        )
         read_hint = ""
         if len(full_text) > context_chars * 2:
             read_hint = (
@@ -279,7 +309,7 @@ def apply_alias_labels_to_result(
     result: str,
     real_ids: List[str],
     *,
-    alias_map: Optional[ChunkAliasMap],
+    alias_map: Optional[NavAliasMap],
     use_alias: bool,
 ) -> str:
     if not use_alias or alias_map is None:

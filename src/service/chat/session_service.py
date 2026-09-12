@@ -90,7 +90,6 @@ class ChatSessionService:
         model_preset: str = "fast",
         model: Optional[str] = None,
         mode: str = "agent",
-        enable_thinking: bool = False,
         thinking_level: str = "off",
         enable_multimodal: bool = False,
         max_tool_rounds: int = 5,
@@ -116,7 +115,6 @@ class ChatSessionService:
                 与 ``model_preset`` 并存：``model`` 非空时优先用它选模型，
                 ``model_preset`` 仍作为 temperature / max_tokens 等采样参数模板
                 （详见 ``ChatService._get_llm_client``）；思考强度由前端 thinking_level 逐轮传入。
-            enable_thinking: [兼容] 默认是否启用思考链；新代码用 thinking_level
             thinking_level: 默认思考强度档位（off/minimal/low/medium/high/xhigh/max）
             enable_multimodal: 默认是否启用多模态读图
             max_tool_rounds: Agent 模式默认工具批次上限
@@ -146,7 +144,6 @@ class ChatSessionService:
                 model_preset=model_preset,
                 model=model,
                 mode=mode,
-                enable_thinking=enable_thinking or (thinking_level not in ("off", "")),
                 thinking_level=thinking_level,
                 enable_multimodal=enable_multimodal,
                 max_tool_rounds=max_tool_rounds,
@@ -296,7 +293,6 @@ class ChatSessionService:
         session_id: str,
         user_id: str,
         mode: Optional[str] = None,
-        enable_thinking: Optional[bool] = None,
         thinking_level: Optional[str] = None,
         max_tool_rounds: Optional[int] = None,
     ) -> bool:
@@ -307,7 +303,6 @@ class ChatSessionService:
                 db,
                 session_id,
                 mode=mode,
-                enable_thinking=enable_thinking,
                 thinking_level=thinking_level,
                 max_tool_rounds=max_tool_rounds,
                 updater=user_id,
@@ -320,7 +315,6 @@ class ChatSessionService:
         user_id: str,
         model: Optional[str] = None,
         model_preset: Optional[str] = None,
-        enable_thinking: Optional[bool] = None,
         thinking_level: Optional[str] = None,
     ) -> bool:
         """把"会话级偏好"回写到 session（用户每轮可改的项）。
@@ -343,7 +337,6 @@ class ChatSessionService:
                 session_id,
                 model=model,
                 model_preset=model_preset,
-                enable_thinking=enable_thinking,
                 thinking_level=thinking_level,
                 updater=user_id,
             )

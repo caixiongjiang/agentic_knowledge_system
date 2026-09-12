@@ -60,7 +60,7 @@ async def handle(kit: KnowledgeNavToolKit, document_id: str) -> str:
     section_count = 0
     for item in result.items:
         if isinstance(item, SkeletonItem):
-            toc_text = skeleton_outline_to_text(item.outline_tree)
+            toc_text = skeleton_outline_to_text(item.outline_tree, alias_map=kit.alias_map)
             section_count = count_outline_nodes(item.outline_tree)
             chunks.append(
                 ChunkItem(

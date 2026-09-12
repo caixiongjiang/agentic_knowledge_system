@@ -124,7 +124,6 @@ def create_session(
         "title": f"client driver · agent={agent_mode}",
         "knowledge_base_ids": [knowledge_base_id],
         "agent_mode": agent_mode,
-        "enable_thinking": False,
         "model_preset": model_preset,
     }
     printer.line("HTTP→", f"POST {url}  body={json.dumps(body, ensure_ascii=False)}")
@@ -153,7 +152,6 @@ async def run_turn(
     session_id: str,
     query: str,
     agent_mode: bool,
-    enable_thinking: bool,
     model_preset: Optional[str],
     stop_after: Optional[float],
     save_path: Optional[Path],
@@ -191,7 +189,6 @@ async def run_turn(
                 "session_id": session_id,
                 "query": query,
                 "agent_mode": agent_mode,
-                "enable_thinking": enable_thinking,
                 **({"model_preset": model_preset} if model_preset else {}),
             },
         }
@@ -297,7 +294,6 @@ def main() -> int:
     parser.add_argument("--mode", choices=["rag", "agent", "stop"], default="rag",
                         help="rag=agent_mode=false；agent=agent_mode=true；stop=agent + 中途发 stop")
     parser.add_argument("--query", default=None, help="覆盖默认 query")
-    parser.add_argument("--enable-thinking", action="store_true", help="启用思考链")
     parser.add_argument("--model-preset", default=None, help="覆盖 model_preset（默认走服务端 [chat].agent_model_preset）")
     parser.add_argument("--stop-after", type=float, default=2.0,
                         help="--mode stop 时，连上 WS 后多少秒发 stop（默认 2s）")
@@ -361,7 +357,6 @@ def main() -> int:
             session_id=session_id,
             query=query,
             agent_mode=agent_mode,
-            enable_thinking=args.enable_thinking,
             model_preset=args.model_preset,
             stop_after=stop_after,
             save_path=save_path,

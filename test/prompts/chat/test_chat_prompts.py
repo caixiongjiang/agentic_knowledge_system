@@ -75,6 +75,8 @@ from typing import Any, List, Optional, Sequence
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from src.service.chat.chunk_alias_map import NavAliasMap
+
 
 def _hr(title: str) -> None:
     print("\n" + "=" * 70)
@@ -176,7 +178,7 @@ def test_format_retrieved_chunks() -> bool:
     from src.retrieve.types.result import ChunkItem
 
     # 空列表
-    empty = format_retrieved_chunks_for_context([])
+    empty = format_retrieved_chunks_for_context([], alias_map=NavAliasMap())
     if "(本轮未命中相关片段)" not in empty:
         _fail(f"空列表渲染异常：{empty!r}")
         return False
@@ -191,9 +193,10 @@ def test_format_retrieved_chunks() -> bool:
             chunk_id="ck_b", score=0.88, document_id="doc_x", text=long_text,
         ),
     ]
-    rendered = format_retrieved_chunks_for_context(chunks, max_preview=40)
-    if "ck_a" not in rendered or "ck_b" not in rendered:
-        _fail("渲染未包含 chunk_id")
+    rendered = format_retrieved_chunks_for_context(chunks, max_preview=40, alias_map=NavAliasMap())
+    # alias_map 会把真实 chunk_id 替换为 c1/c2 等 alias
+    if "c1" not in rendered or "c2" not in rendered:
+        _fail("渲染未包含 chunk alias")
         return False
     if "### [1]" not in rendered or "### [2]" not in rendered:
         _fail("编号缺失")
@@ -310,6 +313,7 @@ def test_compose_chat_messages() -> bool:
         history=history,
         user_message="第二轮问",
         retrieved_chunks=chunks,
+        alias_map=NavAliasMap(),
     )
 
     # 顺序断言
@@ -327,8 +331,8 @@ def test_compose_chat_messages() -> bool:
         return False
     _ok("system 槽位由调用方提供，history 里的旧 system 被去重")
 
-    # 参考片段紧贴最新 user 之前
-    if "ck_1" not in msgs[-2]["content"] or "片段一" not in msgs[-2]["content"]:
+    # 参考片段紧贴最新 user 之前（alias_map 把 ck_1 → c1, doc_a → d1）
+    if "c1" not in msgs[-2]["content"] or "片段一" not in msgs[-2]["content"]:
         _fail("参考片段未注入到最新 user 之前")
         return False
     if msgs[-1]["content"] != "第二轮问":
@@ -343,6 +347,7 @@ def test_compose_chat_messages() -> bool:
         user_message="只问无片段",
         retrieved_chunks=chunks,
         inject_chunks_before_user=False,
+        alias_map=NavAliasMap(),
     )
     if [m["role"] for m in msgs2] != ["system", "user"]:
         _fail(f"禁用注入时序列错：{[m['role'] for m in msgs2]}")
@@ -352,6 +357,7 @@ def test_compose_chat_messages() -> bool:
     # retrieved_chunks 为空时也不注入
     msgs3 = compose_chat_messages(
         system_prompt="S", history=[], user_message="x", retrieved_chunks=[],
+        alias_map=NavAliasMap(),
     )
     if [m["role"] for m in msgs3] != ["system", "user"]:
         _fail("空 chunks 时仍注入了参考片段")
@@ -512,14 +518,14 @@ def test_token_counters() -> bool:
     ]
 
     # 空 messages → 0
-    if count_message_tokens([], model="deepseek/deepseek-chat") != 0:
+    if count_message_tokens([]) != 0:
         _fail("空 messages 应返回 0")
         return False
     _ok("空 messages → 0 tokens")
 
     # 非空且非负
-    t_base = count_message_tokens(base_msgs, model="deepseek/deepseek-chat")
-    t_big = count_message_tokens(bigger_msgs, model="deepseek/deepseek-chat")
+    t_base = count_message_tokens(base_msgs)
+    t_big = count_message_tokens(bigger_msgs)
     if t_base <= 0 or t_big <= 0:
         _fail(f"token 估算非正：base={t_base}, big={t_big}")
         return False
@@ -544,26 +550,22 @@ def test_token_counters() -> bool:
             },
         },
     }]
-    t_with_tools = count_message_tokens(
-        bigger_msgs, model="deepseek/deepseek-chat", tools=tools,
-    )
+    t_with_tools = count_message_tokens(bigger_msgs, tools=tools)
     if t_with_tools <= t_big:
         _fail(f"加 tools 后 token 未增加：{t_with_tools} <= {t_big}")
         return False
     _ok(f"加 tools schema → {t_big} → {t_with_tools}（严格增加）")
 
-    # 未知模型不抛错
-    t_unknown = count_message_tokens(
-        bigger_msgs, model="this-provider/this-model-does-not-exist",
-    )
+    # 不依赖模型参数，不抛错
+    t_unknown = count_message_tokens(bigger_msgs)
     if t_unknown <= 0:
-        _fail(f"未知模型估算非正：{t_unknown}")
+        _fail(f"估算非正：{t_unknown}")
         return False
-    _ok(f"未知模型不抛错，回退估算 = {t_unknown} tokens")
+    _ok(f"无模型参数不抛错，估算 = {t_unknown} tokens")
 
     # estimate_history_tokens 应能跑通 ChatMessage 鸭子对象
     history = _build_long_history(3)
-    t_history = estimate_history_tokens(history, model="deepseek/deepseek-chat")
+    t_history = estimate_history_tokens(history)
     if t_history <= 0:
         _fail(f"history token 估算非正：{t_history}")
         return False
@@ -602,13 +604,12 @@ def test_apply_token_window() -> bool:
         _FakeMsg(role="user", content="U4 " + "x" * 80),
         _FakeMsg(role="assistant", content="A4 " + "y" * 80),
     ]
-    model = "deepseek/deepseek-chat"
-    full_tokens = estimate_history_tokens(history, model=model)
+    full_tokens = estimate_history_tokens(history)
     _ok(f"完整 history 估算 ≈ {full_tokens} tokens")
 
     # 1) 超高预算 → 全保留（含 system）
     kept_full = apply_token_window(
-        history, max_tokens=full_tokens * 10, model=model,
+        history, max_tokens=full_tokens * 10,
     )
     if len(kept_full) != len(history):
         _fail(f"超高预算应全保留，实际 {len(kept_full)} / {len(history)}")
@@ -616,7 +617,7 @@ def test_apply_token_window() -> bool:
     _ok(f"max_tokens 远大于实际 → 全量保留（{len(kept_full)} 条）")
 
     # 2) 极低预算（< 一轮的 token）→ 仍保留至少 min_recent_turns=1 轮
-    kept_min = apply_token_window(history, max_tokens=1, model=model)
+    kept_min = apply_token_window(history, max_tokens=1)
     if not kept_min:
         _fail("min_recent_turns=1 应至少保留一轮，结果为空")
         return False
@@ -628,8 +629,8 @@ def test_apply_token_window() -> bool:
 
     # 3) 中等预算：能容纳一部分轮，不能全部
     mid_budget = full_tokens // 2
-    kept_mid = apply_token_window(history, max_tokens=mid_budget, model=model)
-    mid_tokens = estimate_history_tokens(kept_mid, model=model)
+    kept_mid = apply_token_window(history, max_tokens=mid_budget)
+    mid_tokens = estimate_history_tokens(kept_mid)
     if mid_tokens > mid_budget and len(kept_mid) > 2:
         _fail(f"中等预算回退失败：估算 {mid_tokens} > 预算 {mid_budget}")
         return False
@@ -659,7 +660,7 @@ def test_apply_token_window() -> bool:
 
     # 5) min_recent_turns=2 时即使预算极低也保 2 轮
     kept_min2 = apply_token_window(
-        history, max_tokens=1, model=model, min_recent_turns=2,
+        history, max_tokens=1, min_recent_turns=2,
     )
     u_in_min2 = [m.content for m in kept_min2 if m.role == "user"]
     if len(u_in_min2) < 2:
@@ -669,7 +670,7 @@ def test_apply_token_window() -> bool:
 
     # 6) keep_system=False
     kept_no_sys = apply_token_window(
-        history, max_tokens=full_tokens * 10, model=model, keep_system=False,
+        history, max_tokens=full_tokens * 10, keep_system=False,
     )
     if any(m.role == "system" for m in kept_no_sys):
         _fail("keep_system=False 时 system 应被丢弃")
@@ -820,6 +821,7 @@ def test_summary_role_injection() -> bool:
         history=history,
         user_message="继续",
         retrieved_chunks=[],
+        alias_map=NavAliasMap(),
     )
     compose_roles = [m["role"] for m in msgs]
     # 期望：[system(NEW SYS), system(summary), user, assistant, user(继续)]
@@ -846,6 +848,7 @@ def test_summary_role_injection() -> bool:
         history=history2,
         user_message="新问",
         retrieved_chunks=[],
+        alias_map=NavAliasMap(),
     )
     roles2 = [m["role"] for m in msgs2]
     # 期望：[system(NEW SYS), system(summary), user, assistant, user(新问)]；OLD SYS 被去重

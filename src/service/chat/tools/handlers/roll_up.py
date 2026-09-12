@@ -38,7 +38,7 @@ SCHEMA: ToolSchema = {
                 },
                 "section_id": {
                     "type": "string",
-                    "description": "起始 section 的 ID（真实 id），与 chunk_id 二选一",
+                    "description": "起始 section 的 ID（如 s1 / s2），与 chunk_id 二选一",
                 },
                 "target": {
                     "type": "string",
@@ -114,8 +114,13 @@ async def handle(
             summary_part = (
                 f"\n  摘要(预览，最多200字): {summary}" if summary else ""
             )
+            doc_label = (
+                kit.alias_map.alias_for_document(doc.document_id)
+                if kit.alias_map and doc.document_id
+                else doc.document_id
+            )
             lines.append(
-                f"- document_id={doc.document_id}, score={doc.score:.4f}{stats_part}\n"
+                f"- document_id={doc_label}, score={doc.score:.4f}{stats_part}\n"
                 f"  {title}{summary_part}",
             )
 
@@ -124,10 +129,14 @@ async def handle(
         for section in sections:
             title = section.title or "(无标题)"
             doc = section.document_id or "N/A"
+            if kit.alias_map and doc != "N/A":
+                doc = kit.alias_map.alias_for_document(doc)
             meta = section.metadata or {}
             level = meta.get("text_level")
             chunk_count = meta.get("chunk_count")
             parent = meta.get("parent_section_id")
+            if kit.alias_map and parent:
+                parent = kit.alias_map.alias_for_section(parent)
             tag_parts: List[str] = []
             if level is not None:
                 tag_parts.append(f"L{level}")
@@ -136,8 +145,13 @@ async def handle(
             if parent:
                 tag_parts.append(f"parent={parent}")
             tag = f" [{', '.join(tag_parts)}]" if tag_parts else ""
+            sec_label = (
+                kit.alias_map.alias_for_section(section.section_id)
+                if kit.alias_map and section.section_id
+                else section.section_id
+            )
             lines.append(
-                f"- section_id={section.section_id}, document_id={doc}{tag}\n  {title}",
+                f"- section_id={sec_label}, document_id={doc}{tag}\n  {title}",
             )
 
     if chunks:

@@ -133,8 +133,7 @@ class RecallStats(BaseModel):
     覆盖 Phase 2(召回) → 3(对齐) → 4(融合) → 5(rerank) → 5.5(阈值过滤) 各阶段计数。
     chunk_id 列表均截断（_RECALL_STATS_CHUNK_ID_CAP，默认 20），避免响应膨胀。
 
-    高置信 QA 走「置顶」而不是短路：``qa_pinned=True`` 时 align/fusion/rerank
-    仍执行；``short_circuited`` 恒为 False（字段保留，避免旧前端误画短路横幅）。
+    高置信 QA 走「置顶」而不是短路：``qa_pinned=True`` 时 align/fusion/rerank 仍执行。
     """
     routes: List[RouteRecallStat] = Field(default_factory=list)
     fused_count: int = Field(default=0, description="Phase 4 融合去重后候选数")
@@ -147,13 +146,6 @@ class RecallStats(BaseModel):
     )
     dropped_by_threshold: int = Field(
         default=0, description="Phase 5.5 精排后阈值过滤掉的数量",
-    )
-    short_circuited: bool = Field(
-        default=False,
-        description=(
-            "已废弃：直答短路已移除，恒为 False。"
-            "旧前端用此字段画「跳过对齐/融合/rerank」横幅，故不再置 True。"
-        ),
     )
     qa_pinned: bool = Field(
         default=False,

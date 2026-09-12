@@ -23,12 +23,12 @@ def _hr(title: str) -> None:
 async def test_grep_chunks_literal_with_alias() -> bool:
     _hr("grep_chunks · literal + alias_map")
     from src.retrieve.types.result import ChunkItem
-    from src.service.chat.chunk_alias_map import ChunkAliasMap
+    from src.service.chat.chunk_alias_map import NavAliasMap
     from src.service.chat.tools import KnowledgeNavToolKit
     from src.service.chat.tools.handlers.grep_chunks import handle
 
     supp: List[ChunkItem] = []
-    alias_map = ChunkAliasMap()
+    alias_map = NavAliasMap()
     kit = KnowledgeNavToolKit(
         supplemented_items=supp,
         enabled_tools=("grep_chunks",),

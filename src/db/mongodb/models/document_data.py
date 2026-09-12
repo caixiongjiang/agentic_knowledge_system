@@ -40,20 +40,7 @@ class DocumentData(BaseDocument):
         description="消息ID：消息唯一标识符，来自global_id_generator"
     )
     
-    # ========== 摘要字段（旧，deprecated）==========
-    # ⚠️ 已废弃：改为使用下方结构化 summary 字段（与 section_data.summary 风格对齐）。
-    # 保留字段不删，向后兼容；新代码应读写 summary 字段。
-    summary_zh: Optional[str] = Field(
-        None,
-        description="[deprecated] 文档的中文摘要（已改用 summary 结构化字段）"
-    )
-    
-    summary_en: Optional[str] = Field(
-        None,
-        description="[deprecated] 文档的英文摘要（已改用 summary 结构化字段）"
-    )
-
-    # ========== 摘要字段（新，结构化子文档）==========
+    # ========== 摘要字段（结构化子文档）==========
     # 由 FileSummaryService 通过 UPSERT $set 写入，与 section_data.summary 风格对齐。
     # 结构：{summary_id, text, keywords, topics, document_type,
     #        section_count, chunk_count, language}
@@ -100,22 +87,12 @@ class DocumentData(BaseDocument):
     
     # ========== 自定义方法 ==========
     
-    async def get_summary(self, language: str = "zh") -> Optional[str]:
-        """
-        获取指定语言的摘要
-        
-        Args:
-            language: 语言代码，'zh' 或 'en'
-            
-        Returns:
-            摘要文本，如果不存在则返回 None
-        """
-        if language == "zh":
-            return self.summary_zh
-        elif language == "en":
-            return self.summary_en
+    def get_summary_text(self) -> Optional[str]:
+        """获取摘要文本（从结构化 summary 子文档提取 text 字段）。"""
+        if self.summary and isinstance(self.summary, dict):
+            return self.summary.get("text")
         return None
     
     def has_summary(self) -> bool:
-        """检查是否有摘要（任一语言）"""
-        return bool(self.summary_zh or self.summary_en)
+        """检查是否有摘要"""
+        return bool(self.get_summary_text())
