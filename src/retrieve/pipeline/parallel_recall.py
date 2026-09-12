@@ -253,10 +253,3 @@ class ParallelRecallExecutor:
             total_count=len(chunk_items),
             execution_time_ms=elapsed_ms,
         )
-
-    # 向后兼容：保留原静态方法名作为别名
-    @staticmethod
-    def _normalize_to_chunk_items(
-        result: RetrieveResult, route: str,
-    ) -> List[ChunkItem]:
-        return normalize_to_chunk_items(result, route)

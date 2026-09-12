@@ -11,7 +11,7 @@ from loguru import logger
 
 from src.client.llm.types import ToolSchema
 from src.retrieve.types.result import ChunkItem
-from src.service.chat.chunk_alias_map import ChunkAliasMap
+from src.service.chat.chunk_alias_map import NavAliasMap
 from src.service.chat.tools.handlers import ALL_TOOL_DEFINITIONS
 from src.service.chat.tools.registry import BUILTIN_NAV_SCHEMAS, DEFAULT_NAV_TOOLS
 from src.service.chat.tools.runtime import get_current_tool_call_id, set_current_tool_call_id
@@ -26,13 +26,15 @@ class KnowledgeNavToolKit:
 
     _CHUNK_ID_ARG_KEYS: Sequence[str] = ("chunk_id",)
     _CHUNK_ID_LIST_ARG_KEYS: Sequence[str] = ("chunk_ids",)
+    _SECTION_ID_ARG_KEYS: Sequence[str] = ("section_id", "parent_section_id")
+    _DOCUMENT_ID_ARG_KEYS: Sequence[str] = ("document_id",)
 
     def __init__(
         self,
         supplemented_items: List[ChunkItem],
         *,
         enabled_tools: Optional[Sequence[str]] = None,
-        alias_map: Optional[ChunkAliasMap] = None,
+        alias_map: Optional[NavAliasMap] = None,
         retrieve_service: Optional[Any] = None,
         on_progress: Optional[
             Callable[..., Awaitable[None]]
@@ -215,6 +217,8 @@ class KnowledgeNavToolKit:
         if self.alias_map is None or not args:
             return dict(args)
         out: Dict[str, Any] = dict(args)
+
+        # chunk_id
         for key in self._CHUNK_ID_ARG_KEYS:
             value = out.get(key)
             if not isinstance(value, str) or not value:
@@ -231,6 +235,7 @@ class KnowledgeNavToolKit:
                     f"已知 size={self.alias_map.size}",
                 )
 
+        # chunk_ids
         for key in self._CHUNK_ID_LIST_ARG_KEYS:
             raw = out.get(key)
             if not isinstance(raw, list) or not raw:
@@ -248,6 +253,41 @@ class KnowledgeNavToolKit:
                     )
                 unwrapped.append(value)
             out[key] = unwrapped
+
+        # section_id / parent_section_id
+        for key in self._SECTION_ID_ARG_KEYS:
+            value = out.get(key)
+            if not isinstance(value, str) or not value:
+                continue
+            if not self.alias_map.is_section_alias(value):
+                continue
+            real = self.alias_map.resolve_section_alias(value)
+            if real is not None:
+                out[key] = real
+                logger.debug(f"section alias unwrap: {key} {value} -> {real[:16]}...")
+            else:
+                logger.warning(
+                    f"section alias unwrap 失败：{key}={value} 不在 alias_map 中；"
+                    f"已知 section_size={self.alias_map.section_size}",
+                )
+
+        # document_id
+        for key in self._DOCUMENT_ID_ARG_KEYS:
+            value = out.get(key)
+            if not isinstance(value, str) or not value:
+                continue
+            if not self.alias_map.is_document_alias(value):
+                continue
+            real = self.alias_map.resolve_document_alias(value)
+            if real is not None:
+                out[key] = real
+                logger.debug(f"document alias unwrap: {key} {value} -> {real[:16]}...")
+            else:
+                logger.warning(
+                    f"document alias unwrap 失败：{key}={value} 不在 alias_map 中；"
+                    f"已知 document_size={self.alias_map.document_size}",
+                )
+
         return out
 
     def cap(self, key: str) -> Any:
@@ -268,8 +308,3 @@ class KnowledgeNavToolKit:
                 },
             )
         return self._capabilities[key]
-
-    @property
-    def _search_results(self) -> Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any], Optional[Dict[str, Any]]]]:
-        """兼容旧代码对私有字段的访问（chat_service）。"""
-        return self.search_results

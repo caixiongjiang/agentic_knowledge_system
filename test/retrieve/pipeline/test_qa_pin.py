@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.retrieve.pipeline.types import DirectAnswer, RecallResult  # noqa: E402
 from src.retrieve.types.result import ChunkItem  # noqa: E402
-from src.service.chat.chunk_alias_map import ChunkAliasMap  # noqa: E402
+from src.service.chat.chunk_alias_map import NavAliasMap  # noqa: E402
 from src.service.chat.tools.handlers.search_knowledge_base import (  # noqa: E402
     format_pinned_search_for_llm,
 )
@@ -167,7 +167,7 @@ def test_unique_chunk_ids_cap() -> None:
 
 
 def test_format_pinned_then_items() -> None:
-    alias = ChunkAliasMap()
+    alias = NavAliasMap()
     pinned = DirectAnswer(
         answer="答案正文",
         qa_id="qa-1",

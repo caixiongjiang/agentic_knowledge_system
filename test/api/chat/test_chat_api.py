@@ -94,7 +94,6 @@ class _FakeSession:
     model_preset: str = "fast"
     model: Optional[str] = None
     agent_mode: bool = True
-    enable_thinking: bool = False
     max_tool_rounds: int = 5
     system_prompt: Optional[str] = None
     message_count: int = 0
@@ -141,7 +140,7 @@ class _FakeSessionService:
                        model_preset: str = "fast", model: Optional[str] = None,
                        agent_mode: bool = True,
                        mode: str = "agent",
-                       enable_thinking: bool = False, max_tool_rounds: int = 5,
+                       max_tool_rounds: int = 5,
                        system_prompt: Optional[str] = None, **_: Any):
         # mode 为现行会话交互模式字段；agent_mode 保留兼容旧测试调用
         sid = self._gen_id()
@@ -150,7 +149,7 @@ class _FakeSessionService:
             knowledge_base_ids=list(knowledge_base_ids or []),
             folder_id=folder_id, include_subfolders=include_subfolders,
             model_preset=model_preset, model=model, agent_mode=agent_mode,
-            enable_thinking=enable_thinking, max_tool_rounds=max_tool_rounds,
+            max_tool_rounds=max_tool_rounds,
             system_prompt=system_prompt,
         )
         self.sessions[sid] = s

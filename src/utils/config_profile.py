@@ -47,12 +47,8 @@ def get_profile_dir(profile: Optional[str] = None) -> Path:
 
 
 def resolve_profile_file(filename: str, profile: Optional[str] = None) -> Path:
-    """档案目录中的文件；不存在时回落到 ``config/<filename>``（兼容旧路径）。"""
-    path = get_profile_dir(profile) / filename
-    if path.exists():
-        return path
-    legacy = CONFIG_ROOT / filename
-    return legacy if legacy.exists() else path
+    """档案目录中的文件。"""
+    return get_profile_dir(profile) / filename
 
 
 def load_profile_presets(profile: Optional[str] = None) -> Dict[str, Dict[str, Any]]:

@@ -174,7 +174,6 @@ class ChatSessionInfo(BaseModel):
     )
     mode: str = "agent"
     thinking_level: Optional[str] = None
-    enable_thinking: bool = False
     enable_multimodal: bool = False
     max_tool_rounds: int = 5
     system_prompt: Optional[str] = None

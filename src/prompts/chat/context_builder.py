@@ -34,13 +34,13 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Sequence
 
 from src.retrieve.types.result import ChunkItem
 
 if TYPE_CHECKING:
     # 仅类型注解使用；运行期不导入，避免 src.prompts.chat ↔ src.service.chat 循环
-    from src.service.chat.chunk_alias_map import ChunkAliasMap
+    from src.service.chat.chunk_alias_map import NavAliasMap
 
 from src.prompts.chat.retrieval_hints import SEMANTIC_RECALL_LITERAL_HINT
 
@@ -53,7 +53,7 @@ def format_retrieved_chunks_for_context(
     *,
     max_preview: int = 400,
     header: str = "参考片段",
-    alias_map: Optional[ChunkAliasMap] = None,
+    alias_map: NavAliasMap,
 ) -> str:
     """把 ChunkItem 列表渲染为人类/LLM 可读的"参考片段"段落。
 
@@ -71,11 +71,10 @@ def format_retrieved_chunks_for_context(
         chunks: 命中的 ChunkItem 列表（已按业务侧排序/去重）
         max_preview: 单片段正文最大字符数，超出截断（默认 400 字）
         header: 段落顶部标题（默认"参考片段"）
-        alias_map: 若提供，则把真实 chunk_id 替换为 session 级 alias
-            （``c1``, ``c2`` ...），节省 token + 屏蔽内部 id；map 是
-            in-place 增量分配，调用本函数后里面会多出新 alias。
-            为 ``None`` 时回退到老行为（直接输出真实 chunk_id），便于
-            单测和兼容历史调用。
+        alias_map: 把真实 chunk_id / section_id / document_id 替换为
+            session 级 alias（``c1`` / ``s1`` / ``d1`` ...），节省 token +
+            屏蔽内部 id；map 是 in-place 增量分配，调用本函数后里面会多出
+            新 alias。
 
     Returns:
         渲染后的 markdown 文本；若 ``chunks`` 为空返回 ``"## {header}\\n\\n(本轮未命中相关片段)"``。
@@ -88,8 +87,12 @@ def format_retrieved_chunks_for_context(
         text = (c.text or "").strip()
         if max_preview and len(text) > max_preview:
             text = text[:max_preview] + "..."
-        doc = c.document_id or "N/A"
-        cid_label = alias_map.alias_for(c.chunk_id) if alias_map and c.chunk_id else c.chunk_id
+        doc = (
+            alias_map.alias_for_document(c.document_id)
+            if c.document_id
+            else c.document_id or "N/A"
+        )
+        cid_label = alias_map.alias_for(c.chunk_id) if c.chunk_id else c.chunk_id
         lines.append(
             f"### [{i}] chunk_id={cid_label}, document_id={doc}, score={c.score:.4f}",
         )
@@ -176,10 +179,10 @@ def compose_chat_messages(
     system_prompt: str,
     history: Iterable[Any],
     user_message: str,
+    alias_map: NavAliasMap,
     retrieved_chunks: Sequence[ChunkItem] = (),
     inject_chunks_before_user: bool = True,
     chunks_max_preview: int = 400,
-    alias_map: Optional[ChunkAliasMap] = None,
 ) -> List[Dict[str, Any]]:
     """组装本轮发给 LLM 的完整 ``messages``。
 
@@ -195,6 +198,8 @@ def compose_chat_messages(
             若 history 中也含 system 消息，这里**不会**重复加，由调用方决定。
         history: ``ChatMessage`` 列表（按 create_time 正序）。
         user_message: 用户本轮新消息正文。
+        alias_map: session 级 alias 映射；用于把检索片段与 user_message 中
+            残留的真实 id 替换为 alias。
         retrieved_chunks: 服务端本轮命中的检索片段（已去重/排序）。
         inject_chunks_before_user: 是否把"参考片段"以 role=user 形式插在最新
             user 消息之前。设 ``False`` 则不注入（用于工具补轮等场景）。
@@ -228,7 +233,10 @@ def compose_chat_messages(
             ),
         })
 
-    msgs.append({"role": "user", "content": user_message})
+    # 安全网：把 user_message 中残留的完整 chunk/section/document id 替换为 alias
+    # （@ 引用块已在 _build_references_block 里预分配 alias，这里做最终替换）
+    final_user_message = alias_map.replace_all_ids_with_aliases(user_message)
+    msgs.append({"role": "user", "content": final_user_message})
     return msgs
 
 

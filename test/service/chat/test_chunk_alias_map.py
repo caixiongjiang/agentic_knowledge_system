@@ -6,7 +6,7 @@
 @Author  : caixiongjiang
 @Date    : 2026/05/14
 @Function:
-    ChunkAliasMap 单元测试（Phase B）
+    NavAliasMap 单元测试（Phase B）
 
     覆盖点
     ------
@@ -39,7 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.service.chat.chunk_alias_map import (  # noqa: E402
-    ChunkAliasMap,
+    NavAliasMap,
     METADATA_ALIAS_ADDITIONS_KEY,
     rebuild_alias_map_from_history,
 )
@@ -61,7 +61,7 @@ def _eq(actual, expected, label: str) -> None:
 
 
 def test_basic_allocation_and_idempotency() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     _eq(am.size, 0, "init size")
     _eq(am.alias_for("chunk-aaa"), "c1", "first alias")
     _eq(am.alias_for("chunk-bbb"), "c2", "second alias")
@@ -72,7 +72,7 @@ def test_basic_allocation_and_idempotency() -> None:
 
 
 def test_bidirectional_lookup() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     am.alias_for("chunk-x")
     am.alias_for("chunk-y")
     _eq(am.resolve_alias("c1"), "chunk-x", "alias→chunk c1")
@@ -83,7 +83,7 @@ def test_bidirectional_lookup() -> None:
 
 
 def test_is_alias() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     assert am.is_alias("c1")
     assert am.is_alias("c12345")
     assert not am.is_alias("cabc")
@@ -93,7 +93,7 @@ def test_is_alias() -> None:
 
 
 def test_delta_consume() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     am.alias_for("chunk-a")
     am.alias_for("chunk-b")
     delta = am.consume_turn_delta()
@@ -106,7 +106,7 @@ def test_delta_consume() -> None:
 
 
 def test_absorb_persisted_and_counter() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     am.absorb_persisted({"c1": "chunk-a", "c3": "chunk-c"})
     _eq(am.resolve_alias("c1"), "chunk-a", "absorbed c1")
     _eq(am.resolve_alias("c3"), "chunk-c", "absorbed c3")
@@ -116,7 +116,7 @@ def test_absorb_persisted_and_counter() -> None:
 
 
 def test_absorb_persisted_conflict_protection() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     am.absorb_persisted({"c1": "chunk-a"})
     # 同 alias 不同 chunk_id：以先到为准，不覆盖
     am.absorb_persisted({"c1": "chunk-impostor"})
@@ -152,7 +152,7 @@ def test_rebuild_from_history() -> None:
 
 
 def test_replace_chunk_ids_with_aliases() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     am.alias_for("chunk-4964fafe-0bc1-402d-9f0e-2c0e7ba66520")
     am.alias_for("chunk-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
@@ -169,7 +169,7 @@ def test_replace_chunk_ids_with_aliases() -> None:
 
 
 def test_snapshot() -> None:
-    am = ChunkAliasMap()
+    am = NavAliasMap()
     am.alias_for("chunk-x")
     am.alias_for("chunk-y")
     snap = am.snapshot()

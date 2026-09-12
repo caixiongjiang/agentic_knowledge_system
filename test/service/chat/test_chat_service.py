@@ -108,7 +108,6 @@ class _FakeSession:
     model_preset: str = "fast"
     model: Optional[str] = None
     agent_mode: bool = False
-    enable_thinking: bool = False
     thinking_level: Optional[str] = None
     max_tool_rounds: int = 3
     system_prompt: Optional[str] = None

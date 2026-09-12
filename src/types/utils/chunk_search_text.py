@@ -163,41 +163,6 @@ def format_table_search_text_from_display(display_text: str) -> str:
     return format_table_search_text(body, caption, footnote)
 
 
-def _is_image_display_text(text: str) -> bool:
-    return text.strip().startswith("[图片]")
-
-
-def derive_search_text_from_legacy(
-    *,
-    chunk_type: Optional[str],
-    text: Optional[str],
-    image_caption: Optional[str] = None,
-    image_footnote: Optional[str] = None,
-    table_caption: Optional[str] = None,
-    table_body: Optional[str] = None,
-    table_footnote: Optional[str] = None,
-) -> str:
-    """
-    从存量数据推导 search_text（迁移脚本 & 运行时 fallback）。
-    """
-    ctype = (chunk_type or "").lower()
-
-    if ctype == "image":
-        if image_caption or image_footnote:
-            return format_image_search_text(image_caption, image_footnote)
-        if text and _is_image_display_text(text):
-            return format_image_search_text_from_display(text)
-        return text or ""
-
-    if ctype == "table":
-        if table_caption or table_body or table_footnote:
-            return format_table_search_text(table_body or "", table_caption, table_footnote)
-        if text and "table_caption:" in text.lower():
-            return format_table_search_text_from_display(text)
-        return text or ""
-
-    return text or ""
-
 
 def format_image_search_text_from_display(display_text: str) -> str:
     """从 [图片] 展示文本反推检索文本。"""

@@ -9,7 +9,6 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.types.utils.chunk_search_text import (
-    derive_search_text_from_legacy,
     format_image_display_text,
     format_image_search_text,
     format_table_display_text,
@@ -78,18 +77,6 @@ class TestTableSearchDisplay:
         assert cap == TABLE_CAP
         assert "<table>" in body
         assert fn == TABLE_FN
-
-
-class TestLegacyDerive:
-    def test_image_legacy_wrapped(self):
-        display = format_image_display_text(FIG8_CAPTION, None)
-        search = derive_search_text_from_legacy(
-            chunk_type="image",
-            text=display,
-            image_caption=FIG8_CAPTION,
-        )
-        assert "[图片]" not in search
-        assert "Fig.8" in search
 
 
 class TestSplitResultDualTrack:

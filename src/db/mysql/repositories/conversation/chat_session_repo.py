@@ -195,7 +195,6 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         session_id: str,
         *,
         mode: Optional[str] = None,
-        enable_thinking: Optional[bool] = None,
         thinking_level: Optional[str] = None,
         enable_multimodal: Optional[bool] = None,
         max_tool_rounds: Optional[int] = None,
@@ -206,8 +205,6 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
             updates: dict = {}
             if mode is not None:
                 updates[self.model.mode] = mode
-            if enable_thinking is not None:
-                updates[self.model.enable_thinking] = enable_thinking
             if thinking_level is not None:
                 updates[self.model.thinking_level] = thinking_level
             if enable_multimodal is not None:
@@ -242,7 +239,6 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
         *,
         model: Optional[str] = None,
         model_preset: Optional[str] = None,
-        enable_thinking: Optional[bool] = None,
         thinking_level: Optional[str] = None,
         enable_multimodal: Optional[bool] = None,
         updater: str = "",
@@ -263,8 +259,6 @@ class ChatSessionRepository(BaseRepository[ChatSession]):
                 updates[self.model.model] = model or None
             if model_preset is not None:
                 updates[self.model.model_preset] = model_preset
-            if enable_thinking is not None:
-                updates[self.model.enable_thinking] = enable_thinking
             if thinking_level is not None:
                 updates[self.model.thinking_level] = thinking_level
             if enable_multimodal is not None:

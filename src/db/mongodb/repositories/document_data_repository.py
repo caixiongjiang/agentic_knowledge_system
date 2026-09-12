@@ -79,32 +79,6 @@ class DocumentDataRepository(BaseRepository[DocumentData]):
         
         return results
     
-    async def search_by_summary(
-        self,
-        keyword: str,
-        language: str = "zh",
-        limit: int = 10
-    ) -> List[DocumentData]:
-        """
-        在摘要中搜索关键词
-        
-        Args:
-            keyword: 搜索关键词
-            language: 语言（zh/en）
-            limit: 限制数量
-            
-        Returns:
-            DocumentData 列表
-        """
-        field = "summary_zh" if language == "zh" else "summary_en"
-        
-        results = await DocumentData.find({
-            "deleted": 0,
-            field: {"$regex": keyword, "$options": "i"}  # 不区分大小写
-        }).limit(limit).to_list()
-        
-        return results
-    
     async def get_by_ids(
         self,
         ids: List[str]
