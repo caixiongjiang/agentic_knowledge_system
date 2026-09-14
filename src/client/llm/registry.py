@@ -727,13 +727,20 @@ class LiteLLMRegistry:
 
     @staticmethod
     def _infer_provider(bare_name: str, default: str = "litellm_proxy") -> str:
-        """从裸模型名启发式推断展示用 provider 分组"""
+        """从裸模型名启发式推断展示用 provider 分组。
+
+        规则：对 lowercase 后的裸名做**子串关键词匹配，按固定顺序取第一个命中的**
+        （顺序即优先级：更具体的名字放前面）。都没命中时返回 ``default``。
+        注意这是"看名字猜厂商"——同名字不同源会误判；想改分组只能改网关模型名
+        或在本表加关键词。
+        """
         lowered = (bare_name or "").lower()
+        # —— 已有主力厂商（保持原有判定顺序不变）——
         if "deepseek" in lowered:
             return "deepseek"
-        if "qwen" in lowered or "qwq" in lowered:
+        if "qwen" in lowered or "qwq" in lowered or "tongyi" in lowered:
             return "qwen"
-        if "glm" in lowered or "chatglm" in lowered:
+        if "glm" in lowered or "chatglm" in lowered or "zhipu" in lowered:
             return "glm"
         if "claude" in lowered or "anthropic" in lowered:
             return "anthropic"
@@ -745,8 +752,44 @@ class LiteLLMRegistry:
             return "moonshot"
         if "baichuan" in lowered:
             return "baichuan"
-        if "minimax" in lowered:
+        if "minimax" in lowered or "abab" in lowered:
             return "minimax"
+        # —— 国内其他厂商 ——
+        if "mimo" in lowered:
+            return "mimo"
+        if "ernie" in lowered:
+            return "ernie"
+        if "hunyuan" in lowered:
+            return "hunyuan"
+        if "doubao" in lowered or "skylark" in lowered:
+            return "doubao"
+        if "spark" in lowered:
+            return "spark"
+        if "internlm" in lowered:
+            return "internlm"
+        if "yi-" in lowered or lowered == "yi":
+            return "yi"
+        if "stepfun" in lowered or "step-" in lowered:
+            return "step"
+        if "sensenova" in lowered or "sensechat" in lowered:
+            return "sensenova"
+        # —— 国际其他厂商 ——
+        if "mistral" in lowered or "mixtral" in lowered or "ministral" in lowered or "codestral" in lowered:
+            return "mistral"
+        if "llama" in lowered:
+            return "meta"
+        if "grok" in lowered:
+            return "xai"
+        if "cohere" in lowered or "command-r" in lowered or "command-a" in lowered:
+            return "cohere"
+        if "phi-" in lowered or lowered == "phi":
+            return "microsoft"
+        if "nemotron" in lowered:
+            return "nvidia"
+        if "jamba" in lowered:
+            return "ai21"
+        if "minicpm" in lowered:
+            return "openbmb"
         return default
 
     @staticmethod

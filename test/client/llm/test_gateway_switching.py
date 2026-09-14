@@ -184,6 +184,63 @@ class TestModelGatewaySwitching(unittest.TestCase):
         self.assertEqual([m.id for m in visible], ["openai/qwen3.7-flash"])
         self.assertEqual(LiteLLMRegistry._filter_visible_models(models, []), [])
 
+    def test_infer_provider_keyword_table(self):
+        """_infer_provider 关键词表：老厂商保持原判定，新厂商正确归组，未知落兜底"""
+        cases = {
+            # 原有厂商（顺序敏感：deepseek 必须先于其他命中）
+            "deepseek-v4-flash": "deepseek",
+            "qwen3.7-flash": "qwen",
+            "qwq-32b": "qwen",
+            "glm-5.1": "glm",
+            "chatglm3-6b": "glm",
+            "zhipu-glm-5-2": "glm",
+            "claude-sonnet-4": "anthropic",
+            "gpt-4o-mini": "openai",
+            "o3-mini": "openai",
+            "gemini-2.5-pro": "gemini",
+            "kimi-k2": "moonshot",
+            "moonshot-v1-8k": "moonshot",
+            "baichuan2-13b": "baichuan",
+            "minimax-text-01": "minimax",
+            "abab6.5s": "minimax",
+            # 国内其他厂商
+            "mimo-v2.5": "mimo",
+            "mimo-v2.5-pro": "mimo",
+            "ernie-4.5": "ernie",
+            "hunyuan-turbo": "hunyuan",
+            "doubao-pro-32k": "doubao",
+            "internlm2-20b": "internlm",
+            "yi-lightning": "yi",
+            "step-2-16k": "step",
+            "spark-max": "spark",
+            "sensenova-v6": "sensenova",
+            # 国际其他厂商
+            "mistral-large": "mistral",
+            "mixtral-8x7b": "mistral",
+            "codestral-latest": "mistral",
+            "llama-3.3-70b": "meta",
+            "grok-3": "xai",
+            "command-r-plus": "cohere",
+            "phi-4": "microsoft",
+            "nemotron-70b": "nvidia",
+            "jamba-1.5": "ai21",
+            "minicpm-v": "openbmb",
+            # 未命中 → 兜底
+            "small-32k": "litellm_proxy",
+            "bge-m3-embedding": "litellm_proxy",
+            "": "litellm_proxy",
+        }
+        for name, want in cases.items():
+            self.assertEqual(
+                LiteLLMRegistry._infer_provider(name), want,
+                f"{name!r} 应归入 {want}",
+            )
+        # model_lake 兜底值
+        self.assertEqual(
+            LiteLLMRegistry._infer_provider("unknown-model", default="model_lake"),
+            "model_lake",
+        )
+
     def test_gateway_type_comes_from_env_only(self):
         """未设置 MODEL_GATEWAY_TYPE 时默认 litellm，不读 [proxy]"""
         cm = ConfigManager()
